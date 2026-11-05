@@ -78,7 +78,9 @@ export class ObsidianVault implements VaultAccess {
 	async modify(path: string, content: string): Promise<void> {
 		const file = this.fileFor(path);
 		if (!file) throw new Error(`Note not found: ${path}`);
-		await this.app.vault.modify(file, content);
+		// `process` serialises against other writers; the content was approved as a whole,
+		// so we replace rather than transform.
+		await this.app.vault.process(file, () => content);
 	}
 
 	getMetadata(path: string): NoteMetadata {

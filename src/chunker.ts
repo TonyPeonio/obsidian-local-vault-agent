@@ -64,9 +64,23 @@ export function chunkMarkdown(content: string, opts: ChunkOptions = {}): Chunk[]
 	return chunks;
 }
 
+/** Split on sentence-ending punctuation followed by whitespace (no lookbehind: older iOS lacks it). */
+export function splitSentences(text: string): string[] {
+	const out: string[] = [];
+	let start = 0;
+	const re = /[.!?]+\s+/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(text)) !== null) {
+		out.push(text.slice(start, m.index + m[0].length).trimEnd());
+		start = m.index + m[0].length;
+	}
+	if (start < text.length) out.push(text.slice(start));
+	return out.filter((s) => s.length > 0);
+}
+
 function splitLong(text: string, max: number): string[] {
 	const out: string[] = [];
-	const sentences = text.split(/(?<=[.!?])\s+/);
+	const sentences = splitSentences(text);
 	let current = "";
 	for (const s of sentences) {
 		if (s.length > max) {

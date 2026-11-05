@@ -217,6 +217,7 @@
 	resize: none;
 	min-height: 38px;
 	max-height: 220px;
+	field-sizing: content;
 	font-size: var(--font-ui-small);
 	line-height: 1.4;
 }

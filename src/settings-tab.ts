@@ -91,7 +91,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 			.setName("Temperature")
 			.setDesc("Lower is more precise and better for tool use. 0.3 is a sensible default.")
 			.addSlider((sl) =>
-				sl.setLimits(0, 1, 0.05).setValue(s.temperature).setDynamicTooltip().onChange(async (v) => {
+				sl.setLimits(0, 1, 0.05).setValue(s.temperature).onChange(async (v) => {
 					s.temperature = v;
 					await this.plugin.saveSettings();
 				}),
@@ -172,7 +172,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 					}),
 				)
 				.addButton((b) =>
-					b.setButtonText("Rebuild").setWarning().onClick(async () => {
+					b.setButtonText("Rebuild").onClick(async () => {
 						new Notice("Rebuilding the whole index…");
 						await this.plugin.index.syncAll(true);
 						this.display();
@@ -206,7 +206,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 			.setName("Max tool calls per message")
 			.setDesc("Stops runaway loops. Raise it for big compilation tasks.")
 			.addSlider((sl) =>
-				sl.setLimits(3, 50, 1).setValue(s.maxIterations).setDynamicTooltip().onChange(async (v) => {
+				sl.setLimits(3, 50, 1).setValue(s.maxIterations).onChange(async (v) => {
 					s.maxIterations = v;
 					await this.plugin.saveSettings();
 				}),

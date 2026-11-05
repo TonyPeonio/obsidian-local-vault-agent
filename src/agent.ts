@@ -42,6 +42,7 @@ export interface AgentDeps {
 	search: ToolContext["search"];
 	approve: (req: ApprovalRequest) => Promise<ApprovalDecision>;
 	getConfig: () => AgentConfig;
+	configDir?: string;
 	now?: () => Date;
 }
 
@@ -91,6 +92,7 @@ export class Agent {
 			vault,
 			search: this.deps.search,
 			maxResultChars: cfg.maxToolResultChars,
+			configDir: this.deps.configDir,
 			signal,
 			approve: async (req) => {
 				if (cfg.autoApprove || conversation.approveAll) return "approve";

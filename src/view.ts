@@ -48,9 +48,9 @@ export class AgentView extends ItemView {
 		// Header
 		const header = root.createDiv({ cls: "lva-header" });
 		this.modelSelect = header.createEl("select", { cls: "dropdown lva-model-select" });
-		this.modelSelect.addEventListener("change", async () => {
+		this.modelSelect.addEventListener("change", () => {
 			this.plugin.settings.model = this.modelSelect.value;
-			await this.plugin.saveSettings();
+			void this.plugin.saveSettings();
 		});
 		void this.populateModels();
 		const newChat = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": "New chat" } });
@@ -147,8 +147,8 @@ export class AgentView extends ItemView {
 	}
 
 	private autoGrow(): void {
-		this.inputEl.style.height = "auto";
-		this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 220) + "px";
+		// Sizing is done in CSS (`field-sizing: content`), nothing to do here; kept as a hook
+		// so callers that change the value programmatically read naturally.
 	}
 
 	private setSendState(running: boolean): void {
@@ -276,7 +276,7 @@ class TurnRenderer {
 	private contentEl: HTMLElement;
 	private content = "";
 	private thinking = "";
-	private renderTimer: ReturnType<typeof setTimeout> | null = null;
+	private renderTimer: number | null = null;
 	private toolCards = new Map<ToolCall, HTMLDetailsElement>();
 
 	constructor(
@@ -304,15 +304,15 @@ class TurnRenderer {
 	appendContent(delta: string): void {
 		this.content += delta;
 		if (this.renderTimer) return;
-		this.renderTimer = setTimeout(() => {
+		this.renderTimer = window.setTimeout(() => {
 			this.renderTimer = null;
 			void this.view.renderMarkdown(this.content, this.contentEl);
 		}, 120);
 	}
 
 	async finish(message: ChatMessage): Promise<void> {
-		if (this.renderTimer) {
-			clearTimeout(this.renderTimer);
+		if (this.renderTimer !== null) {
+			window.clearTimeout(this.renderTimer);
 			this.renderTimer = null;
 		}
 		if (this.thinkingEl) {

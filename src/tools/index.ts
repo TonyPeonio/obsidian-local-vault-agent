@@ -20,7 +20,7 @@ function str(args: Record<string, unknown>, key: string, required = true): strin
 		if (required) throw new ToolError(`Missing required argument "${key}".`);
 		return "";
 	}
-	return typeof v === "string" ? v : String(v);
+	return typeof v === "string" ? v : typeof v === "number" || typeof v === "boolean" ? String(v) : JSON.stringify(v);
 }
 
 function int(args: Record<string, unknown>, key: string, fallback: number, min: number, max: number): number {
@@ -37,15 +37,19 @@ function bool(args: Record<string, unknown>, key: string, fallback = false): boo
 	return fallback;
 }
 
-/** Normalize a model-supplied path: forward slashes, `.md` extension, no leading slash. */
-export function normalizeNotePath(input: string): string {
+/**
+ * Normalize a model-supplied path: forward slashes, `.md` extension, no leading slash.
+ * `configDir` is the vault's configuration folder (usually `.obsidian`), which is off limits.
+ */
+export function normalizeNotePath(input: string, configDir = ".obsidian"): string {
 	let p = input.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
 	p = p.replace(/^\[\[|\]\]$/g, "");
 	if (!/\.md$/i.test(p)) p += ".md";
 	// Collapse accidental double slashes and "./".
 	p = p.replace(/\/{2,}/g, "/").replace(/^\.\//, "");
 	if (p.split("/").some((seg) => seg === "..")) throw new ToolError("Paths may not contain '..'.");
-	if (/^\.obsidian\//i.test(p)) throw new ToolError("The .obsidian folder is off limits.");
+	const cfg = configDir.replace(/^\/+|\/+$/g, "").toLowerCase();
+	if (p.toLowerCase().startsWith(cfg + "/")) throw new ToolError(`The ${configDir} folder is off limits.`);
 	return p;
 }
 
@@ -256,7 +260,7 @@ export const createNote: ToolDefinition = {
 	},
 	mutates: true,
 	async execute(args, ctx) {
-		const path = normalizeNotePath(str(args, "path"));
+		const path = normalizeNotePath(str(args, "path"), ctx.configDir);
 		const content = str(args, "content");
 		if (ctx.vault.exists(path)) {
 			throw new ToolError(`"${path}" already exists. Use edit_note, append_to_note or replace_note instead, or choose another path.`);

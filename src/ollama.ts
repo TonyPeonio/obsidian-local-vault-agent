@@ -67,7 +67,7 @@ export class OllamaClient {
 
 	async version(): Promise<string> {
 		const res = await this.get("/api/version");
-		return String(res.version ?? "unknown");
+		return typeof res.version === "string" ? res.version : "unknown";
 	}
 
 	async listModels(): Promise<ModelInfo[]> {
@@ -78,7 +78,7 @@ export class OllamaClient {
 			return {
 				name: String(m.name),
 				size: Number(m.size ?? 0),
-				parameterSize: details.parameter_size ? String(details.parameter_size) : undefined,
+				parameterSize: typeof details.parameter_size === "string" ? details.parameter_size : undefined,
 				capabilities: Array.isArray(m.capabilities) ? (m.capabilities as string[]) : undefined,
 			};
 		});
@@ -114,6 +114,7 @@ export class OllamaClient {
 		const url = `${this.baseUrl}/api/chat`;
 		let response: Response;
 		try {
+			// `fetch` rather than `requestUrl` because only `fetch` can stream the reply.
 			response = await this.fetchImpl(url, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -127,14 +128,14 @@ export class OllamaClient {
 				body.stream = false;
 				const r = await this.fallbackPost(url, JSON.stringify(body));
 				if (r.status >= 400) throw new OllamaError(extractError(r.text, r.status), r.status);
-				const json = JSON.parse(r.text);
-				const message = fromWireMessage(json.message ?? {});
+				const json = JSON.parse(r.text) as Record<string, unknown>;
+				const message = fromWireMessage((json.message ?? {}) as Record<string, unknown>);
 				req.onDelta?.({ content: message.content, thinking: message.thinking });
 				return {
 					message,
-					doneReason: json.done_reason,
-					promptTokens: json.prompt_eval_count,
-					completionTokens: json.eval_count,
+					doneReason: typeof json.done_reason === "string" ? json.done_reason : undefined,
+					promptTokens: typeof json.prompt_eval_count === "number" ? json.prompt_eval_count : undefined,
+					completionTokens: typeof json.eval_count === "number" ? json.eval_count : undefined,
 				};
 			}
 			throw new OllamaError(
@@ -156,7 +157,9 @@ export class OllamaClient {
 		let completionTokens: number | undefined;
 
 		for await (const chunk of ndjson(response.body, req.signal)) {
-			if (chunk.error) throw new OllamaError(String(chunk.error));
+			if (chunk.error) {
+				throw new OllamaError(typeof chunk.error === "string" ? chunk.error : JSON.stringify(chunk.error));
+			}
 			const m = (chunk.message ?? {}) as Record<string, unknown>;
 			if (typeof m.content === "string" && m.content.length > 0) {
 				message.content += m.content;
@@ -197,7 +200,7 @@ export class OllamaClient {
 				// in Ollama also accept POST with an empty body for /api/tags and /api/version.
 				const r = await this.fallbackPost(url, "");
 				if (r.status >= 400) throw new OllamaError(extractError(r.text, r.status), r.status);
-				return JSON.parse(r.text);
+				return JSON.parse(r.text) as Record<string, unknown>;
 			}
 			throw new OllamaError(
 				`Cannot reach Ollama at ${this.baseUrl}. Is it running? (${(err as Error).message})`,
@@ -227,7 +230,7 @@ export class OllamaClient {
 			if (this.fallbackPost) {
 				const r = await this.fallbackPost(url, payload);
 				if (r.status >= 400) throw new OllamaError(extractError(r.text, r.status), r.status);
-				return JSON.parse(r.text);
+				return JSON.parse(r.text) as Record<string, unknown>;
 			}
 			throw new OllamaError(
 				`Cannot reach Ollama at ${this.baseUrl}. Is it running? (${(err as Error).message})`,
@@ -280,7 +283,7 @@ export function normalizeToolCall(raw: Record<string, unknown>): ToolCall | null
 
 function extractError(text: string, status: number): string {
 	try {
-		const json = JSON.parse(text);
+		const json = JSON.parse(text) as Record<string, unknown> | null;
 		if (json && typeof json.error === "string") return json.error;
 	} catch {
 		// not JSON
@@ -310,11 +313,11 @@ export async function* ndjson(
 				const line = buffer.slice(0, idx).trim();
 				buffer = buffer.slice(idx + 1);
 				if (!line) continue;
-				yield JSON.parse(line);
+				yield JSON.parse(line) as Record<string, unknown>;
 			}
 		}
 		const rest = buffer.trim();
-		if (rest) yield JSON.parse(rest);
+		if (rest) yield JSON.parse(rest) as Record<string, unknown>;
 	} finally {
 		reader.releaseLock();
 	}

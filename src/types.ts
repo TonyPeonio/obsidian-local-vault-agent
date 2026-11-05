@@ -109,6 +109,8 @@ export interface ToolContext {
 	/** Ask the user to approve a mutation. Resolves to the decision. */
 	approve: (req: ApprovalRequest) => Promise<ApprovalDecision>;
 	maxResultChars: number;
+	/** The vault's configuration folder (Obsidian's `Vault.configDir`); never written to. */
+	configDir?: string;
 	signal?: AbortSignal;
 }
 

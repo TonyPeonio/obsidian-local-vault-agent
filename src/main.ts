@@ -25,6 +25,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 		this.client = new OllamaClient(
 			() => this.settings.ollamaUrl,
+			// `fetch` is deliberate: `requestUrl` cannot stream, and streaming tokens from a slow
+			// local model is the whole experience. `requestUrl` is used as the CORS-free fallback.
 			(input, init) => fetch(input, init),
 			async (url, body) => {
 				// CORS-free fallback through Obsidian's request layer (no streaming).
@@ -73,6 +75,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				return modal.result;
 			},
 			getConfig: () => this.agentConfig(),
+			configDir: this.app.vault.configDir,
 		});
 
 		this.registerView(VIEW_TYPE, (leaf) => new AgentView(leaf, this));
@@ -134,19 +137,19 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 		// Keep the index in step with the vault. Debounce per path so a burst of edits to one
 		// note embeds once, while edits to different notes are all picked up.
-		const timers = new Map<string, ReturnType<typeof setTimeout>>();
+		const timers = new Map<string, number>();
 		const changed = (file: TFile) => {
 			const existing = timers.get(file.path);
-			if (existing) clearTimeout(existing);
+			if (existing !== undefined) window.clearTimeout(existing);
 			timers.set(
 				file.path,
-				setTimeout(() => {
+				window.setTimeout(() => {
 					timers.delete(file.path);
 					this.index.enqueue(file.path);
 				}, 2000),
 			);
 		};
-		this.register(() => timers.forEach((t) => clearTimeout(t)));
+		this.register(() => timers.forEach((t) => window.clearTimeout(t)));
 		this.registerEvent(this.app.vault.on("modify", (f) => f instanceof TFile && f.extension === "md" && changed(f)));
 		this.registerEvent(this.app.vault.on("create", (f) => f instanceof TFile && f.extension === "md" && changed(f)));
 		this.registerEvent(this.app.vault.on("delete", (f) => f instanceof TFile && this.index.remove(f.path)));
@@ -158,9 +161,9 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 	}
 
-	async onunload(): Promise<void> {
+	onunload(): void {
 		this.index.cancel();
-		await this.index.flush();
+		void this.index.flush();
 	}
 
 	/** Subscribe to index status changes. Returns an unsubscribe function. */

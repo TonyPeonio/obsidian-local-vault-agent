@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { chunkMarkdown, stripFrontmatter } from "../src/chunker";
+import { chunkMarkdown, splitSentences, stripFrontmatter } from "../src/chunker";
+
+describe("splitSentences", () => {
+	it("splits on terminal punctuation followed by whitespace", () => {
+		expect(splitSentences("One. Two! Three? Four")).toEqual(["One.", "Two!", "Three?", "Four"]);
+	});
+	it("keeps decimals and abbreviations without trailing space together", () => {
+		expect(splitSentences("Version 1.5 is out. Done.")).toEqual(["Version 1.5 is out.", "Done."]);
+	});
+	it("handles text with no punctuation", () => {
+		expect(splitSentences("no punctuation here")).toEqual(["no punctuation here"]);
+	});
+});
 
 describe("stripFrontmatter", () => {
 	it("removes a YAML block", () => {

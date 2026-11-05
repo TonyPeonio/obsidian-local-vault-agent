@@ -98,7 +98,7 @@ export class SemanticIndex {
 	private processing = false;
 	private building = false;
 	private lastError: string | undefined;
-	private saveTimer: ReturnType<typeof setTimeout> | null = null;
+	private saveTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
 	private abort: AbortController | null = null;
 	private dirty = false;
 
@@ -287,13 +287,13 @@ export class SemanticIndex {
 	}
 
 	private scheduleSave(): void {
-		if (this.saveTimer) clearTimeout(this.saveTimer);
-		this.saveTimer = setTimeout(() => void this.flush(), 3000);
+		if (this.saveTimer !== null) globalThis.clearTimeout(this.saveTimer);
+		this.saveTimer = globalThis.setTimeout(() => void this.flush(), 3000);
 	}
 
 	async flush(): Promise<void> {
-		if (this.saveTimer) {
-			clearTimeout(this.saveTimer);
+		if (this.saveTimer !== null) {
+			globalThis.clearTimeout(this.saveTimer);
 			this.saveTimer = null;
 		}
 		if (!this.dirty) return;
