@@ -1,6 +1,6 @@
 {
   "name": "local-vault-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Search, compile and edit your notes with a fully local AI agent powered by Ollama. Every change is shown as a diff for approval before it is written.",
   "main": "main.js",
   "private": true,
@@ -22,7 +22,6 @@
   "author": "Tony Peonio",
   "license": "MIT",
   "devDependencies": {
-    "@types/diff": "^7.0.2",
     "@types/node": "^24.19.2",
     "esbuild": "^0.25.12",
     "eslint": "^9.39.5",
@@ -33,6 +32,6 @@
     "vitest": "^3.2.7"
   },
   "dependencies": {
-    "diff": "^7.0.0"
+    "diff": "^8.0.4"
   }
 }

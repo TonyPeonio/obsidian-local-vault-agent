@@ -84,6 +84,18 @@ This plugin makes HTTP requests only to the Ollama URL you configure (default
 `http://localhost:11434`). It sends your prompts and the contents of notes the agent reads to
 that server. It never contacts any other host and collects no telemetry.
 
+What it touches in your vault, and why:
+
+- **Lists all notes** (`vault.getMarkdownFiles`) to search, index and let the agent browse. Folders in
+  *Excluded folders* are skipped.
+- **Reads notes** the agent chooses to open, and **writes** only after you approve a diff.
+- **Writes to the clipboard** only when you click *Copy* on a reply. It never reads the clipboard.
+- Stores the search index in the plugin's own folder inside your vault's config directory.
+
+Releases are built by GitHub Actions from the committed lockfile and carry
+[artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds),
+so you can verify a release's `main.js` came from this repository's source.
+
 ## Development
 
 ```bash
@@ -91,8 +103,12 @@ npm install
 npm run dev     # watch build → main.js
 npm test        # unit tests (vitest), no Ollama needed
 npm run e2e     # runs the real agent loop against a live Ollama over ./test-vault
-npm run build   # type-check + production bundle
+npm run build   # type-check + Obsidian review lint + production bundle
 ```
+
+To release: bump `version` in `manifest.json` and `package.json`, add the version to
+`versions.json`, write `release-notes/<version>.md`, commit, then push a tag named exactly
+`<version>`. The release workflow builds, tests, attests and publishes the GitHub release.
 
 `test-vault/` is a small sample vault. To try the plugin in Obsidian, open that folder as a
 vault and copy `main.js`, `manifest.json` and `styles.css` into

@@ -45,7 +45,7 @@ describe("normalizeNotePath", () => {
 	});
 	it("rejects traversal and the config folder", () => {
 		expect(() => normalizeNotePath("../x")).toThrow();
-		expect(() => normalizeNotePath(".obsidian/plugins/x")).toThrow();
+		expect(() => normalizeNotePath(".obsidian/plugins/x", ".obsidian")).toThrow(/off limits/);
 		expect(() => normalizeNotePath("custom-config/plugins/x", "custom-config")).toThrow(/custom-config/);
 		expect(normalizeNotePath(".obsidian-notes/x", "custom-config")).toBe(".obsidian-notes/x.md");
 	});

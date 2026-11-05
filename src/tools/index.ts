@@ -39,17 +39,19 @@ function bool(args: Record<string, unknown>, key: string, fallback = false): boo
 
 /**
  * Normalize a model-supplied path: forward slashes, `.md` extension, no leading slash.
- * `configDir` is the vault's configuration folder (usually `.obsidian`), which is off limits.
+ * `configDir` is the vault's configuration folder (`Vault.configDir`), which is off limits.
  */
-export function normalizeNotePath(input: string, configDir = ".obsidian"): string {
+export function normalizeNotePath(input: string, configDir?: string): string {
 	let p = input.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
 	p = p.replace(/^\[\[|\]\]$/g, "");
 	if (!/\.md$/i.test(p)) p += ".md";
 	// Collapse accidental double slashes and "./".
 	p = p.replace(/\/{2,}/g, "/").replace(/^\.\//, "");
 	if (p.split("/").some((seg) => seg === "..")) throw new ToolError("Paths may not contain '..'.");
-	const cfg = configDir.replace(/^\/+|\/+$/g, "").toLowerCase();
-	if (p.toLowerCase().startsWith(cfg + "/")) throw new ToolError(`The ${configDir} folder is off limits.`);
+	if (configDir) {
+		const cfg = configDir.replace(/^\/+|\/+$/g, "").toLowerCase();
+		if (cfg && p.toLowerCase().startsWith(cfg + "/")) throw new ToolError(`The ${configDir} folder is off limits.`);
+	}
 	return p;
 }
 
