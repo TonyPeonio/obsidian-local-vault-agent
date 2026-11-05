@@ -1,0 +1,10 @@
+{
+  "id": "local-vault-agent",
+  "name": "Local Vault Agent",
+  "version": "0.1.0",
+  "minAppVersion": "1.6.0",
+  "description": "A fully local AI agent powered by Ollama that searches, reads, compiles and edits your notes. Every edit is shown as a diff for approval before it is written.",
+  "author": "Tony Peonio",
+  "authorUrl": "https://github.com/TonyPeonio",
+  "isDesktopOnly": false
+}

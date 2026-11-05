@@ -1,0 +1,218 @@
+import { Notice, Plugin, TFile, WorkspaceLeaf, requestUrl } from "obsidian";
+import { Agent, type AgentConfig } from "./agent";
+import { ApprovalModal } from "./approval-modal";
+import { SemanticIndex, type IndexData, type IndexStatus } from "./index";
+import { ObsidianVault } from "./obsidian-vault";
+import { OllamaClient } from "./ollama";
+import { reformatPrompt, summarizePrompt } from "./prompts";
+import { fuseRankings, keywordSearch } from "./search";
+import { DEFAULT_SETTINGS, isExcluded, type LocalVaultAgentSettings } from "./settings";
+import { LocalVaultAgentSettingTab } from "./settings-tab";
+import { ALL_TOOLS } from "./tools";
+import type { SearchHit } from "./types";
+import { AgentView, VIEW_TYPE } from "./view";
+
+export default class LocalVaultAgentPlugin extends Plugin {
+	settings: LocalVaultAgentSettings = { ...DEFAULT_SETTINGS };
+	client!: OllamaClient;
+	vault!: ObsidianVault;
+	index!: SemanticIndex;
+	agent!: Agent;
+	private statusListeners = new Set<(s: IndexStatus) => void>();
+
+	async onload(): Promise<void> {
+		await this.loadSettings();
+
+		this.client = new OllamaClient(
+			() => this.settings.ollamaUrl,
+			(input, init) => fetch(input, init),
+			async (url, body) => {
+				// CORS-free fallback through Obsidian's request layer (no streaming).
+				const res = await requestUrl({
+					url,
+					method: "POST",
+					body: body || undefined,
+					contentType: "application/json",
+					throw: false,
+				});
+				return { status: res.status, text: res.text };
+			},
+		);
+		this.vault = new ObsidianVault(this.app, (p) => isExcluded(p, this.settings.excludedFolders));
+
+		const pluginDir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+		const indexPath = `${pluginDir}/index.json`;
+		this.index = new SemanticIndex(
+			this.client,
+			this.vault,
+			{
+				load: async () => {
+					if (!(await this.app.vault.adapter.exists(indexPath))) return null;
+					return JSON.parse(await this.app.vault.adapter.read(indexPath)) as IndexData;
+				},
+				save: async (data) => {
+					await this.app.vault.adapter.write(indexPath, JSON.stringify(data));
+				},
+			},
+			{
+				getModel: () => this.settings.embeddingModel,
+				isEnabled: () => this.settings.semanticSearch,
+				shouldIndex: (p) => p.endsWith(".md") && !isExcluded(p, this.settings.excludedFolders),
+				onStatus: (s) => this.statusListeners.forEach((l) => l(s)),
+			},
+		);
+
+		this.agent = new Agent({
+			client: this.client,
+			vault: this.vault,
+			tools: ALL_TOOLS,
+			search: (q, limit) => this.hybridSearch(q, limit),
+			approve: (req) => {
+				const modal = new ApprovalModal(this.app, req);
+				modal.open();
+				return modal.result;
+			},
+			getConfig: () => this.agentConfig(),
+		});
+
+		this.registerView(VIEW_TYPE, (leaf) => new AgentView(leaf, this));
+		this.addRibbonIcon("bot", "Open Local Vault Agent", () => void this.activateView());
+		this.addSettingTab(new LocalVaultAgentSettingTab(this.app, this));
+
+		this.addCommand({
+			id: "open-chat",
+			name: "Open chat",
+			callback: () => void this.activateView(),
+		});
+		this.addCommand({
+			id: "ask-about-selection",
+			name: "Ask about the selected text",
+			editorCallback: async (editor) => {
+				const sel = editor.getSelection();
+				const view = await this.activateView();
+				view?.prefill(sel ? `About this selected text:\n"""\n${sel}\n"""\n\n` : "");
+			},
+		});
+		this.addCommand({
+			id: "reformat-current-note",
+			name: "Reformat the current note",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void (async () => {
+						const content = await this.app.vault.cachedRead(file);
+						const view = await this.activateView();
+						await view?.send(reformatPrompt(file.path, content));
+					})();
+				}
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "summarize-current-note",
+			name: "Summarize the current note",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void this.activateView().then((view) => view?.send(summarizePrompt(file.path)));
+				}
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "rebuild-index",
+			name: "Rebuild semantic index",
+			callback: async () => {
+				new Notice("Rebuilding the semantic index…");
+				await this.index.syncAll(true);
+				const s = this.index.status();
+				new Notice(s.lastError ? `Index error: ${s.lastError}` : `Indexed ${s.indexedFiles} notes.`);
+			},
+		});
+
+		// Keep the index in step with the vault. Debounce per path so a burst of edits to one
+		// note embeds once, while edits to different notes are all picked up.
+		const timers = new Map<string, ReturnType<typeof setTimeout>>();
+		const changed = (file: TFile) => {
+			const existing = timers.get(file.path);
+			if (existing) clearTimeout(existing);
+			timers.set(
+				file.path,
+				setTimeout(() => {
+					timers.delete(file.path);
+					this.index.enqueue(file.path);
+				}, 2000),
+			);
+		};
+		this.register(() => timers.forEach((t) => clearTimeout(t)));
+		this.registerEvent(this.app.vault.on("modify", (f) => f instanceof TFile && f.extension === "md" && changed(f)));
+		this.registerEvent(this.app.vault.on("create", (f) => f instanceof TFile && f.extension === "md" && changed(f)));
+		this.registerEvent(this.app.vault.on("delete", (f) => f instanceof TFile && this.index.remove(f.path)));
+		this.registerEvent(this.app.vault.on("rename", (f, old) => f instanceof TFile && this.index.rename(old, f.path)));
+
+		this.app.workspace.onLayoutReady(async () => {
+			await this.index.load();
+			if (this.settings.semanticSearch) void this.index.syncAll();
+		});
+	}
+
+	async onunload(): Promise<void> {
+		this.index.cancel();
+		await this.index.flush();
+	}
+
+	/** Subscribe to index status changes. Returns an unsubscribe function. */
+	onIndexStatus(listener: (s: IndexStatus) => void): () => void {
+		this.statusListeners.add(listener);
+		return () => this.statusListeners.delete(listener);
+	}
+
+	agentConfig(): AgentConfig {
+		const s = this.settings;
+		return {
+			model: s.model,
+			numCtx: s.numCtx,
+			temperature: s.temperature,
+			think: s.thinking === "auto" ? undefined : s.thinking === "on",
+			keepAlive: s.keepAlive,
+			maxIterations: s.maxIterations,
+			maxToolResultChars: s.maxToolResultChars,
+			autoApprove: s.autoApproveEdits,
+			extraSystemPrompt: s.extraSystemPrompt,
+		};
+	}
+
+	async hybridSearch(query: string, limit: number): Promise<SearchHit[]> {
+		const keyword = await keywordSearch(this.vault, query, limit * 2);
+		if (!this.index.ready) return keyword.slice(0, limit);
+		try {
+			const semantic = await this.index.search(query, limit * 2);
+			return fuseRankings([semantic, keyword], limit);
+		} catch {
+			return keyword.slice(0, limit);
+		}
+	}
+
+	async activateView(): Promise<AgentView | null> {
+		const { workspace } = this.app;
+		let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(VIEW_TYPE)[0] ?? null;
+		if (!leaf) {
+			leaf = workspace.getRightLeaf(false);
+			if (!leaf) return null;
+			await leaf.setViewState({ type: VIEW_TYPE, active: true });
+		}
+		await workspace.revealLeaf(leaf);
+		return leaf.view instanceof AgentView ? leaf.view : null;
+	}
+
+	async loadSettings(): Promise<void> {
+		const data = (await this.loadData()) as Partial<LocalVaultAgentSettings> | null;
+		this.settings = { ...DEFAULT_SETTINGS, ...(data ?? {}) };
+	}
+
+	async saveSettings(): Promise<void> {
+		await this.saveData(this.settings);
+	}
+}

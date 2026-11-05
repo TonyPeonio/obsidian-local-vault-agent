@@ -1,0 +1,35 @@
+{
+  "name": "local-vault-agent",
+  "version": "0.1.0",
+  "description": "A fully local, agentic AI assistant for Obsidian powered by Ollama. Searches, reads, compiles and edits your notes with diff-approved changes.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "vitest run",
+    "version": "node version-bump.mjs && git add manifest.json versions.json",
+    "e2e": "esbuild scripts/e2e.ts --bundle --platform=node --format=cjs --outfile=.e2e/e2e.cjs --log-level=warning && node .e2e/e2e.cjs"
+  },
+  "keywords": [
+    "obsidian",
+    "ollama",
+    "ai",
+    "agent",
+    "local"
+  ],
+  "author": "Tony Peonio",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/node": "^24.19.2",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.25.12",
+    "obsidian": "^1.14.4",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "diff": "^7.0.0"
+  }
+}

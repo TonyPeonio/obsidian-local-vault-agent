@@ -1,0 +1,229 @@
+import { describe, expect, it } from "vitest";
+import { Agent, buildSystemPrompt, newConversation, trimHistory, type AgentConfig } from "../src/agent";
+import { OllamaError } from "../src/ollama";
+import { keywordSearch } from "../src/search";
+import { ALL_TOOLS } from "../src/tools";
+import type { ApprovalDecision, ChatMessage } from "../src/types";
+import { FakeOllama, FakeVault, type Scripted } from "./fakes";
+
+const config: AgentConfig = {
+	model: "fake",
+	numCtx: 8192,
+	temperature: 0,
+	think: undefined,
+	keepAlive: "1m",
+	maxIterations: 4,
+	maxToolResultChars: 4000,
+	autoApprove: false,
+	extraSystemPrompt: "",
+};
+
+function setup(turns: Scripted[], opts: { decision?: ApprovalDecision; cfg?: Partial<AgentConfig> } = {}) {
+	const vault = new FakeVault({
+		"Projects/Chess Robot.md": "# Chess Robot\n\nThe gantry moves pieces with an electromagnet.",
+		"Ideas/Sensors.md": "Hall sensors are cheap.",
+	});
+	const ollama = new FakeOllama(turns);
+	const approvals: string[] = [];
+	const agent = new Agent({
+		client: ollama.asClient(),
+		vault,
+		tools: ALL_TOOLS,
+		search: (q, l) => keywordSearch(vault, q, l),
+		approve: async (req) => {
+			approvals.push(req.summary);
+			return opts.decision ?? "approve";
+		},
+		getConfig: () => ({ ...config, ...opts.cfg }),
+		now: () => new Date("2026-11-05T12:00:00Z"),
+	});
+	return { vault, ollama, agent, approvals };
+}
+
+describe("Agent.run", () => {
+	it("answers directly when the model calls no tools", async () => {
+		const { agent, ollama } = setup([{ content: "Hello!" }]);
+		const conv = newConversation();
+		const deltas: string[] = [];
+		await agent.run(conv, "hi", { onAssistantDelta: (d) => deltas.push(d) });
+		expect(deltas.join("")).toBe("Hello!");
+		expect(conv.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+		expect(ollama.requests[0].messages[0].role).toBe("system");
+		expect(ollama.requests[0].tools?.map((t) => t.function.name)).toContain("search_notes");
+	});
+
+	it("executes tool calls and feeds results back", async () => {
+		const { agent, ollama } = setup([
+			{ tool: "search_notes", args: { query: "gantry" } },
+			{ tool: "read_note", args: { path: "Projects/Chess Robot.md" } },
+			{ content: "The gantry uses an electromagnet. [[Projects/Chess Robot]]" },
+		]);
+		const conv = newConversation();
+		const toolsRun: string[] = [];
+		await agent.run(conv, "how does the gantry work?", { onToolDone: (c, _r, ok) => toolsRun.push(`${c.function.name}:${ok}`) });
+		expect(toolsRun).toEqual(["search_notes:true", "read_note:true"]);
+		expect(conv.messages.map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant", "tool", "assistant"]);
+		const toolMsg = conv.messages[2];
+		expect(toolMsg.tool_name).toBe("search_notes");
+		expect(toolMsg.content).toContain("Projects/Chess Robot.md");
+		// The second request must carry the tool result.
+		expect(ollama.requests[1].messages.at(-1)?.role).toBe("tool");
+	});
+
+	it("turns tool errors into messages the model can recover from", async () => {
+		const { agent } = setup([
+			{ tool: "read_note", args: { path: "Missing" } },
+			{ tool: "bogus_tool", args: {} },
+			{ content: "done" },
+		]);
+		const conv = newConversation();
+		const results: string[] = [];
+		await agent.run(conv, "x", { onToolDone: (_c, r, ok) => results.push(`${ok}:${r}`) });
+		expect(results[0]).toMatch(/^false:Error: No note found/);
+		expect(results[1]).toMatch(/^false:Error: unknown tool "bogus_tool"/);
+		expect(conv.messages.at(-1)?.content).toBe("done");
+	});
+
+	it("routes mutations through approval and respects rejection", async () => {
+		const { agent, vault, approvals } = setup(
+			[{ tool: "edit_note", args: { path: "Ideas/Sensors", old_text: "cheap", new_text: "pricey" } }, { content: "ok" }],
+			{ decision: "reject" },
+		);
+		const conv = newConversation();
+		await agent.run(conv, "x", {});
+		expect(approvals).toEqual(["Edit Ideas/Sensors.md (1 replacement)"]);
+		expect(await vault.read("Ideas/Sensors.md")).toBe("Hall sensors are cheap.");
+		expect(conv.messages[2].content).toMatch(/rejected/);
+	});
+
+	it("'approve all' skips later prompts in the same conversation", async () => {
+		const { agent, vault, approvals } = setup(
+			[
+				{ tool: "edit_note", args: { path: "Ideas/Sensors", old_text: "cheap", new_text: "pricey" } },
+				{ tool: "append_to_note", args: { path: "Ideas/Sensors", content: "More." } },
+				{ content: "ok" },
+			],
+			{ decision: "approve-all" },
+		);
+		const conv = newConversation();
+		await agent.run(conv, "x", {});
+		expect(approvals).toHaveLength(1);
+		expect(conv.approveAll).toBe(true);
+		expect(await vault.read("Ideas/Sensors.md")).toBe("Hall sensors are pricey.\n\nMore.\n");
+	});
+
+	it("auto-approve config skips the prompt entirely", async () => {
+		const { agent, approvals, vault } = setup(
+			[{ tool: "create_note", args: { path: "Out", content: "x" } }, { content: "ok" }],
+			{ cfg: { autoApprove: true } },
+		);
+		await agent.run(newConversation(), "x", {});
+		expect(approvals).toHaveLength(0);
+		expect(vault.exists("Out.md")).toBe(true);
+	});
+
+	it("stops after maxIterations and asks the model to wrap up", async () => {
+		const loop: Scripted[] = Array.from({ length: 4 }, () => ({ tool: "list_notes", args: {} }));
+		const { agent, ollama } = setup([...loop, { content: "partial answer" }], { cfg: { maxIterations: 4 } });
+		const conv = newConversation();
+		await agent.run(conv, "x", {});
+		expect(ollama.requests).toHaveLength(5);
+		const last = ollama.requests[4];
+		expect(last.tools).toBeUndefined();
+		expect(last.messages.at(-1)?.content).toMatch(/maximum number of tool calls/);
+		expect(conv.messages.at(-1)?.content).toBe("partial answer");
+	});
+
+	it("retries without `think` when the model rejects it", async () => {
+		const { agent, ollama } = setup(
+			[{ error: new OllamaError('model does not support thinking') }, { content: "fine" }],
+			{ cfg: { think: true } },
+		);
+		await agent.run(newConversation(), "x", {});
+		expect(ollama.requests[0].think).toBe(true);
+		expect(ollama.requests[1].think).toBeUndefined();
+	});
+
+	it("explains a model without tool support", async () => {
+		const { agent } = setup([{ error: new OllamaError("registry.ollama.ai/library/x does not support tools") }]);
+		await expect(agent.run(newConversation(), "x", {})).rejects.toThrow(/does not support tool calling/);
+	});
+
+	it("honours abort between tool calls", async () => {
+		const controller = new AbortController();
+		const { agent, ollama } = setup([
+			{ tools: [{ tool: "list_notes", args: {} }, { tool: "list_notes", args: {} }] },
+			{ content: "never" },
+		]);
+		const conv = newConversation();
+		await agent.run(conv, "x", { onToolDone: () => controller.abort() }, controller.signal);
+		expect(ollama.requests).toHaveLength(1);
+		expect(conv.messages.filter((m) => m.role === "tool")).toHaveLength(1);
+	});
+
+	it("keeps multi-turn history across runs", async () => {
+		const { agent, ollama } = setup([{ content: "one" }, { content: "two" }]);
+		const conv = newConversation();
+		await agent.run(conv, "first", {});
+		await agent.run(conv, "second", {});
+		const sent = ollama.requests[1].messages.map((m) => m.role);
+		expect(sent).toEqual(["system", "user", "assistant", "user"]);
+	});
+});
+
+describe("buildSystemPrompt", () => {
+	it("mentions vault size, date, active note and extra instructions", () => {
+		const vault = new FakeVault({ "A.md": "a", "B.md": "b" });
+		vault.activePath = "A.md";
+		const p = buildSystemPrompt(vault, { ...config, extraSystemPrompt: "Be terse." }, new Date("2026-11-05T00:00:00Z"));
+		expect(p).toContain("2 markdown notes");
+		expect(p).toContain("Today is 2026-11-05");
+		expect(p).toContain("A.md");
+		expect(p).toContain("Be terse.");
+	});
+});
+
+describe("trimHistory", () => {
+	const msg = (role: ChatMessage["role"], content: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({ role, content, ...extra });
+
+	it("returns everything when under budget", () => {
+		const m = [msg("user", "hi"), msg("assistant", "yo")];
+		expect(trimHistory(m, 8192)).toEqual(m);
+	});
+
+	it("always drops thinking from earlier turns but keeps the current one", () => {
+		const m = [msg("user", "q1"), msg("assistant", "a1", { thinking: "old" }), msg("user", "q2"), msg("assistant", "", { thinking: "new" })];
+		const out = trimHistory(m, 8192);
+		expect(out[1].thinking).toBeUndefined();
+		expect(out[3].thinking).toBe("new");
+		expect(m[1].thinking).toBe("old"); // input untouched
+	});
+
+	it("shortens old tool results before dropping turns", () => {
+		const big = "x".repeat(5000);
+		const m = [
+			msg("user", "q1"),
+			msg("assistant", "", { tool_calls: [{ function: { name: "t", arguments: {} } }] }),
+			msg("tool", big, { tool_name: "t" }),
+			msg("assistant", "a1", { thinking: "y".repeat(3000) }),
+			msg("user", "q2"),
+		];
+		const out = trimHistory(m, 2048); // budget ≈ 3932 chars
+		expect(out.map((x) => x.role)).toEqual(["user", "assistant", "tool", "assistant", "user"]);
+		expect(out[2].content.length).toBeLessThan(500);
+		expect(out[3].thinking).toBeUndefined();
+	});
+
+	it("drops whole early turns when still over budget and never starts on a tool message", () => {
+		const m = [
+			msg("user", "q1"),
+			msg("assistant", "a".repeat(3000)),
+			msg("user", "q2"),
+			msg("assistant", "b".repeat(3000)),
+			msg("user", "q3"),
+		];
+		const out = trimHistory(m, 1024);
+		expect(out[0].role).toBe("user");
+		expect(out[0].content).toBe("q3");
+	});
+});
