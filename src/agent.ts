@@ -38,9 +38,15 @@ export const GROUNDING_PREFIX = "Grounding check:";
 /** Wikilink targets in `text` that do not resolve to any note in the vault. */
 export function unresolvedLinks(text: string, vault: VaultAccess): string[] {
 	const out = new Set<string>();
-	for (const m of text.matchAll(/\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g)) {
-		const target = m[1].trim();
-		if (target && !vault.resolve(target)) out.add(target);
+	// Quoted text is not a citation: ignore code fences, inline code and embeds (![[file.m4a]]).
+	const prose = text.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "");
+	for (const m of prose.matchAll(/(!?)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g)) {
+		if (m[1] === "!") continue;
+		const target = m[2].trim();
+		if (!target) continue;
+		// Links to attachments (anything with a non-markdown extension) are not note citations.
+		if (/\.[a-z0-9]{1,5}$/i.test(target) && !/\.md$/i.test(target)) continue;
+		if (!vault.resolve(target) && !vault.resolveFile(target)) out.add(target);
 	}
 	return Array.from(out);
 }

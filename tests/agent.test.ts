@@ -279,6 +279,17 @@ describe("grounding check", () => {
 		await agent.run(newConversation(), "x", {});
 		expect(ollama.requests).toHaveLength(1);
 	});
+
+	it("ignores quoted embeds, code and attachment links in a report", async () => {
+		const { agent, ollama } = setup([
+			{
+				content:
+					"Removed `![[Recording 20260921130651.m4a]]` from [[Ideas/Sensors]].\n\n```\n[[Not/A/Citation]]\n```\nThe slides are in ![[Deck.pdf]] and [[notes.pdf]].",
+			},
+		]);
+		await agent.run(newConversation(), "x", {});
+		expect(ollama.requests).toHaveLength(1);
+	});
 });
 
 describe("looksLikeChoiceQuestion", () => {
