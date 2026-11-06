@@ -17,6 +17,8 @@ export interface LocalVaultAgentSettings {
 	/** Folder prefixes (one per line in the UI) that are never searched or indexed. */
 	excludedFolders: string[];
 	extraSystemPrompt: string;
+	/** A note whose contents are always in the system prompt (vault conventions), like CLAUDE.md. */
+	conventionsNote: string;
 }
 
 export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
@@ -35,6 +37,7 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	keepAlive: "10m",
 	excludedFolders: ["templates", "Templates"],
 	extraSystemPrompt: "",
+	conventionsNote: "AGENT.md",
 };
 
 export function isExcluded(path: string, excluded: string[]): boolean {

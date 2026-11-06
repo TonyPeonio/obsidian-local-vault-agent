@@ -88,6 +88,10 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			getConfig: () => this.agentConfig(),
 			configDir: this.app.vault.configDir,
 			undo: this.undo,
+			readConventions: async () => {
+				const path = this.vault.resolve(this.settings.conventionsNote);
+				return path ? this.vault.read(path) : null;
+			},
 		});
 
 		this.registerView(VIEW_TYPE, (leaf) => new AgentView(leaf, this));

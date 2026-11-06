@@ -1,5 +1,6 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
+import { conventionsTemplate } from "./prompts";
 import { DEFAULT_SETTINGS } from "./settings";
 
 export class LocalVaultAgentSettingTab extends PluginSettingTab {
@@ -232,6 +233,28 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 						s.maxToolResultChars = n;
 						await this.plugin.saveSettings();
 					}
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Conventions note")
+			.setDesc("A note in your vault that is given to the agent on every message, like a CLAUDE.md: folder meanings, naming rules, things to never touch.")
+			.addText((t) =>
+				t.setPlaceholder(DEFAULT_SETTINGS.conventionsNote).setValue(s.conventionsNote).onChange(async (v) => {
+					s.conventionsNote = v.trim() || DEFAULT_SETTINGS.conventionsNote;
+					await this.plugin.saveSettings();
+				}),
+			)
+			.addButton((b) =>
+				b.setButtonText("Create / open").onClick(async () => {
+					const existing = this.plugin.vault.resolve(s.conventionsNote);
+					let path = existing;
+					if (!path) {
+						path = normalizePath(/\.md$/i.test(s.conventionsNote) ? s.conventionsNote : `${s.conventionsNote}.md`);
+						await this.plugin.vault.create(path, conventionsTemplate());
+						new Notice(`Created ${path}. Edit it like any note.`);
+					}
+					await this.app.workspace.openLinkText(path, "", true);
 				}),
 			);
 

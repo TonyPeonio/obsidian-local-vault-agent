@@ -339,14 +339,39 @@ describe("looksLikePermissionQuestion", () => {
 });
 
 describe("buildSystemPrompt", () => {
-	it("mentions vault size, date, active note and extra instructions", () => {
-		const vault = new FakeVault({ "A.md": "a", "B.md": "b" });
+	it("mentions vault size, date, active note, outline, conventions and extra instructions", () => {
+		const vault = new FakeVault({ "A.md": "# Alpha\n\na", "Sub/B.md": "b" });
 		vault.activePath = "A.md";
-		const p = buildSystemPrompt(vault, { ...config, extraSystemPrompt: "Be terse." }, new Date("2026-11-05T00:00:00Z"));
+		const p = buildSystemPrompt(vault, { ...config, extraSystemPrompt: "Be terse." }, new Date("2026-11-05T00:00:00Z"), "Daily notes live in Daily/.");
 		expect(p).toContain("2 markdown notes");
 		expect(p).toContain("Today is 2026-11-05");
 		expect(p).toContain("A.md");
+		expect(p).toContain("Vault outline");
+		expect(p).toContain("  A — Alpha");
+		expect(p).toContain("Sub/\n  B");
+		expect(p).toContain("vault conventions");
+		expect(p).toContain("Daily notes live in Daily/.");
 		expect(p).toContain("Be terse.");
+		expect(buildSystemPrompt(vault, config, new Date())).not.toContain("vault conventions");
+	});
+
+	it("is given the conventions note on every run", async () => {
+		const { agent, ollama } = setup([{ content: "ok" }]);
+		const conv = newConversation();
+		await agent.run(conv, "x", {});
+		expect(ollama.requests[0].messages[0].content).not.toContain("vault conventions");
+		const withNote = new Agent({
+			client: ollama.asClient(),
+			vault: new FakeVault(),
+			tools: ALL_TOOLS,
+			search: async () => [],
+			approve: async () => "approve",
+			getConfig: () => config,
+			readConventions: async () => "Never touch Archive/.",
+		});
+		ollama["turns"].push({ content: "ok" });
+		await withNote.run(newConversation(), "x", {});
+		expect(ollama.requests[1].messages[0].content).toContain("Never touch Archive/.");
 	});
 });
 

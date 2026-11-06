@@ -19,3 +19,27 @@ export function reformatPrompt(path: string, content: string): string {
 export function summarizePrompt(path: string): string {
 	return `Read the note "${path}" and give me a concise summary with the key points as bullets.`;
 }
+
+/** Starter contents for the conventions note (AGENT.md); the user edits it like any note. */
+export function conventionsTemplate(): string {
+	return [
+		"# Vault conventions for the agent",
+		"",
+		"Everything in this note is given to Local Vault Agent on every message, like a CLAUDE.md.",
+		"Keep it short and concrete: what the folders mean, how notes are named, what to never touch.",
+		"",
+		"## Folders",
+		"- `Daily/` — one note per day, named `YYYY-MM-DD`.",
+		"- `Projects/` — one note per project; status lives under `## Status`.",
+		"- `Templates/` — never edit or search.",
+		"",
+		"## Style",
+		"- Headings in sentence case; `-` for bullets; wikilinks for every reference to another note.",
+		"- Lecture notes keep one `## YYYY-MM-DD` section per class.",
+		"",
+		"## Never",
+		"- Never add YAML frontmatter to a note that has none.",
+		"- Never delete a note that has backlinks without saying so.",
+		"",
+	].join("\n");
+}

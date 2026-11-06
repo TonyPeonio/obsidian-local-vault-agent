@@ -113,9 +113,11 @@ export interface AgentDeps {
 	now?: () => Date;
 	/** Receives every approved write so it can be undone later. */
 	undo?: UndoStack;
+	/** Contents of the user's conventions note (AGENT.md), or null when there is none. */
+	readConventions?: () => Promise<string | null>;
 }
 
-export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Date): string {
+export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Date, conventions: string | null = null): string {
 	const notes = vault.listNotes();
 	const active = vault.getActiveNotePath();
 	const lines = [
@@ -125,6 +127,7 @@ export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Dat
 		"- Finish the whole task in this turn. If it spans many notes, handle them one after another until every one is done; do not stop after the first to report progress.",
 		"- Never ask for permission or confirmation to search, read or change notes. Reading needs none, and every write is shown to the user as a diff they approve or reject, so the approval dialog is the confirmation. Do not end a reply with 'Would you like me to proceed?' or 'Shall I check the next note?' — proceed.",
 		"- Do not describe a plan and wait; carry it out. Stop to ask only when the request is genuinely ambiguous in a way that changes the outcome, and then ask one specific question.",
+		"- For a task that touches more than two notes, begin with one line stating the plan (which notes, what you will do to each), then start immediately in the same reply; as you go, note each note as done in a few words.",
 		"- A question gets an answer, not edits. When the user asks something, answer it from the notes and stop; do not propose, offer or make changes to notes they did not ask for.",
 		"- Search snippets are not the note. Before concluding that a note lacks or contains something, read it with read_note, or use find_in_note for one specific passage.",
 		"- Tool results are authoritative: a successful edit result means the note is written, so do not read it again to verify, and do not re-check notes that were already handled.",
@@ -149,6 +152,7 @@ export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Dat
 		"Vault outline (every note, grouped by folder, with its headings; use these paths as given):",
 		buildOutline(vault, outlineBudget(cfg.numCtx)),
 	];
+	if (conventions?.trim()) lines.push("", "The user's vault conventions (from their conventions note; follow them):", conventions.trim());
 	if (cfg.extraSystemPrompt.trim()) lines.push("", "Additional instructions from the user:", cfg.extraSystemPrompt.trim());
 	return lines.join("\n");
 }
@@ -173,6 +177,12 @@ export class Agent {
 
 		const turn = conversation.messages.length;
 		conversation.messages.push({ role: "user", content: userText });
+		let conventions: string | null = null;
+		try {
+			conventions = (await this.deps.readConventions?.()) ?? null;
+		} catch {
+			conventions = null;
+		}
 
 		let currentCall: ToolCall | null = null;
 		const ctx: ToolContext = {
@@ -205,7 +215,7 @@ export class Agent {
 		let toolsUsed = 0;
 		for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
-			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now) };
+			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions) };
 			const history = trimHistory(conversation.messages, cfg.numCtx);
 			callbacks.onStatus?.(iteration === 0 ? "Thinking…" : "Working…");
 			callbacks.onAssistantStart?.();
@@ -293,7 +303,7 @@ export class Agent {
 
 		// Ran out of iterations: ask the model to wrap up without tools.
 		callbacks.onAssistantStart?.();
-		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now) };
+		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions) };
 		const response = await this.deps.client.chat({
 			model: cfg.model,
 			messages: [
