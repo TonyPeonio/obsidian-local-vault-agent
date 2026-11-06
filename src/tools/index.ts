@@ -494,7 +494,7 @@ export const createNote: ToolDefinition = {
 export const editNote: ToolDefinition = {
 	name: "edit_note",
 	description:
-		"Make a targeted edit to a note by replacing an exact passage with new text. old_text must match the note exactly (copy it from read_note) and must be unique unless replace_all is true. Prefer this over replace_note for small changes.",
+		"Make a targeted edit to a note by replacing an exact passage with new text. old_text must match the note exactly and be unique unless replace_all is true: use the smallest unique passage (usually one line), not a whole section. Prefer this over replace_note for small changes; use edit_notes for many edits at once.",
 	parameters: {
 		type: "object",
 		properties: {
