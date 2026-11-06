@@ -54,12 +54,14 @@ Things to try:
 
 ### How it works
 
-The model gets fifteen tools. Reading: `search_passages` (matching note *sections*, verbatim),
-`search_notes`, `read_note`, `read_section`, `find_in_note`, `list_notes`, `list_files`,
-`vault_overview`, `get_active_note`. Writing: `create_note`, `edit_note`, `append_to_note`,
-`replace_note`, `move_note` (links are updated) and `delete_file` (notes *or* attachments, to the
-trash). It calls them in a loop until the task is done, then reports. Every write opens an approval
-dialog with a line diff before touching the vault.
+The model gets seventeen tools. Reading: `search_passages` (matching note *sections*, verbatim),
+`search_notes`, `grep_vault` (grep every note for a string or regex, with context lines),
+`read_note`, `read_section`, `find_in_note`, `list_notes` (folder, tag, name, modified dates),
+`list_files`, `read_file` (text of PDFs and text attachments), `vault_overview`,
+`get_active_note`. Writing: `create_note`, `edit_note`, `append_to_note`, `replace_note`,
+`move_note` (links are updated) and `delete_file` (notes *or* attachments, to the trash). It calls
+them in a loop until the task is done, then reports. Every write opens an approval dialog with a
+line diff before touching the vault (Enter approves, A approves all in this chat, Esc rejects).
 
 **What it sees on every message.** Besides your question, the model gets an outline of the whole
 vault — every note's folder, name, headings and tags, budgeted to the context window — and, when
@@ -82,8 +84,9 @@ tool card has an **Undo** button. A revert is shown as a diff and applied only w
 **Composer.** `@` picks a note to attach to your message (its content is included, so no tool call
 is needed); `/` lists commands (`/reformat`, `/summarize`, `/undo`, `/undo-all`, `/new`, `/gists`,
 `/index`, `/help`). The header has a **Copy conversation** button that copies the whole chat,
-including tool calls and results, as markdown. The footer shows index and gist status and the
-context used by the last model call.
+including tool calls and results, as markdown. The footer shows index and gist status, the tool-call count and elapsed time while a turn
+runs, and the context used by the last model call. The chat is saved and restored when you reopen
+the panel or restart Obsidian; **New chat** clears it.
 
 Semantic search chunks each note by heading, embeds the chunks with the embedding model, and
 stores the vectors in `.obsidian/plugins/local-vault-agent/index.json`. The index updates
