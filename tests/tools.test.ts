@@ -12,6 +12,7 @@ import {
 	grepVault,
 	listFiles,
 	listNotes,
+	listSections,
 	moveNote,
 	nearestLines,
 	parseDate,
@@ -527,5 +528,21 @@ describe("edit_notes line_contains", () => {
 		expect(approvals).toHaveLength(1);
 		expect(await vault.read("L.md")).toBe("# L\n\n## a\n\n### Summary\n\n- x\n\n## b\n\n(recording removed)\n\n- y\n");
 		expect(replaceLine("a\nb", "q", "", "nope")).toMatchObject({ ok: false });
+	});
+});
+
+describe("list_sections", () => {
+	it("flags which sections contain each text", async () => {
+		const vault = freshVault();
+		vault.seed("S/L.md", "# L\n\n## a\n\n![[Recording 1.m4a]]\n\n### Summary\n\n- x\n\n## b\n\n![[Recording 2.m4a]]\n\n## c\n\nnothing\n");
+		const { ctx } = makeCtx(vault);
+		const out = await listSections.execute({ containing: ["![[Recording", "### Summary"], folder: "S", level: 2 }, ctx);
+		expect(out).toMatch(/^2 sections/);
+		expect(out).toContain("S/L.md\n  ## a: ![[Recording yes, ### Summary yes\n  ## b: ![[Recording yes, ### Summary no");
+		expect(out).not.toContain("## c");
+		const all = await listSections.execute({ containing: ["zzz"], path: "S/L", only_matching: false }, ctx);
+		expect(all).toMatch(/^5 sections/);
+		expect(await listSections.execute({ containing: ["zzz"] }, ctx)).toMatch(/^No section contains/);
+		await expect(listSections.execute({ containing: [] }, ctx)).rejects.toThrow(/1–4 texts/);
 	});
 });

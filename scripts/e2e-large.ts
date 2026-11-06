@@ -22,6 +22,7 @@ const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const MODEL = process.env.MODEL ?? "qwen3.5:9b";
 const EMBED = process.env.EMBED ?? "nomic-embed-text";
 const GISTS = process.env.GISTS === "1";
+const NUM_CTX = Number(process.env.NUM_CTX ?? 32768);
 const ONLY = process.env.ONLY; // comma-separated scenario ids
 
 interface Facts {
@@ -81,7 +82,7 @@ async function main() {
 
 	const cfg: AgentConfig = {
 		model: MODEL,
-		numCtx: 32768,
+		numCtx: NUM_CTX,
 		temperature: 0.3,
 		think: process.env.THINK === "on" ? true : process.env.THINK === "off" ? false : undefined,
 		keepAlive: "10m",

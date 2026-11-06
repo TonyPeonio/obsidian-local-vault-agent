@@ -277,6 +277,81 @@ export const grepVault: ToolDefinition = {
 	},
 };
 
+export const listSections: ToolDefinition = {
+	name: "list_sections",
+	description:
+		"List the heading sections of notes and, for each, which of the given texts it contains. The direct way to answer 'which sections have X but not Y' (e.g. a recording embed but no Summary) across many notes without reading them: pass containing: ['![[Recording', '### Summary'] and read the yes/no flags. Then edit with edit_notes using heading + line_contains.",
+	parameters: {
+		type: "object",
+		properties: {
+			containing: { type: "array", description: "1–4 texts to test each section for (case-insensitive, literal).", items: { type: "string" } },
+			folder: { type: "string", description: "Only notes inside this folder (recursive)." },
+			path: { type: "string", description: "Only this note." },
+			level: { type: "integer", description: "Only headings of this level (2 = '##'). Default: all levels." },
+			only_matching: { type: "boolean", description: "Only list sections that contain at least one of the texts (default true)." },
+			limit: { type: "integer", description: "Maximum sections to return (default 150, max 400)." },
+		},
+		required: ["containing"],
+	},
+	mutates: false,
+	async execute(args, ctx) {
+		const raw = args.containing;
+		const needles = (Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 4);
+		if (needles.length === 0) throw new ToolError("containing must list 1–4 texts.");
+		const folder = str(args, "folder", false).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
+		const only = str(args, "path", false);
+		const level = int(args, "level", 0, 0, 6);
+		const onlyMatching = bool(args, "only_matching", true);
+		const limit = int(args, "limit", 150, 1, 400);
+		let notes = ctx.vault.listNotes();
+		if (only) {
+			const p = resolveExisting(ctx.vault, only);
+			notes = notes.filter((n) => n.path === p);
+		}
+		if (folder) notes = notes.filter((n) => n.path.toLowerCase().startsWith(folder + "/"));
+		notes.sort((a, b) => a.path.localeCompare(b.path));
+		const lowers = needles.map((n) => n.toLowerCase());
+		const blocks: string[] = [];
+		let shown = 0;
+		let total = 0;
+		for (const n of notes) {
+			const lines = (await ctx.vault.read(n.path)).split("\n");
+			// A section runs to the next heading of the same or a higher level, so nested
+			// sub-headings (e.g. "### Summary" under "## 2026-09-02") count as part of it.
+			const heads: { heading: string; lvl: number; line: number }[] = [];
+			let inFence = false;
+			for (let i = 0; i < lines.length; i++) {
+				if (/^\s*(```|~~~)/.test(lines[i])) inFence = !inFence;
+				const h = !inFence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+				if (h) heads.push({ heading: h[2].trim(), lvl: h[1].length, line: i });
+			}
+			const rows: string[] = [];
+			for (let k = 0; k < heads.length; k++) {
+				const s = heads[k];
+				if (level && s.lvl !== level) continue;
+				let end = lines.length;
+				for (let j = k + 1; j < heads.length; j++) {
+					if (heads[j].lvl <= s.lvl) {
+						end = heads[j].line;
+						break;
+					}
+				}
+				const body = lines.slice(s.line + 1, end).join("\n").toLowerCase();
+				const flags = lowers.map((l) => body.includes(l));
+				if (onlyMatching && !flags.some(Boolean)) continue;
+				total++;
+				if (shown >= limit) continue;
+				shown++;
+				rows.push(`  ${"#".repeat(s.lvl)} ${s.heading}: ${needles.map((t, i) => `${t} ${flags[i] ? "yes" : "no"}`).join(", ")}`);
+			}
+			if (rows.length) blocks.push(`${n.path}\n${rows.join("\n")}`);
+		}
+		if (total === 0) return `No section${onlyMatching ? " contains any of " + needles.map((t) => `"${t}"`).join(", ") : "s found"}${folder ? ` under ${folder}/` : ""}.`;
+		const more = total > shown ? `\n…${total - shown} more sections not shown; narrow with folder/path or raise the limit.` : "";
+		return `${total} section${total === 1 ? "" : "s"} (flags per text, in order):\n${blocks.join("\n")}${more}`;
+	},
+};
+
 export const readSection: ToolDefinition = {
 	name: "read_section",
 	description:
@@ -974,6 +1049,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
 	readSection,
 	findInNote,
 	grepVault,
+	listSections,
 	listNotes,
 	listFiles,
 	readFile,
