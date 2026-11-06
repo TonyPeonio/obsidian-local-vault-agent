@@ -32,7 +32,7 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	temperature: 0.3,
 	thinking: "auto",
 	showThinking: true,
-	maxIterations: 40,
+	maxIterations: 60,
 	maxToolResultChars: 12000,
 	autoApproveEdits: false,
 	autoContinue: true,

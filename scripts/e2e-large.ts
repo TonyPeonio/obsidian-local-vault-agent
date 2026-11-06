@@ -85,7 +85,7 @@ async function main() {
 		temperature: 0.3,
 		think: process.env.THINK === "on" ? true : process.env.THINK === "off" ? false : undefined,
 		keepAlive: "10m",
-		maxIterations: 40,
+		maxIterations: 60,
 		maxToolResultChars: 12000,
 		autoApprove: true,
 		autoContinue: true,

@@ -204,6 +204,74 @@ export function extractSection(content: string, heading: string): { text: string
 	return { text: lines.slice(start).join("\n").trimEnd(), startLine: start + 1, endLine: lines.length };
 }
 
+export const grepVault: ToolDefinition = {
+	name: "grep_vault",
+	description:
+		"Search the text of every note for a literal string (case-insensitive) or a regular expression, like grep. Returns matching lines as `path:line: text` grouped by note, optionally with context lines. The right tool for 'every note that contains X', embeds, tags, headings or exact phrases; much cheaper than reading notes.",
+	parameters: {
+		type: "object",
+		properties: {
+			pattern: { type: "string", description: "Literal text to look for, or a regular expression when regex is true." },
+			regex: { type: "boolean", description: "Treat pattern as a JavaScript regular expression (default false)." },
+			folder: { type: "string", description: "Only notes inside this folder (recursive)." },
+			context: { type: "integer", description: "Lines of context to show after each match (default 0, max 8)." },
+			limit: { type: "integer", description: "Maximum matching lines to return (default 60, max 200)." },
+		},
+		required: ["pattern"],
+	},
+	mutates: false,
+	async execute(args, ctx) {
+		const pattern = str(args, "pattern");
+		const useRegex = bool(args, "regex");
+		const folder = str(args, "folder", false).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
+		const context = int(args, "context", 0, 0, 8);
+		const limit = int(args, "limit", 60, 1, 200);
+		let test: (line: string) => boolean;
+		let note = "";
+		let re: RegExp | null = null;
+		if (useRegex) {
+			try {
+				re = new RegExp(pattern, "i");
+			} catch (err) {
+				note = `(The pattern is not a valid regular expression: ${(err as Error).message}. Searched for it as literal text instead.)\n`;
+			}
+		}
+		if (re) {
+			const compiled = re;
+			test = (line) => compiled.test(line);
+		} else {
+			const lower = pattern.toLowerCase();
+			test = (line) => line.toLowerCase().includes(lower);
+		}
+		let notes = ctx.vault.listNotes();
+		if (folder) notes = notes.filter((n) => n.path.toLowerCase().startsWith(folder + "/"));
+		notes.sort((a, b) => a.path.localeCompare(b.path));
+		const blocks: string[] = [];
+		let shown = 0;
+		let total = 0;
+		let notesHit = 0;
+		for (const n of notes) {
+			const lines = (await ctx.vault.read(n.path)).split("\n");
+			const rows: string[] = [];
+			for (let i = 0; i < lines.length; i++) {
+				if (!test(lines[i])) continue;
+				total++;
+				if (shown >= limit) continue;
+				shown++;
+				rows.push(`${n.path}:${i + 1}: ${lines[i]}`);
+				for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) rows.push(`${n.path}:${j + 1}- ${lines[j]}`);
+			}
+			if (rows.length) {
+				notesHit++;
+				blocks.push(rows.join("\n"));
+			}
+		}
+		if (total === 0) return `${note}No note contains "${pattern}"${folder ? ` under ${folder}/` : ""}.`;
+		const more = total > shown ? `\n…${total - shown} more matching lines not shown; narrow with folder or raise the limit.` : "";
+		return `${note}${total} matching line${total === 1 ? "" : "s"} in ${notesHit} note${notesHit === 1 ? "" : "s"}:\n${blocks.join("\n--\n")}${more}`;
+	},
+};
+
 export const readSection: ToolDefinition = {
 	name: "read_section",
 	description:
@@ -764,6 +832,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
 	readNote,
 	readSection,
 	findInNote,
+	grepVault,
 	listNotes,
 	listFiles,
 	readFile,

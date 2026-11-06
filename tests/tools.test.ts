@@ -8,6 +8,7 @@ import {
 	extractSection,
 	findInNote,
 	getActiveNote,
+	grepVault,
 	listFiles,
 	listNotes,
 	moveNote,
@@ -440,5 +441,23 @@ describe("read_file", () => {
 		expect(out).toContain("Isolation forests");
 		await expect(readFile.execute({ path: "Ideas/Sensors" }, ctx)).rejects.toThrow(/use read_note/);
 		await expect(readFile.execute({ path: "nope.pdf" }, ctx)).rejects.toThrow(/No file found/);
+	});
+});
+
+describe("grep_vault", () => {
+	it("finds lines across notes with context and folder filter", async () => {
+		const vault = freshVault();
+		vault.seed("School/Lectures.md", "# L\n\n## 2026-09-03\n\n![[Recording 1.m4a]]\n\n### Summary\n\n- x\n\n## 2026-09-10\n\n![[Recording 2.m4a]]\n\n- no summary\n");
+		vault.seed("Clubs/Club.md", "## meeting\n\n![[Recording 3.m4a]]\n");
+		const { ctx } = makeCtx(vault);
+		const out = await grepVault.execute({ pattern: "![[Recording", context: 2 }, ctx);
+		expect(out).toMatch(/^3 matching lines in 2 notes:/);
+		expect(out).toContain("School/Lectures.md:5: ![[Recording 1.m4a]]");
+		expect(out).toContain("School/Lectures.md:7- ### Summary");
+		expect(out).toContain("Clubs/Club.md:3: ![[Recording 3.m4a]]");
+		expect(await grepVault.execute({ pattern: "recording", folder: "Clubs" }, ctx)).toMatch(/^1 matching line in 1 note/);
+		expect(await grepVault.execute({ pattern: "^## 2026", regex: true }, ctx)).toMatch(/^2 matching lines/);
+		expect(await grepVault.execute({ pattern: "zebra" }, ctx)).toMatch(/^No note contains/);
+		expect(await grepVault.execute({ pattern: "Recording", limit: 1 }, ctx)).toContain("2 more matching lines");
 	});
 });

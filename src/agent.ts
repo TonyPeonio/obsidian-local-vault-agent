@@ -165,6 +165,7 @@ export function buildSystemPrompt(
 		"- For a task that touches more than two notes, begin with one line stating the plan (which notes, what you will do to each), then start immediately in the same reply; as you go, note each note as done in a few words.",
 		"- A question gets an answer, not edits. When the user asks something, answer it from the notes and stop; do not propose, offer or make changes to notes they did not ask for.",
 		"- Search snippets are not the note. Before concluding that a note lacks or contains something, read it with read_note, or use find_in_note for one specific passage.",
+		"- Never read every note to find something. To find all occurrences of a pattern across the vault (an embed, a tag, a phrase, a heading), use grep_vault; then read_section or find_in_note only where needed. Call at most about 6 tools per step; big batches overflow the context window.",
 		"- Tool results are authoritative: a successful edit result means the note is written, so do not read it again to verify, and do not re-check notes that were already handled.",
 		"",
 		"Grounding and style:",
@@ -250,11 +251,16 @@ export class Agent {
 		let rejected = false;
 		let autoContinues = 0;
 		let groundingNudges = 0;
+		let emptyNudges = 0;
 		let toolsUsed = 0;
 		for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
 			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, this.deps.dailyNote?.() ?? null) };
-			const history = trimHistory(conversation.messages, cfg.numCtx);
+			const history = trimHistory(conversation.messages, cfg.numCtx, (m) => {
+				// A shortened read is no longer "already above"; let the model read it again.
+				const header = /^# (.+)$/m.exec(m.content);
+				if (m.tool_name === "read_note" && header) ctx.readLog?.delete(header[1].trim());
+			});
 			callbacks.onStatus?.(iteration === 0 ? "Thinking…" : "Working…");
 			callbacks.onAssistantStart?.();
 
@@ -299,6 +305,14 @@ export class Agent {
 			}
 
 			const calls = assistant.tool_calls ?? [];
+			if (calls.length === 0 && !assistant.content.trim() && emptyNudges < 1) {
+				// A blank reply (usually after a huge tool batch) is never what the user wants.
+				emptyNudges++;
+				const nudge = "Your reply was empty. Answer now with what you have found so far; if a step is still missing, do it.";
+				conversation.messages.push({ role: "user", content: nudge });
+				callbacks.onAutoContinue?.(nudge);
+				continue;
+			}
 			if (calls.length === 0) {
 				// A reply that cites notes which do not exist is fabricated. Send it back once.
 				if (groundingNudges < 1) {
@@ -328,13 +342,21 @@ export class Agent {
 				return;
 			}
 
-			for (const call of calls) {
+			let batchChars = 0;
+			const cap = batchBudget(cfg.numCtx);
+			for (const [i, call] of calls.entries()) {
 				if (signal?.aborted) return;
 				callbacks.onToolStart?.(call);
 				toolsUsed++;
 				currentCall = call;
-				const { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
+				let { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
 				currentCall = null;
+				// A batch of forty read_note calls would overflow the window on its own; keep the
+				// batch within budget and tell the model to work in smaller steps.
+				batchChars += result.length;
+				if (batchChars > cap && i < calls.length - 1 && result.length > 400) {
+					result = result.slice(0, 400) + `\n[truncated: this batch of ${calls.length} tool calls returned too much at once. Call fewer tools per step (at most ~6) and use grep_vault, search_passages or read_section instead of reading whole notes.]`;
+				}
 				callbacks.onToolDone?.(call, result, ok);
 				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name });
 			}
@@ -397,7 +419,7 @@ export class Agent {
  * system prompt, tool schemas and the reply. Old tool results are shortened first;
  * whole early turns are dropped after that.
  */
-export function trimHistory(messages: ChatMessage[], numCtx: number): ChatMessage[] {
+export function trimHistory(messages: ChatMessage[], numCtx: number, onShortened?: (m: ChatMessage) => void): ChatMessage[] {
 	const budget = Math.floor(numCtx * 3.2 * 0.6);
 	const size = (m: ChatMessage) =>
 		m.content.length + (m.thinking?.length ?? 0) + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0);
@@ -427,7 +449,24 @@ export function trimHistory(messages: ChatMessage[], numCtx: number): ChatMessag
 		const dropped = out.splice(0, nextUser);
 		total -= dropped.reduce((n, m) => n + size(m), 0);
 	}
+	// Pass 3: still over budget inside the current turn (a long multi-note task). Shorten this
+	// turn's tool results oldest first, keeping the two most recent intact, so the system prompt
+	// and the user's request are never pushed out of the window by Ollama's own truncation.
+	const current = out.map((m, i) => (i > lastUser && m.role === "tool" ? i : -1)).filter((i) => i >= 0);
+	for (let k = 0; k < current.length - 2 && total > budget; k++) {
+		const m = out[current[k]];
+		if (m.content.length > 600) {
+			total -= m.content.length - 600;
+			m.content = m.content.slice(0, 600) + "\n[earlier result in this turn shortened to save context; call the tool again if you still need it]";
+			onShortened?.(m);
+		}
+	}
 	// Never start with a tool message; the model has no call to attach it to.
 	while (out.length && out[0].role !== "user") out.shift();
 	return out;
+}
+
+/** Total characters a single batch of tool results may add to the conversation. */
+export function batchBudget(numCtx: number): number {
+	return Math.floor(numCtx * 3.2 * 0.25);
 }

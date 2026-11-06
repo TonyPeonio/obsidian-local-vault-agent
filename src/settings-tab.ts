@@ -235,7 +235,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 			.setName("Max tool calls per message")
 			.setDesc("Stops runaway loops. Multi-note clean-ups need 2–3 calls per note, so keep this generous.")
 			.addSlider((sl) =>
-				sl.setLimits(3, 100, 1).setValue(s.maxIterations).onChange(async (v) => {
+				sl.setLimits(3, 150, 1).setValue(s.maxIterations).onChange(async (v) => {
 					s.maxIterations = v;
 					await this.plugin.saveSettings();
 				}),

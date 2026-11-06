@@ -438,3 +438,53 @@ describe("linkifyNotePaths", () => {
 		expect(conv.messages.at(-1)?.content).toBe("It is in [[Projects/Chess Robot]].");
 	});
 });
+
+describe("context guards", () => {
+	const msg = (role: ChatMessage["role"], content: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({ role, content, ...extra });
+
+	it("shortens this turn's older tool results when the window is full, keeping the last two", () => {
+		const big = (tag: string) => `# ${tag}.md\n` + "x".repeat(3000);
+		const m = [
+			msg("user", "clean up"),
+			msg("assistant", "", { tool_calls: [{ function: { name: "read_note", arguments: {} } }] }),
+			msg("tool", big("A"), { tool_name: "read_note" }),
+			msg("tool", big("B"), { tool_name: "read_note" }),
+			msg("tool", big("C"), { tool_name: "read_note" }),
+			msg("tool", big("D"), { tool_name: "read_note" }),
+		];
+		const shortened: string[] = [];
+		const out = trimHistory(m, 2048, (t) => shortened.push(t.content.slice(0, 7))); // budget ≈ 3932 chars
+		expect(out[2].content).toMatch(/shortened to save context/);
+		expect(out[3].content).toMatch(/shortened to save context/);
+		expect(out[4].content.length).toBe(big("C").length);
+		expect(out[5].content.length).toBe(big("D").length);
+		expect(shortened).toEqual(["# A.md\n", "# B.md\n"]);
+	});
+
+	it("caps a huge batch of tool results and nudges once on an empty reply", async () => {
+		const vault = new FakeVault({});
+		for (let i = 0; i < 12; i++) vault.seed(`N${i}.md`, "y".repeat(3000));
+		const ollama = new FakeOllama([
+			{ tools: Array.from({ length: 12 }, (_, i) => ({ tool: "read_note", args: { path: `N${i}` } })) },
+			{ content: "" },
+			{ content: "Here is the answer." },
+		]);
+		const agent = new Agent({
+			client: ollama.asClient(),
+			vault,
+			tools: ALL_TOOLS,
+			search: async () => [],
+			approve: async () => "approve",
+			getConfig: () => ({ ...config, numCtx: 4096, maxToolResultChars: 4000 }),
+		});
+		const conv = newConversation();
+		const nudges: string[] = [];
+		await agent.run(conv, "read everything", { onAutoContinue: (t) => nudges.push(t) });
+		const results = conv.messages.filter((m) => m.role === "tool");
+		expect(results.filter((r) => /truncated: this batch/.test(r.content)).length).toBeGreaterThan(0);
+		expect(results[0].content.length).toBeGreaterThan(1000); // the first results survive
+		expect(nudges).toHaveLength(1);
+		expect(nudges[0]).toMatch(/reply was empty/);
+		expect(conv.messages.at(-1)?.content).toBe("Here is the answer.");
+	});
+});

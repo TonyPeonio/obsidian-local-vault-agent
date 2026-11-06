@@ -75,7 +75,8 @@ for (const c of courses) {
 	const sections = [];
 	for (let i = 0; i < c.topics.length; i++) {
 		const week = i + 1;
-		const d = date(2026, week <= 5 ? 9 : 10, week <= 5 ? 1 + c.day + (week - 1) * 7 : 1 + c.day + (week - 6) * 7);
+		const dt = new Date(2026, 8, 1 + c.day + (week - 1) * 7);
+		const d = date(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
 		const [term, detail] = c.terms[i];
 		const hasRecording = chance(0.6);
 		const hasSummary = hasRecording ? chance(0.6) : chance(0.3);

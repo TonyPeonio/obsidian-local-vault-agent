@@ -550,6 +550,8 @@ function describeCall(call: ToolCall): string {
 			return `Read ${short(a.path)} › ${short(a.heading, 30)}`;
 		case "find_in_note":
 			return `Looked for “${short(a.pattern, 30)}” in ${short(a.path)}`;
+		case "grep_vault":
+			return `Grepped the vault for “${short(a.pattern, 30)}”${a.folder ? ` in ${short(a.folder)}` : ""}`;
 		case "list_notes":
 			return `Listed notes${a.folder ? ` in ${short(a.folder)}` : ""}${a.tag ? ` tagged ${short(a.tag)}` : ""}${a.name_contains ? ` matching “${short(a.name_contains)}”` : ""}`;
 		case "list_files":
@@ -604,6 +606,10 @@ function describeResult(call: ToolCall, result: string): string {
 		case "find_in_note": {
 			const m = /^(\d+) match/.exec(result);
 			return m ? `${m[1]} match${m[1] === "1" ? "" : "es"}` : "no match";
+		}
+		case "grep_vault": {
+			const m = /^(\d+) matching lines? in (\d+) note/.exec(result);
+			return m ? `${m[1]} lines in ${m[2]} notes` : "no match";
 		}
 		default:
 			return result.length > 70 ? result.slice(0, 70) + "…" : result;
