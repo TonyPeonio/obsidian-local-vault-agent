@@ -4,6 +4,7 @@ import {
 	Agent,
 	MAX_AUTO_CONTINUES,
 	buildSystemPrompt,
+	linkifyNotePaths,
 	looksLikeChoiceQuestion,
 	looksLikePermissionQuestion,
 	newConversation,
@@ -417,5 +418,21 @@ describe("trimHistory", () => {
 		const out = trimHistory(m, 1024);
 		expect(out[0].role).toBe("user");
 		expect(out[0].content).toBe("q3");
+	});
+});
+
+describe("linkifyNotePaths", () => {
+	it("turns backticked note paths into wikilinks and leaves everything else", () => {
+		const vault = new FakeVault({ "Projects/Chess Robot.md": "x", "Ideas/Sensors.md": "y" });
+		const text = "See `Projects/Chess Robot.md` and `Ideas/Sensors` but not `npm test`, `Nope/Missing.md` or\n```\n`Projects/Chess Robot.md`\n```";
+		expect(linkifyNotePaths(text, vault)).toBe(
+			"See [[Projects/Chess Robot]] and [[Ideas/Sensors]] but not `npm test`, `Nope/Missing.md` or\n```\n`Projects/Chess Robot.md`\n```",
+		);
+	});
+	it("is applied to assistant replies", async () => {
+		const { agent } = setup([{ content: "It is in `Projects/Chess Robot.md`." }]);
+		const conv = newConversation();
+		await agent.run(conv, "x", {});
+		expect(conv.messages.at(-1)?.content).toBe("It is in [[Projects/Chess Robot]].");
 	});
 });

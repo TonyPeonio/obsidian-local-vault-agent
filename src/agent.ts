@@ -37,6 +37,28 @@ export const AUTO_CONTINUE_TEXT =
 
 export const GROUNDING_PREFIX = "Grounding check:";
 
+/**
+ * Small models cite notes as `` `Projects/Note.md` `` instead of [[Projects/Note]]. Turn a
+ * backticked path that resolves to a note into a wikilink so citations are clickable; code
+ * fences and anything that is not a note path are left alone.
+ */
+export function linkifyNotePaths(text: string, vault: VaultAccess): string {
+	const parts = text.split(/(```[\s\S]*?```)/);
+	return parts
+		.map((part, i) => {
+			if (i % 2 === 1) return part;
+			return part.replace(/`([^`\n]{1,200}?)`/g, (whole, inner: string) => {
+				const candidate = inner.trim();
+				if (!/\.md$/i.test(candidate) && !candidate.includes("/")) return whole;
+				if (/[*?<>"]/.test(candidate)) return whole;
+				const resolved = vault.resolve(candidate);
+				if (!resolved) return whole;
+				return `[[${resolved.replace(/\.md$/i, "")}]]`;
+			});
+		})
+		.join("");
+}
+
 /** Wikilink targets in `text` that do not resolve to any note in the vault. */
 export function unresolvedLinks(text: string, vault: VaultAccess): string[] {
 	const out = new Set<string>();
@@ -261,6 +283,7 @@ export class Agent {
 			}
 
 			const assistant = response.message;
+			if (assistant.content) assistant.content = linkifyNotePaths(assistant.content, vault);
 			conversation.messages.push(assistant);
 			callbacks.onAssistantDone?.(assistant);
 			if (response.promptTokens !== undefined) {
