@@ -546,3 +546,12 @@ describe("list_sections", () => {
 		await expect(listSections.execute({ containing: [] }, ctx)).rejects.toThrow(/1–4 texts/);
 	});
 });
+
+describe("grep_vault with a note path as folder", () => {
+	it("searches just that note", async () => {
+		const { ctx } = makeCtx(freshVault());
+		const out = await grepVault.execute({ pattern: "sensors", folder: "Ideas/Sensors.md" }, ctx);
+		expect(out).toMatch(/^1 matching line in 1 note/);
+		expect(out).toContain("Ideas/Sensors.md:2");
+	});
+});

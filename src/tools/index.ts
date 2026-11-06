@@ -121,7 +121,7 @@ async function requestApproval(ctx: ToolContext, req: ApprovalRequest): Promise<
 export const searchNotes: ToolDefinition = {
 	name: "search_notes",
 	description:
-		"Search the vault for notes relevant to a query. Combines semantic search (meaning) with keyword search. Returns note paths with a short snippet. Use this first whenever the user asks about something in their notes.",
+		"Search the vault for notes relevant to a query by meaning and keywords. Returns note paths with a short snippet; results are ranked, not exhaustive. For every note containing an exact string, tag or frontmatter value (e.g. 'status: done'), use grep_vault instead.",
 	parameters: {
 		type: "object",
 		properties: {
@@ -244,7 +244,11 @@ export const grepVault: ToolDefinition = {
 			test = (line) => line.toLowerCase().includes(lower);
 		}
 		let notes = ctx.vault.listNotes();
-		if (folder) notes = notes.filter((n) => n.path.toLowerCase().startsWith(folder + "/"));
+		if (folder) {
+			// A note path given as "folder" means: just that note.
+			const single = ctx.vault.resolve(str(args, "folder", false));
+			notes = single ? notes.filter((n) => n.path === single) : notes.filter((n) => n.path.toLowerCase().startsWith(folder + "/"));
+		}
 		notes.sort((a, b) => a.path.localeCompare(b.path));
 		const blocks: string[] = [];
 		let shown = 0;
