@@ -1,6 +1,7 @@
 import { Notice, Plugin, TFile, WorkspaceLeaf, requestUrl } from "obsidian";
 import { Agent, type AgentConfig } from "./agent";
 import { ApprovalModal } from "./approval-modal";
+import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, type IndexData, type IndexStatus } from "./index";
 import { ObsidianVault } from "./obsidian-vault";
 import { OllamaClient } from "./ollama";
@@ -18,10 +19,14 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	client!: OllamaClient;
 	vault!: ObsidianVault;
 	index!: SemanticIndex;
+	gists!: GistCache;
 	agent!: Agent;
+	/** True while a chat turn is running; background gist generation pauses. */
+	agentBusy = false;
 	/** Every approved write this session, newest last; survives "New chat". */
 	readonly undo = new UndoStack();
 	private statusListeners = new Set<(s: IndexStatus) => void>();
+	private gistListeners = new Set<(s: GistStatus) => void>();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -67,6 +72,29 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			},
 		);
 
+		const gistPath = `${pluginDir}/gists.json`;
+		this.gists = new GistCache(
+			this.client,
+			this.vault,
+			{
+				load: async () => {
+					if (!(await this.app.vault.adapter.exists(gistPath))) return null;
+					return JSON.parse(await this.app.vault.adapter.read(gistPath)) as GistData;
+				},
+				save: async (data) => {
+					await this.app.vault.adapter.write(gistPath, JSON.stringify(data));
+				},
+			},
+			{
+				getModel: () => this.settings.model,
+				isEnabled: () => this.settings.gists,
+				shouldIndex: (p) => p.endsWith(".md") && !isExcluded(p, this.settings.excludedFolders),
+				isBusy: () => this.agentBusy,
+				keepAlive: this.settings.keepAlive,
+				onStatus: (s) => this.gistListeners.forEach((l) => l(s)),
+			},
+		);
+
 		this.agent = new Agent({
 			client: this.client,
 			vault: this.vault,
@@ -88,6 +116,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			getConfig: () => this.agentConfig(),
 			configDir: this.app.vault.configDir,
 			undo: this.undo,
+			gist: (path) => (this.settings.gists ? this.gists.get(path) : undefined),
 			readConventions: async () => {
 				const path = this.vault.resolve(this.settings.conventionsNote);
 				return path ? this.vault.read(path) : null;
@@ -161,6 +190,16 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			},
 		});
 		this.addCommand({
+			id: "rebuild-gists",
+			name: "Rebuild note gists",
+			callback: async () => {
+				new Notice("Regenerating gists for every note in the background…");
+				await this.gists.syncAll(true);
+				const s = this.gists.status();
+				new Notice(s.lastError ? `Gist error: ${s.lastError}` : `Gists ready for ${s.done} notes.`);
+			},
+		});
+		this.addCommand({
 			id: "rebuild-index",
 			name: "Rebuild semantic index",
 			callback: async () => {
@@ -182,24 +221,44 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				window.setTimeout(() => {
 					timers.delete(file.path);
 					this.index.enqueue(file.path);
+					this.gists.enqueue(file.path);
 				}, 2000),
 			);
 		};
 		this.register(() => timers.forEach((t) => window.clearTimeout(t)));
 		this.registerEvent(this.app.vault.on("modify", (f) => f instanceof TFile && f.extension === "md" && changed(f)));
 		this.registerEvent(this.app.vault.on("create", (f) => f instanceof TFile && f.extension === "md" && changed(f)));
-		this.registerEvent(this.app.vault.on("delete", (f) => f instanceof TFile && this.index.remove(f.path)));
-		this.registerEvent(this.app.vault.on("rename", (f, old) => f instanceof TFile && this.index.rename(old, f.path)));
+		this.registerEvent(
+			this.app.vault.on("delete", (f) => {
+				if (!(f instanceof TFile)) return;
+				this.index.remove(f.path);
+				this.gists.remove(f.path);
+			}),
+		);
+		this.registerEvent(
+			this.app.vault.on("rename", (f, old) => {
+				if (!(f instanceof TFile)) return;
+				this.index.rename(old, f.path);
+				this.gists.rename(old, f.path);
+			}),
+		);
 
 		this.app.workspace.onLayoutReady(async () => {
 			await this.index.load();
-			if (this.settings.semanticSearch) void this.index.syncAll();
+			await this.gists.load();
+			// Embeddings first (fast, small model), then gists (chat model), so they never run together.
+			void (async () => {
+				if (this.settings.semanticSearch) await this.index.syncAll();
+				if (this.settings.gists) await this.gists.syncAll();
+			})();
 		});
 	}
 
 	onunload(): void {
 		this.index.cancel();
 		void this.index.flush();
+		this.gists.cancel();
+		void this.gists.flush();
 	}
 
 	/**
@@ -243,6 +302,12 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			done++;
 		}
 		if (changes.length > 1) new Notice(`Undid ${done} of ${changes.length} changes.`);
+	}
+
+	/** Subscribe to gist generation status. Returns an unsubscribe function. */
+	onGistStatus(listener: (s: GistStatus) => void): () => void {
+		this.gistListeners.add(listener);
+		return () => this.gistListeners.delete(listener);
 	}
 
 	/** Subscribe to index status changes. Returns an unsubscribe function. */

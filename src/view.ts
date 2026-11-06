@@ -23,6 +23,7 @@ export class AgentView extends ItemView {
 	private abort: AbortController | null = null;
 	private running = false;
 	private unsubscribeStatus: (() => void) | null = null;
+	private unsubscribeGists: (() => void) | null = null;
 	private usage: UsageInfo | null = null;
 
 	constructor(
@@ -99,6 +100,7 @@ export class AgentView extends ItemView {
 
 		this.statusEl = root.createDiv({ cls: "lva-status" });
 		this.unsubscribeStatus = this.plugin.onIndexStatus(() => this.updateStatus());
+		this.unsubscribeGists = this.plugin.onGistStatus(() => this.updateStatus());
 		this.updateStatus();
 	}
 
@@ -106,6 +108,8 @@ export class AgentView extends ItemView {
 		this.stop();
 		this.unsubscribeStatus?.();
 		this.unsubscribeStatus = null;
+		this.unsubscribeGists?.();
+		this.unsubscribeGists = null;
 	}
 
 	/** Put text into the composer and focus it (used by commands). */
@@ -186,6 +190,12 @@ export class AgentView extends ItemView {
 		else if (s.building) parts.push(`Indexing… ${s.indexedFiles} notes (${s.pending} left)`);
 		else if (s.lastError) parts.push(`Index: ${s.lastError}`);
 		else parts.push(`Index: ${s.indexedFiles} notes, ${s.totalChunks} chunks`);
+		const g = this.plugin.gists.status();
+		if (g.enabled) {
+			if (g.lastError) parts.push(`Gists: ${g.lastError}`);
+			else if (g.building || g.pending > 0) parts.push(`Gists ${g.done}/${g.total}…`);
+			else parts.push(`Gists ${g.done}/${g.total}`);
+		}
 		let warn = false;
 		if (this.usage) {
 			const used = this.usage.promptTokens + this.usage.completionTokens;
@@ -214,6 +224,7 @@ export class AgentView extends ItemView {
 
 		this.abort = new AbortController();
 		this.setSendState(true);
+		this.plugin.agentBusy = true;
 		let turn: TurnRenderer | null = null;
 
 		try {
@@ -276,6 +287,7 @@ export class AgentView extends ItemView {
 			}
 			this.abort = null;
 			this.setSendState(false);
+			this.plugin.agentBusy = false;
 			this.updateStatus();
 			this.scrollToBottom();
 		}

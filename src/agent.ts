@@ -115,9 +115,17 @@ export interface AgentDeps {
 	undo?: UndoStack;
 	/** Contents of the user's conventions note (AGENT.md), or null when there is none. */
 	readConventions?: () => Promise<string | null>;
+	/** Cached one-line gist of a note, for the outline. */
+	gist?: (path: string) => string | undefined;
 }
 
-export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Date, conventions: string | null = null): string {
+export function buildSystemPrompt(
+	vault: VaultAccess,
+	cfg: AgentConfig,
+	now: Date,
+	conventions: string | null = null,
+	gist?: (path: string) => string | undefined,
+): string {
 	const notes = vault.listNotes();
 	const active = vault.getActiveNotePath();
 	const lines = [
@@ -149,8 +157,8 @@ export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Dat
 		`Today is ${now.toISOString().slice(0, 10)}. The vault has ${notes.length} markdown notes.`,
 		active ? `The user currently has this note open: ${active}` : "No note is currently open in the editor.",
 		"",
-		"Vault outline (every note, grouped by folder, with its headings; use these paths as given):",
-		buildOutline(vault, outlineBudget(cfg.numCtx)),
+		"Vault outline (every note, grouped by folder, with a one-line gist or its headings; use these paths as given):",
+		buildOutline(vault, { budgetChars: outlineBudget(cfg.numCtx, gist !== undefined), gist }),
 	];
 	if (conventions?.trim()) lines.push("", "The user's vault conventions (from their conventions note; follow them):", conventions.trim());
 	if (cfg.extraSystemPrompt.trim()) lines.push("", "Additional instructions from the user:", cfg.extraSystemPrompt.trim());
@@ -215,7 +223,7 @@ export class Agent {
 		let toolsUsed = 0;
 		for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
-			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions) };
+			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist) };
 			const history = trimHistory(conversation.messages, cfg.numCtx);
 			callbacks.onStatus?.(iteration === 0 ? "Thinking…" : "Working…");
 			callbacks.onAssistantStart?.();
@@ -303,7 +311,7 @@ export class Agent {
 
 		// Ran out of iterations: ask the model to wrap up without tools.
 		callbacks.onAssistantStart?.();
-		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions) };
+		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist) };
 		const response = await this.deps.client.chat({
 			model: cfg.model,
 			messages: [

@@ -191,6 +191,24 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 				}),
 			);
 
+		new Setting(containerEl)
+			.setName("Note gists")
+			.setDesc("Write a one-sentence gist of every note with the chat model (in the background, paused while you chat) and show it in the vault outline the agent sees on every message, so it knows what each note is about without reading it.")
+			.addToggle((t) =>
+				t.setValue(s.gists).onChange(async (v) => {
+					s.gists = v;
+					await this.plugin.saveSettings();
+					if (v) void this.plugin.gists.syncAll();
+				}),
+			)
+			.addButton((b) =>
+				b.setButtonText("Rebuild").onClick(() => {
+					const g = this.plugin.gists.status();
+					new Notice(`Regenerating gists (${g.done}/${g.total} so far)…`);
+					void this.plugin.gists.syncAll(true);
+				}),
+			);
+
 		new Setting(containerEl).setName("Agent").setHeading();
 
 		new Setting(containerEl)

@@ -35,3 +35,18 @@ describe("buildOutline", () => {
 		expect(outlineBudget(32768)).toBe(outlineBudget(16384) * 2);
 	});
 });
+
+describe("buildOutline with gists", () => {
+	it("prefers gists over headings and rations them to recent notes under a tight budget", () => {
+		const v = vault(6);
+		const gist = (p: string) => (p.startsWith("Daily/") ? `Day gist for ${p}` : undefined);
+		const all = buildOutline(v, { budgetChars: 10_000, gist });
+		expect(all).toContain("  2026-01-01 — Day gist for Daily/2026-01-01.md");
+		expect(all).toContain("Chess Robot — Chess Robot › Status › Open problems #project"); // no gist → headings
+		const tight = buildOutline(v, { budgetChars: all.length - 10, gist });
+		expect(tight).toContain("Day gist for Daily/2026-01-06.md"); // most recent keeps its gist
+		expect(tight).not.toContain("Day gist for Daily/2026-01-01.md");
+		expect(tight).toContain("  2026-01-01 — Day 0"); // older note falls back to headings
+		expect(outlineBudget(32768, true)).toBeGreaterThan(outlineBudget(32768));
+	});
+});

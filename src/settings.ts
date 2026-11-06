@@ -19,6 +19,8 @@ export interface LocalVaultAgentSettings {
 	extraSystemPrompt: string;
 	/** A note whose contents are always in the system prompt (vault conventions), like CLAUDE.md. */
 	conventionsNote: string;
+	/** Generate one-line gists of every note with the chat model (background) for the outline. */
+	gists: boolean;
 }
 
 export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
@@ -38,6 +40,7 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	excludedFolders: ["templates", "Templates"],
 	extraSystemPrompt: "",
 	conventionsNote: "AGENT.md",
+	gists: true,
 };
 
 export function isExcluded(path: string, excluded: string[]): boolean {
