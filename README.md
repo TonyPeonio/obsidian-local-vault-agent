@@ -96,9 +96,13 @@ incrementally when you change notes. Search results merge semantic and keyword r
 ## Settings worth knowing
 
 - **Context window (`num_ctx`)** — default 32768. Ollama's own default of 4096 is far too small
-  for reading notes; if answers seem to ignore what the tools returned, this is usually why.
-  32768 works on 12 GB cards with a 9B model; set `OLLAMA_FLASH_ATTENTION=1` and
-  `OLLAMA_KV_CACHE_TYPE=q8_0` on the Ollama server to roughly halve the KV-cache memory.
+  for reading notes; if answers seem to ignore what the tools returned, this is usually why. Set
+  `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` on the Ollama server: the KV cache
+  halves with no visible quality loss. Measured on a 12 GB RTX 5070 with `qwen3.5:9b` (Q4_K_M)
+  and those two settings: 32k → 8.1 GB used, 85 tok/s; 64k → 8.9 GB, 81 tok/s; 128k → ~9.6 GB,
+  76 tok/s — all on the GPU. Everything the agent does scales with the window (vault outline,
+  gists, tool-result budgets), so on a card like that 65536–98304 is the sweet spot. `qwen3:14b`
+  needs ~9.3 GB for weights alone and tops out around 32k.
 - **Note gists** — on by default. The first pass over a large vault takes a few minutes of GPU
   time in the background; turn it off on a laptop that shares the GPU with other work.
 - **Conventions note** — `AGENT.md` by default; *Create / open* writes a starter you can edit.
