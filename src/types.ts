@@ -160,6 +160,10 @@ export interface ToolContext {
 	signal?: AbortSignal;
 	/** Called by mutating tools after a successful write so the change can be undone. */
 	recordChange?(change: Pick<ChangeRecord, "tool" | "path" | "before" | "after" | "binary">): void;
+	/** Notes fully read in this turn (path → content stamp), so a repeat read is short-circuited. */
+	readLog?: Map<string, string>;
+	/** Extracts text from an attachment (PDF, plain text); absent when unsupported. */
+	readAttachmentText?: (path: string) => Promise<string>;
 }
 
 export interface ToolDefinition {

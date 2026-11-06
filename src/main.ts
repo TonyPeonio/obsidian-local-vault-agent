@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf, requestUrl } from "obsidian";
+import { Notice, Plugin, TFile, WorkspaceLeaf, loadPdfJs, moment, normalizePath, requestUrl } from "obsidian";
 import { Agent, type AgentConfig } from "./agent";
 import { ApprovalModal } from "./approval-modal";
 import { GistCache, type GistData, type GistStatus } from "./gists";
@@ -117,6 +117,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			configDir: this.app.vault.configDir,
 			undo: this.undo,
 			gist: (path) => (this.settings.gists ? this.gists.get(path) : undefined),
+			readAttachmentText: (path) => this.readAttachmentText(path),
+			dailyNote: () => this.dailyNote(),
 			readConventions: async () => {
 				const path = this.vault.resolve(this.settings.conventionsNote);
 				return path ? this.vault.read(path) : null;
@@ -232,6 +234,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		);
 
 		this.app.workspace.onLayoutReady(async () => {
+			await this.loadDailyNoteSettings();
+			void this.checkOllamaOnce();
 			await this.index.load();
 			await this.gists.load();
 			// Embeddings first (fast, small model), then gists (chat model), so they never run together.
@@ -247,6 +251,78 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		void this.index.flush();
 		this.gists.cancel();
 		void this.gists.flush();
+	}
+
+	private dailyFormat = "YYYY-MM-DD";
+	private dailyFolder = "";
+
+	/** Reads the core Daily Notes plugin's folder/format so "today's note" means what the user's does. */
+	private async loadDailyNoteSettings(): Promise<void> {
+		try {
+			const p = `${this.app.vault.configDir}/daily-notes.json`;
+			if (!(await this.app.vault.adapter.exists(p))) return;
+			const cfg = JSON.parse(await this.app.vault.adapter.read(p)) as { folder?: string; format?: string };
+			if (typeof cfg.format === "string" && cfg.format.trim()) this.dailyFormat = cfg.format.trim();
+			if (typeof cfg.folder === "string") this.dailyFolder = cfg.folder.replace(/^\/+|\/+$/g, "");
+		} catch {
+			// keep defaults
+		}
+	}
+
+	dailyNote(): { path: string; exists: boolean } | null {
+		try {
+			const now = (moment as unknown as () => { format(f: string): string })();
+			const name = now.format(this.dailyFormat);
+			const path = normalizePath(`${this.dailyFolder ? this.dailyFolder + "/" : ""}${name}.md`);
+			return { path, exists: this.app.vault.getFileByPath(path) !== null };
+		} catch {
+			return null;
+		}
+	}
+
+	private ollamaChecked = false;
+
+	/** One Notice per session when Ollama or the chosen model is not available, with the fix. */
+	private async checkOllamaOnce(): Promise<void> {
+		if (this.ollamaChecked) return;
+		this.ollamaChecked = true;
+		try {
+			const models = await this.client.listModels();
+			const missing: string[] = [];
+			if (!models.some((m) => m.name === this.settings.model)) missing.push(this.settings.model);
+			if (this.settings.semanticSearch && !models.some((m) => m.name === this.settings.embeddingModel)) missing.push(this.settings.embeddingModel);
+			if (missing.length) {
+				new Notice(`Local Vault Agent: model${missing.length === 1 ? "" : "s"} not installed: ${missing.join(", ")}. Run \`ollama pull ${missing[0]}\` or pick another model in settings.`, 12000);
+			}
+		} catch (err) {
+			new Notice(`Local Vault Agent cannot reach Ollama at ${this.settings.ollamaUrl} (${(err as Error).message}). Start Ollama or fix the URL in settings.`, 12000);
+		}
+	}
+
+	/** Text of a PDF (via Obsidian's bundled pdf.js) or a text-like attachment. */
+	async readAttachmentText(path: string): Promise<string> {
+		const file = this.app.vault.getFileByPath(normalizePath(path));
+		if (!file) throw new Error(`File not found: ${path}`);
+		const ext = file.extension.toLowerCase();
+		if (ext === "pdf") {
+			const pdfjs = (await loadPdfJs()) as {
+				getDocument(src: { data: ArrayBuffer }): { promise: Promise<{ numPages: number; getPage(n: number): Promise<{ getTextContent(): Promise<{ items: { str?: string }[] }> }> }> };
+			};
+			const data = await this.app.vault.readBinary(file);
+			const doc = await pdfjs.getDocument({ data }).promise;
+			const pages: string[] = [];
+			for (let i = 1; i <= doc.numPages; i++) {
+				const page = await doc.getPage(i);
+				const content = await page.getTextContent();
+				const text = content.items.map((it) => it.str ?? "").join(" ").replace(/\s+/g, " ").trim();
+				pages.push(`--- Page ${i} ---\n${text}`);
+			}
+			return pages.join("\n\n");
+		}
+		if (["txt", "csv", "json", "html", "htm", "xml", "yaml", "yml", "log", "tsv", "org", "tex", "srt", "vtt"].includes(ext)) {
+			return this.app.vault.read(file);
+		}
+		throw new Error(`Cannot extract text from .${ext} files.`);
 	}
 
 	private activeNote(): TFile | null {

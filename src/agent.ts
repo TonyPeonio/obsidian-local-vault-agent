@@ -139,6 +139,10 @@ export interface AgentDeps {
 	readConventions?: () => Promise<string | null>;
 	/** Cached one-line gist of a note, for the outline. */
 	gist?: (path: string) => string | undefined;
+	/** Text of an attachment (PDF, text file) for read_file. */
+	readAttachmentText?: ToolContext["readAttachmentText"];
+	/** Today's daily note, per the user's daily-notes settings. */
+	dailyNote?: () => { path: string; exists: boolean } | null;
 }
 
 export function buildSystemPrompt(
@@ -147,6 +151,7 @@ export function buildSystemPrompt(
 	now: Date,
 	conventions: string | null = null,
 	gist?: (path: string) => string | undefined,
+	daily: { path: string; exists: boolean } | null = null,
 ): string {
 	const notes = vault.listNotes();
 	const active = vault.getActiveNotePath();
@@ -172,12 +177,13 @@ export function buildSystemPrompt(
 		"- Small change: locate the exact passage with read_note or find_in_note, then call edit_note with old_text copied verbatim. If edit_note reports no match, use the candidate lines it returns; never guess at text you have not seen.",
 		"- Whole-note rewrite or reformat: replace_note with the complete new content, keeping wikilinks and tags intact. If the note starts with a YAML frontmatter block (--- ... ---), keep it unchanged; if it has none, never add one.",
 		"- Compile into a new note with create_note, citing the source notes as wikilinks. Add to the end of a note with append_to_note.",
-		"- Non-markdown files (recordings, images, PDFs, …) are attachments: list them with list_files; you cannot read or edit them. Move or rename with move_note (links in other notes are updated). Remove any note or attachment with delete_file (it goes to the trash).",
+		"- Non-markdown files (recordings, images, PDFs, …) are attachments: list them with list_files; read the text of a PDF or text file with read_file; they cannot be edited. Move or rename with move_note (links in other notes are updated). Remove any note or attachment with delete_file (it goes to the trash).",
 		"- If the user rejects a change, stop, tell them what was rejected and ask what they want instead; never retry the same change.",
 		"- Tool arguments must be valid JSON matching the tool's parameters.",
 		"",
 		`Today is ${now.toISOString().slice(0, 10)}. The vault has ${notes.length} markdown notes.`,
 		active ? `The user currently has this note open: ${active}` : "No note is currently open in the editor.",
+		daily ? `Today's daily note is ${daily.path}${daily.exists ? "" : " (it does not exist yet; create it if the user wants something added to today)"}.` : "",
 		"",
 		"Vault outline (every note, grouped by folder). Each line is `<file>.md — <gist or headings> <tags>`; a note's path is the folder plus the file name only, never the text after the dash:",
 		buildOutline(vault, { budgetChars: outlineBudget(cfg.numCtx, gist !== undefined), gist }),
@@ -222,6 +228,8 @@ export class Agent {
 			maxResultChars: cfg.maxToolResultChars,
 			configDir: this.deps.configDir,
 			signal,
+			readLog: new Map(),
+			readAttachmentText: this.deps.readAttachmentText,
 			recordChange: (change) => {
 				if (!this.deps.undo || !currentCall) return;
 				const record = this.deps.undo.push({ ...change, time: now.getTime(), turn });
@@ -245,7 +253,7 @@ export class Agent {
 		let toolsUsed = 0;
 		for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
-			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist) };
+			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, this.deps.dailyNote?.() ?? null) };
 			const history = trimHistory(conversation.messages, cfg.numCtx);
 			callbacks.onStatus?.(iteration === 0 ? "Thinking…" : "Working…");
 			callbacks.onAssistantStart?.();
@@ -334,7 +342,7 @@ export class Agent {
 
 		// Ran out of iterations: ask the model to wrap up without tools.
 		callbacks.onAssistantStart?.();
-		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist) };
+		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, this.deps.dailyNote?.() ?? null) };
 		const response = await this.deps.client.chat({
 			model: cfg.model,
 			messages: [

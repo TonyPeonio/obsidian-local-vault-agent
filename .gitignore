@@ -5,3 +5,4 @@ main.js
 data.json
 test-vault/.obsidian/workspace*.json
 .e2e/
+test-vault-large/

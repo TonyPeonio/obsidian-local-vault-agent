@@ -12,6 +12,8 @@ import {
 	listNotes,
 	moveNote,
 	nearestLines,
+	parseDate,
+	readFile,
 	normalizeNotePath,
 	resolveAny,
 	stripOutlineDecoration,
@@ -391,5 +393,52 @@ describe("outline-decorated paths", () => {
 		const { ctx } = makeCtx(vault);
 		const out = await readNote.execute({ path: "Projects/Chess Robot.md — Chess Robot › Status" }, ctx);
 		expect(out).toContain("# Projects/Chess Robot.md");
+	});
+});
+
+describe("read_note dedupe", () => {
+	it("short-circuits a repeat read of an unchanged note within a turn", async () => {
+		const vault = freshVault();
+		const { ctx } = makeCtx(vault);
+		ctx.readLog = new Map();
+		const first = await readNote.execute({ path: "Ideas/Sensors" }, ctx);
+		expect(first).toContain("Hall sensors are cheap.");
+		const second = await readNote.execute({ path: "Ideas/Sensors" }, ctx);
+		expect(second).toMatch(/^\(unchanged since you read Ideas\/Sensors\.md/);
+		await vault.modify("Ideas/Sensors.md", "#hardware\nHall sensors are pricey.");
+		expect(await readNote.execute({ path: "Ideas/Sensors" }, ctx)).toContain("pricey");
+		// Paged (truncated) reads are never deduped.
+		vault.seed("Long.md", "A".repeat(500));
+		await readNote.execute({ path: "Long.md" }, ctx);
+		expect(await readNote.execute({ path: "Long.md" }, ctx)).toContain("TRUNCATED");
+	});
+});
+
+describe("list_notes date filters", () => {
+	it("filters by modified_after / modified_before", async () => {
+		const vault = new FakeVault();
+		vault.seed("Old.md", "x", new Date(2026, 0, 10).getTime());
+		vault.seed("New.md", "y", new Date(2026, 9, 20).getTime());
+		const { ctx } = makeCtx(vault);
+		expect(await listNotes.execute({ modified_after: "2026-06-01" }, ctx)).toMatch(/^1 note:\nNew\.md/);
+		expect(await listNotes.execute({ modified_before: "2026-06-01" }, ctx)).toMatch(/^1 note:\nOld\.md/);
+		expect(await listNotes.execute({ modified_after: "2026-01-10", modified_before: "2026-01-11" }, ctx)).toContain("Old.md");
+		expect(parseDate("")).toBeNull();
+		expect(parseDate("garbage")).toBeNull();
+	});
+});
+
+describe("read_file", () => {
+	it("returns extracted text for attachments and refuses notes", async () => {
+		const vault = freshVault();
+		vault.seedFile("Attachments/slides.pdf", 1000);
+		const { ctx } = makeCtx(vault);
+		await expect(readFile.execute({ path: "Attachments/slides.pdf" }, ctx)).rejects.toThrow(/not available/);
+		ctx.readAttachmentText = async (p) => `--- Page 1 ---\nIsolation forests isolate anomalies (${p})`;
+		const out = await readFile.execute({ path: "slides.pdf" }, ctx);
+		expect(out).toContain("# Attachments/slides.pdf");
+		expect(out).toContain("Isolation forests");
+		await expect(readFile.execute({ path: "Ideas/Sensors" }, ctx)).rejects.toThrow(/use read_note/);
+		await expect(readFile.execute({ path: "nope.pdf" }, ctx)).rejects.toThrow(/No file found/);
 	});
 });

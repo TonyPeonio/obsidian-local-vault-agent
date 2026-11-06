@@ -99,6 +99,12 @@ function resolveExisting(vault: VaultAccess, input: string): string {
 	return resolved;
 }
 
+function hashText(text: string): string {
+	let h = 2166136261;
+	for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+	return (h >>> 0).toString(36);
+}
+
 function truncate(text: string, max: number, offset = 0): { text: string; truncated: boolean; total: number } {
 	const total = text.length;
 	const slice = text.slice(offset, offset + max);
@@ -245,6 +251,15 @@ export const readNote: ToolDefinition = {
 		const offset = int(args, "offset", 0, 0, 50_000_000);
 		const content = await ctx.vault.read(path);
 		const meta = ctx.vault.getMetadata(path);
+		// Re-reading a note already read in this turn only burns context; the first read is still in the conversation.
+		const stamp = `${content.length}:${hashText(content)}`;
+		if (ctx.readLog) {
+			const seen = ctx.readLog.get(path);
+			if (seen === stamp && offset === 0 && content.length <= ctx.maxResultChars) {
+				return `(unchanged since you read ${path} earlier in this turn; its full text is already above — do not read it again.)`;
+			}
+			if (offset === 0 && content.length <= ctx.maxResultChars) ctx.readLog.set(path, stamp);
+		}
 		const page = truncate(content, ctx.maxResultChars, offset);
 		const header = [
 			`# ${path}`,
@@ -275,6 +290,8 @@ export const listNotes: ToolDefinition = {
 			tag: { type: "string", description: "Only notes with this tag (with or without '#')." },
 			name_contains: { type: "string", description: "Only notes whose name contains this text (case-insensitive)." },
 			sort: { type: "string", description: "Sort order.", enum: ["modified", "created", "name", "path"] },
+			modified_after: { type: "string", description: "Only notes modified on or after this date (YYYY-MM-DD)." },
+			modified_before: { type: "string", description: "Only notes modified before this date (YYYY-MM-DD)." },
 			limit: { type: "integer", description: "Maximum results (default 50, max 300)." },
 		},
 	},
@@ -285,8 +302,12 @@ export const listNotes: ToolDefinition = {
 		const nameContains = str(args, "name_contains", false).toLowerCase();
 		const sort = str(args, "sort", false) || "modified";
 		const limit = int(args, "limit", 50, 1, 300);
+		const after = parseDate(str(args, "modified_after", false));
+		const before = parseDate(str(args, "modified_before", false));
 
 		let notes = ctx.vault.listNotes();
+		if (after !== null) notes = notes.filter((n) => n.mtime >= after);
+		if (before !== null) notes = notes.filter((n) => n.mtime < before);
 		if (folder) {
 			const prefix = folder.toLowerCase() + "/";
 			notes = notes.filter((n) => n.path.toLowerCase().startsWith(prefix));
@@ -693,6 +714,50 @@ export function nearestLines(content: string, oldText: string): string {
 	return `Nothing similar was found. The note has ${lines.length} lines (${content.length} characters); use find_in_note or read_note to locate the passage.`;
 }
 
+
+/** "YYYY-MM-DD" (or any Date-parsable string) → epoch ms at local midnight, or null. */
+export function parseDate(s: string): number | null {
+	const t = s.trim();
+	if (!t) return null;
+	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+	const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(t);
+	const ms = d.getTime();
+	return Number.isFinite(ms) ? ms : null;
+}
+
+export const readFile: ToolDefinition = {
+	name: "read_file",
+	description:
+		"Read the text of an attachment: a PDF (text is extracted per page) or a plain-text file (.txt, .csv, .json, .html, …). Not for notes — use read_note. Long files are paged with offset.",
+	parameters: {
+		type: "object",
+		properties: {
+			path: { type: "string", description: "Path of the attachment, e.g. 'Attachments/slides.pdf'." },
+			offset: { type: "integer", description: "Character offset to start from (default 0)." },
+		},
+		required: ["path"],
+	},
+	mutates: false,
+	async execute(args, ctx) {
+		const input = str(args, "path");
+		const path = ctx.vault.resolveFile(input);
+		if (!path) throw new ToolError(`No file found for "${input}". Use list_files to find the exact path.`);
+		if (/\.md$/i.test(path)) throw new ToolError(`${path} is a note; use read_note.`);
+		if (!ctx.readAttachmentText) throw new ToolError("Reading attachments is not available here.");
+		const offset = int(args, "offset", 0, 0, 50_000_000);
+		const text = await ctx.readAttachmentText(path);
+		if (!text.trim()) return `${path} contains no extractable text (it may be a scanned image or a binary file).`;
+		const page = truncate(text, ctx.maxResultChars, offset);
+		let out = `# ${path}\nlength: ${page.total} characters\n---\n${page.text}`;
+		if (page.truncated) out += `\n\n[TRUNCATED at character ${offset + ctx.maxResultChars} of ${page.total}. Call read_file again with offset=${offset + ctx.maxResultChars} to continue.]`;
+		return out;
+	},
+};
+
+function isoDate(ms: number): string {
+	return new Date(ms).toISOString().slice(0, 10);
+}
+
 export const ALL_TOOLS: ToolDefinition[] = [
 	searchPassages,
 	searchNotes,
@@ -701,6 +766,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
 	findInNote,
 	listNotes,
 	listFiles,
+	readFile,
 	vaultOverview,
 	getActiveNote,
 	createNote,
@@ -716,8 +782,4 @@ export function toOllamaTools(tools: ToolDefinition[]): OllamaToolSpec[] {
 		type: "function",
 		function: { name: t.name, description: t.description, parameters: t.parameters },
 	}));
-}
-
-function isoDate(ms: number): string {
-	return new Date(ms).toISOString().slice(0, 10);
 }

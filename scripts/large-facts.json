@@ -1,0 +1,797 @@
+{
+  "lectures": [
+    {
+      "course": "CSCI 406",
+      "date": "2026-09-03",
+      "topic": "Asymptotic notation and recurrences",
+      "term": "master theorem",
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+    },
+    {
+      "course": "CSCI 406",
+      "date": "2026-09-10",
+      "topic": "Divide and conquer: Strassen",
+      "term": "Strassen",
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+    },
+    {
+      "course": "CSCI 406",
+      "date": "2026-09-17",
+      "topic": "Dynamic programming: edit distance",
+      "term": "edit distance",
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+    },
+    {
+      "course": "CSCI 406",
+      "date": "2026-09-24",
+      "topic": "Greedy: interval scheduling",
+      "term": "exchange argument",
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+    },
+    {
+      "course": "CSCI 406",
+      "date": "2026-09-31",
+      "topic": "Graph search: BFS and DFS",
+      "term": "BFS",
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+    },
+    {
+      "course": "CSCI 406",
+      "date": "2026-10-03",
+      "topic": "Dijkstra with a binary heap",
+      "term": "Dijkstra",
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+    },
+    {
+      "course": "CSCI 406",
+      "date": "2026-10-10",
+      "topic": "Bellman-Ford and negative cycles",
+      "term": "Bellman-Ford",
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+    },
+    {
+      "course": "CSCI 406",
+      "date": "2026-10-17",
+      "topic": "Max flow: Ford-Fulkerson",
+      "term": "Ford-Fulkerson",
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+    },
+    {
+      "course": "CSCI 406",
+      "date": "2026-10-24",
+      "topic": "NP-completeness: reductions",
+      "term": "3-SAT",
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+    },
+    {
+      "course": "CSCI 406",
+      "date": "2026-10-31",
+      "topic": "Approximation algorithms",
+      "term": "vertex cover",
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+    },
+    {
+      "course": "CSCI 470",
+      "date": "2026-09-04",
+      "topic": "Linear regression and least squares",
+      "term": "normal equations",
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+    },
+    {
+      "course": "CSCI 470",
+      "date": "2026-09-11",
+      "topic": "Logistic regression",
+      "term": "sigmoid",
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+    },
+    {
+      "course": "CSCI 470",
+      "date": "2026-09-18",
+      "topic": "Regularisation: ridge and lasso",
+      "term": "lasso",
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+    },
+    {
+      "course": "CSCI 470",
+      "date": "2026-09-25",
+      "topic": "Decision trees",
+      "term": "Gini impurity",
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+    },
+    {
+      "course": "CSCI 470",
+      "date": "2026-09-32",
+      "topic": "Random forests and boosting",
+      "term": "bagging",
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+    },
+    {
+      "course": "CSCI 470",
+      "date": "2026-10-04",
+      "topic": "SVMs and kernels",
+      "term": "kernel trick",
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+    },
+    {
+      "course": "CSCI 470",
+      "date": "2026-10-11",
+      "topic": "k-means and GMMs",
+      "term": "EM algorithm",
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+    },
+    {
+      "course": "CSCI 470",
+      "date": "2026-10-18",
+      "topic": "PCA",
+      "term": "eigenvectors of the covariance",
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+    },
+    {
+      "course": "CSCI 470",
+      "date": "2026-10-25",
+      "topic": "Neural networks and backprop",
+      "term": "chain rule",
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+    },
+    {
+      "course": "CSCI 470",
+      "date": "2026-10-32",
+      "topic": "Anomaly detection",
+      "term": "isolation forest",
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+    },
+    {
+      "course": "CSCI 478",
+      "date": "2026-09-05",
+      "topic": "Sequence alignment: Needleman-Wunsch",
+      "term": "global alignment",
+      "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md"
+    },
+    {
+      "course": "CSCI 478",
+      "date": "2026-09-12",
+      "topic": "Smith-Waterman local alignment",
+      "term": "local alignment",
+      "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md"
+    },
+    {
+      "course": "CSCI 478",
+      "date": "2026-09-19",
+      "topic": "BLAST heuristics",
+      "term": "k-mer seeds",
+      "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md"
+    },
+    {
+      "course": "CSCI 478",
+      "date": "2026-09-26",
+      "topic": "Hidden Markov models for gene finding",
+      "term": "Viterbi",
+      "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md"
+    },
+    {
+      "course": "CSCI 478",
+      "date": "2026-09-33",
+      "topic": "Phylogenetic trees",
+      "term": "UPGMA",
+      "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md"
+    },
+    {
+      "course": "CSCI 478",
+      "date": "2026-10-05",
+      "topic": "Protein structure levels",
+      "term": "primary, secondary, tertiary, quaternary",
+      "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md"
+    },
+    {
+      "course": "CSCI 478",
+      "date": "2026-10-12",
+      "topic": "Alanine scanning",
+      "term": "alanine scanning",
+      "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md"
+    },
+    {
+      "course": "CSCI 478",
+      "date": "2026-10-19",
+      "topic": "RNA folding: Nussinov",
+      "term": "Nussinov",
+      "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md"
+    },
+    {
+      "course": "CSCI 478",
+      "date": "2026-10-26",
+      "topic": "Genome assembly: de Bruijn graphs",
+      "term": "de Bruijn graph",
+      "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md"
+    },
+    {
+      "course": "CSCI 478",
+      "date": "2026-10-33",
+      "topic": "Multiple sequence alignment",
+      "term": "ClustalW",
+      "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md"
+    },
+    {
+      "course": "CSCI 370",
+      "date": "2026-09-02",
+      "topic": "Requirements and user stories",
+      "term": "INVEST",
+      "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+    },
+    {
+      "course": "CSCI 370",
+      "date": "2026-09-09",
+      "topic": "Architecture decision records",
+      "term": "ADR",
+      "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+    },
+    {
+      "course": "CSCI 370",
+      "date": "2026-09-16",
+      "topic": "Testing pyramid",
+      "term": "unit, integration, e2e",
+      "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+    },
+    {
+      "course": "CSCI 370",
+      "date": "2026-09-23",
+      "topic": "CI/CD pipelines",
+      "term": "pipeline stages",
+      "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+    },
+    {
+      "course": "CSCI 370",
+      "date": "2026-09-30",
+      "topic": "Code review practice",
+      "term": "small PRs",
+      "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+    },
+    {
+      "course": "CSCI 370",
+      "date": "2026-10-02",
+      "topic": "Observability",
+      "term": "logs, metrics, traces",
+      "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+    },
+    {
+      "course": "CSCI 370",
+      "date": "2026-10-09",
+      "topic": "Technical debt",
+      "term": "interest on debt",
+      "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+    },
+    {
+      "course": "CSCI 370",
+      "date": "2026-10-16",
+      "topic": "Agile retrospectives",
+      "term": "start/stop/continue",
+      "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+    },
+    {
+      "course": "CSCI 370",
+      "date": "2026-10-23",
+      "topic": "Security basics",
+      "term": "OWASP top 10",
+      "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+    },
+    {
+      "course": "CSCI 370",
+      "date": "2026-10-30",
+      "topic": "Release management",
+      "term": "semantic versioning",
+      "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+    },
+    {
+      "course": "MATH 332",
+      "date": "2026-09-03",
+      "topic": "Vector spaces",
+      "term": "span and basis",
+      "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md"
+    },
+    {
+      "course": "MATH 332",
+      "date": "2026-09-10",
+      "topic": "Linear maps and matrices",
+      "term": "kernel and image",
+      "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md"
+    },
+    {
+      "course": "MATH 332",
+      "date": "2026-09-17",
+      "topic": "Determinants",
+      "term": "cofactor expansion",
+      "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md"
+    },
+    {
+      "course": "MATH 332",
+      "date": "2026-09-24",
+      "topic": "Eigenvalues",
+      "term": "characteristic polynomial",
+      "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md"
+    },
+    {
+      "course": "MATH 332",
+      "date": "2026-09-31",
+      "topic": "Diagonalisation",
+      "term": "diagonalisable iff",
+      "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md"
+    },
+    {
+      "course": "MATH 332",
+      "date": "2026-10-03",
+      "topic": "Inner products",
+      "term": "Cauchy-Schwarz",
+      "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md"
+    },
+    {
+      "course": "MATH 332",
+      "date": "2026-10-10",
+      "topic": "Gram-Schmidt",
+      "term": "orthonormal basis",
+      "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md"
+    },
+    {
+      "course": "MATH 332",
+      "date": "2026-10-17",
+      "topic": "SVD",
+      "term": "singular values",
+      "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md"
+    },
+    {
+      "course": "MATH 332",
+      "date": "2026-10-24",
+      "topic": "Least squares",
+      "term": "normal equations",
+      "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md"
+    },
+    {
+      "course": "MATH 332",
+      "date": "2026-10-31",
+      "topic": "Jordan form",
+      "term": "Jordan blocks",
+      "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md"
+    },
+    {
+      "course": "PHGN 200",
+      "date": "2026-09-06",
+      "topic": "Coulomb's law",
+      "term": "inverse square",
+      "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+    },
+    {
+      "course": "PHGN 200",
+      "date": "2026-09-13",
+      "topic": "Electric fields",
+      "term": "field lines",
+      "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+    },
+    {
+      "course": "PHGN 200",
+      "date": "2026-09-20",
+      "topic": "Gauss's law",
+      "term": "flux",
+      "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+    },
+    {
+      "course": "PHGN 200",
+      "date": "2026-09-27",
+      "topic": "Electric potential",
+      "term": "equipotentials",
+      "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+    },
+    {
+      "course": "PHGN 200",
+      "date": "2026-09-34",
+      "topic": "Capacitors",
+      "term": "parallel plates",
+      "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+    },
+    {
+      "course": "PHGN 200",
+      "date": "2026-10-06",
+      "topic": "Current and resistance",
+      "term": "Ohm's law",
+      "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+    },
+    {
+      "course": "PHGN 200",
+      "date": "2026-10-13",
+      "topic": "DC circuits",
+      "term": "Kirchhoff",
+      "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+    },
+    {
+      "course": "PHGN 200",
+      "date": "2026-10-20",
+      "topic": "Magnetic fields",
+      "term": "Lorentz force",
+      "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+    },
+    {
+      "course": "PHGN 200",
+      "date": "2026-10-27",
+      "topic": "Faraday's law",
+      "term": "induced EMF",
+      "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+    },
+    {
+      "course": "PHGN 200",
+      "date": "2026-10-34",
+      "topic": "Inductance",
+      "term": "self-inductance",
+      "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+    }
+  ],
+  "decisions": [
+    {
+      "q": "power supply",
+      "answer": "24V",
+      "date": "2026-10-14",
+      "note": "Projects/Chess Robot.md"
+    }
+  ],
+  "people": [
+    "Dr. Beeler",
+    "Prof. Okafor",
+    "Dr. Lindqvist",
+    "Marcus Vale",
+    "Priya Natarajan",
+    "Sam Delgado",
+    "Ana Rocha",
+    "Jordan Kim",
+    "Lena Faber",
+    "Tomás Herrera"
+  ],
+  "recordings": {
+    "withSummary": [
+      {
+        "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md",
+        "rec": "Recording 20260910133028.m4a"
+      },
+      {
+        "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md",
+        "rec": "Recording 20260931123054.m4a"
+      },
+      {
+        "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md",
+        "rec": "Recording 20260932123032.m4a"
+      },
+      {
+        "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+        "rec": "Recording 20260919143037.m4a"
+      },
+      {
+        "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+        "rec": "Recording 20261005133010.m4a"
+      },
+      {
+        "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+        "rec": "Recording 20261019153033.m4a"
+      },
+      {
+        "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+        "rec": "Recording 20261033133032.m4a"
+      },
+      {
+        "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md",
+        "rec": "Recording 20260902123008.m4a"
+      },
+      {
+        "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md",
+        "rec": "Recording 20260909133050.m4a"
+      },
+      {
+        "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md",
+        "rec": "Recording 20261016153052.m4a"
+      },
+      {
+        "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md",
+        "rec": "Recording 20261030133008.m4a"
+      },
+      {
+        "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md",
+        "rec": "Recording 20260924153020.m4a"
+      },
+      {
+        "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md",
+        "rec": "Recording 20260931123038.m4a"
+      },
+      {
+        "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md",
+        "rec": "Recording 20261031133046.m4a"
+      },
+      {
+        "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md",
+        "rec": "Recording 20261006133025.m4a"
+      },
+      {
+        "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md",
+        "rec": "Recording 20261020153018.m4a"
+      },
+      {
+        "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md",
+        "rec": "Recording 20261034133024.m4a"
+      },
+      {
+        "note": "Clubs/MEAL Club.md",
+        "rec": "Recording 20260914130628.m4a"
+      }
+    ],
+    "withoutSummary": [
+      {
+        "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md",
+        "rec": "Recording 20260903123013.m4a"
+      },
+      {
+        "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md",
+        "rec": "Recording 20260924153059.m4a"
+      },
+      {
+        "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md",
+        "rec": "Recording 20261024123028.m4a"
+      },
+      {
+        "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md",
+        "rec": "Recording 20260911133055.m4a"
+      },
+      {
+        "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md",
+        "rec": "Recording 20261018153004.m4a"
+      },
+      {
+        "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+        "rec": "Recording 20260926153044.m4a"
+      },
+      {
+        "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+        "rec": "Recording 20260933123007.m4a"
+      },
+      {
+        "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+        "rec": "Recording 20261012143038.m4a"
+      },
+      {
+        "note": "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+        "rec": "Recording 20261026123029.m4a"
+      },
+      {
+        "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md",
+        "rec": "Recording 20260923153034.m4a"
+      },
+      {
+        "note": "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md",
+        "rec": "Recording 20260930123040.m4a"
+      },
+      {
+        "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md",
+        "rec": "Recording 20260910133043.m4a"
+      },
+      {
+        "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md",
+        "rec": "Recording 20261003133024.m4a"
+      },
+      {
+        "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md",
+        "rec": "Recording 20261010143012.m4a"
+      },
+      {
+        "note": "School/MATH 332 - Linear Algebra/Lectures - MATH 332.md",
+        "rec": "Recording 20261024123000.m4a"
+      },
+      {
+        "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md",
+        "rec": "Recording 20260906123025.m4a"
+      },
+      {
+        "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md",
+        "rec": "Recording 20260920143001.m4a"
+      },
+      {
+        "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md",
+        "rec": "Recording 20260934123052.m4a"
+      },
+      {
+        "note": "School/PHGN 200 - Physics II/Lectures - PHGN 200.md",
+        "rec": "Recording 20261013143044.m4a"
+      },
+      {
+        "note": "Clubs/MEAL Club.md",
+        "rec": "Recording 20260921130637.m4a"
+      },
+      {
+        "note": "Clubs/Society of Quantum Engineers.md",
+        "rec": "Recording 20260909140619.m4a"
+      },
+      {
+        "note": "Daily/2026-10-14.md",
+        "rec": "Recording 20261014132836.m4a"
+      }
+    ]
+  },
+  "counts": {
+    "daily": 118,
+    "notes": 330,
+    "chars": 180915
+  },
+  "attachments": [
+    {
+      "path": "Recording 20260903123013.m4a",
+      "size": 32748882
+    },
+    {
+      "path": "Recording 20260910133028.m4a",
+      "size": 37148077
+    },
+    {
+      "path": "Recording 20260924153059.m4a",
+      "size": 42524796
+    },
+    {
+      "path": "Recording 20260931123054.m4a",
+      "size": 41883310
+    },
+    {
+      "path": "Recording 20261024123028.m4a",
+      "size": 46592147
+    },
+    {
+      "path": "Recording 20260911133055.m4a",
+      "size": 27467331
+    },
+    {
+      "path": "Recording 20260932123032.m4a",
+      "size": 36526659
+    },
+    {
+      "path": "Recording 20261018153004.m4a",
+      "size": 22493541
+    },
+    {
+      "path": "Recording 20260919143037.m4a",
+      "size": 42884105
+    },
+    {
+      "path": "Recording 20260926153044.m4a",
+      "size": 48224960
+    },
+    {
+      "path": "Recording 20260933123007.m4a",
+      "size": 29065795
+    },
+    {
+      "path": "Recording 20261005133010.m4a",
+      "size": 46735679
+    },
+    {
+      "path": "Recording 20261012143038.m4a",
+      "size": 49511446
+    },
+    {
+      "path": "Recording 20261019153033.m4a",
+      "size": 42842947
+    },
+    {
+      "path": "Recording 20261026123029.m4a",
+      "size": 21252195
+    },
+    {
+      "path": "Recording 20261033133032.m4a",
+      "size": 35283273
+    },
+    {
+      "path": "Recording 20260902123008.m4a",
+      "size": 31930371
+    },
+    {
+      "path": "Recording 20260909133050.m4a",
+      "size": 21932709
+    },
+    {
+      "path": "Recording 20260923153034.m4a",
+      "size": 30677324
+    },
+    {
+      "path": "Recording 20260930123040.m4a",
+      "size": 43196812
+    },
+    {
+      "path": "Recording 20261016153052.m4a",
+      "size": 47127785
+    },
+    {
+      "path": "Recording 20261030133008.m4a",
+      "size": 48266486
+    },
+    {
+      "path": "Recording 20260910133043.m4a",
+      "size": 23661511
+    },
+    {
+      "path": "Recording 20260924153020.m4a",
+      "size": 40777539
+    },
+    {
+      "path": "Recording 20260931123038.m4a",
+      "size": 45237638
+    },
+    {
+      "path": "Recording 20261003133024.m4a",
+      "size": 34740885
+    },
+    {
+      "path": "Recording 20261010143012.m4a",
+      "size": 30708642
+    },
+    {
+      "path": "Recording 20261024123000.m4a",
+      "size": 20018760
+    },
+    {
+      "path": "Recording 20261031133046.m4a",
+      "size": 36622640
+    },
+    {
+      "path": "Recording 20260906123025.m4a",
+      "size": 25888499
+    },
+    {
+      "path": "Recording 20260920143001.m4a",
+      "size": 38255957
+    },
+    {
+      "path": "Recording 20260934123052.m4a",
+      "size": 45671497
+    },
+    {
+      "path": "Recording 20261006133025.m4a",
+      "size": 29188065
+    },
+    {
+      "path": "Recording 20261013143044.m4a",
+      "size": 48198641
+    },
+    {
+      "path": "Recording 20261020153018.m4a",
+      "size": 38131373
+    },
+    {
+      "path": "Recording 20261034133024.m4a",
+      "size": 46912988
+    },
+    {
+      "path": "Recording 20260914130628.m4a",
+      "size": 18000000
+    },
+    {
+      "path": "Recording 20260921130637.m4a",
+      "size": 21000000
+    },
+    {
+      "path": "Recording 20260909140619.m4a",
+      "size": 25000000
+    },
+    {
+      "path": "Recording 20261014132836.m4a",
+      "size": 9000000
+    },
+    {
+      "path": "Attachments/sars_proteins.pdf",
+      "size": 2970378
+    },
+    {
+      "path": "Attachments/CSCI470-lecture10-slides.pdf",
+      "size": 4247325
+    },
+    {
+      "path": "Attachments/robot-frame.png",
+      "size": 3237742
+    },
+    {
+      "path": "Attachments/wiring-v2.png",
+      "size": 1164467
+    },
+    {
+      "path": "Attachments/syllabus-CSCI406.pdf",
+      "size": 2632013
+    }
+  ]
+}

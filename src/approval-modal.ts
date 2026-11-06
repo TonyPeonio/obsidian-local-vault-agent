@@ -41,6 +41,17 @@ export class ApprovalModal extends Modal {
 		const approve = buttons.createEl("button", { text: "Approve", cls: "mod-cta" });
 		approve.addEventListener("click", () => this.finish("approve"));
 		approve.focus();
+		contentEl.createDiv({ cls: "lva-approval-hint", text: "Enter approves · A approves all in this chat · Esc rejects" });
+		this.scope.register([], "Enter", (e) => {
+			e.preventDefault();
+			this.finish("approve");
+			return false;
+		});
+		this.scope.register([], "a", (e) => {
+			e.preventDefault();
+			this.finish("approve-all");
+			return false;
+		});
 	}
 
 	private finish(decision: ApprovalDecision): void {

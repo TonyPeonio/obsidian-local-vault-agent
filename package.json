@@ -10,6 +10,8 @@
     "test": "vitest run",
     "version": "node version-bump.mjs && git add manifest.json versions.json",
     "e2e": "esbuild scripts/e2e.ts --bundle --platform=node --format=cjs --outfile=.e2e/e2e.cjs --log-level=warning && node .e2e/e2e.cjs",
+    "e2e:large": "esbuild scripts/e2e-large.ts --bundle --platform=node --format=cjs --outfile=.e2e/e2e-large.cjs --log-level=warning && node .e2e/e2e-large.cjs",
+    "make-vault": "node scripts/make-vault.mjs",
     "lint": "eslint ."
   },
   "keywords": [

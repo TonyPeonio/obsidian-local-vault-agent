@@ -354,6 +354,8 @@ describe("buildSystemPrompt", () => {
 		expect(p).toContain("Daily notes live in Daily/.");
 		expect(p).toContain("Be terse.");
 		expect(buildSystemPrompt(vault, config, new Date())).not.toContain("vault conventions");
+		const withDaily = buildSystemPrompt(vault, config, new Date(), null, undefined, { path: "Daily/2026-11-06.md", exists: false });
+		expect(withDaily).toContain("Today's daily note is Daily/2026-11-06.md (it does not exist yet");
 	});
 
 	it("is given the conventions note on every run", async () => {

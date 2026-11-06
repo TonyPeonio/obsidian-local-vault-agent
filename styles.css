@@ -376,3 +376,14 @@
 	margin-top: 2px;
 	text-align: right;
 }
+
+.lva-approval-hint {
+	margin-top: 6px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	text-align: right;
+}
+.lva-welcome-hint {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
