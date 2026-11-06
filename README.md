@@ -54,8 +54,9 @@ Things to try:
 
 ### How it works
 
-The model gets eighteen tools. Reading: `search_passages` (matching note *sections*, verbatim),
-`search_notes`, `grep_vault` (grep every note for a string or regex, with context lines),
+The model gets nineteen tools. Reading: `search_passages` (matching note *sections*, verbatim),
+`search_notes`, `grep_vault` (grep every note for a string or regex, each match tagged with its
+heading), `list_sections` (which sections contain which texts),
 `read_note`, `read_section`, `find_in_note`, `list_notes` (folder, tag, name, modified dates),
 `list_files`, `read_file` (text of PDFs and text attachments), `vault_overview`,
 `get_active_note`. Writing: `create_note`, `edit_note`, `edit_notes` (many edits across notes in one call, one
