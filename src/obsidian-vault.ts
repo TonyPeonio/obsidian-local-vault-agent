@@ -62,17 +62,31 @@ export class ObsidianVault implements VaultAccess {
 
 	async create(path: string, content: string): Promise<void> {
 		const normalized = normalizePath(path);
-		const folder = normalized.includes("/") ? normalized.slice(0, normalized.lastIndexOf("/")) : "";
-		if (folder && !this.app.vault.getFolderByPath(folder)) {
-			// Create each missing ancestor in turn.
-			const parts = folder.split("/");
-			let current = "";
-			for (const part of parts) {
-				current = current ? `${current}/${part}` : part;
-				if (!this.app.vault.getFolderByPath(current)) await this.app.vault.createFolder(current);
-			}
-		}
+		await this.ensureFolder(normalized);
 		await this.app.vault.create(normalized, content);
+	}
+
+	async readBinary(path: string): Promise<ArrayBuffer> {
+		const file = this.app.vault.getFileByPath(normalizePath(path));
+		if (!file) throw new Error(`File not found: ${path}`);
+		return this.app.vault.readBinary(file);
+	}
+
+	async createBinary(path: string, data: ArrayBuffer): Promise<void> {
+		const normalized = normalizePath(path);
+		await this.ensureFolder(normalized);
+		await this.app.vault.createBinary(normalized, data);
+	}
+
+	/** Creates each missing ancestor folder of `normalizedPath` in turn. */
+	private async ensureFolder(normalizedPath: string): Promise<void> {
+		const folder = normalizedPath.includes("/") ? normalizedPath.slice(0, normalizedPath.lastIndexOf("/")) : "";
+		if (!folder || this.app.vault.getFolderByPath(folder)) return;
+		let current = "";
+		for (const part of folder.split("/")) {
+			current = current ? `${current}/${part}` : part;
+			if (!this.app.vault.getFolderByPath(current)) await this.app.vault.createFolder(current);
+		}
 	}
 
 	async modify(path: string, content: string): Promise<void> {

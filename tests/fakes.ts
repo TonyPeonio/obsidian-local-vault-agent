@@ -63,11 +63,22 @@ export class FakeVault implements VaultAccess {
 	}
 
 	trashed: string[] = [];
-	private attachments = new Map<string, { size: number; mtime: number }>();
+	private attachments = new Map<string, { size: number; mtime: number; data?: ArrayBuffer }>();
 
-	/** Register a non-markdown file (attachments have no content in the fake). */
-	seedFile(path: string, size = 1000, mtime?: number): void {
-		this.attachments.set(path, { size, mtime: mtime ?? (this.clock += 1000) });
+	/** Register a non-markdown file; `data` is optional (the fake does not need real bytes). */
+	seedFile(path: string, size = 1000, mtime?: number, data?: ArrayBuffer): void {
+		this.attachments.set(path, { size, mtime: mtime ?? (this.clock += 1000), data });
+	}
+
+	async readBinary(path: string): Promise<ArrayBuffer> {
+		const f = this.attachments.get(path);
+		if (!f) throw new Error(`File not found: ${path}`);
+		return f.data ?? new ArrayBuffer(f.size);
+	}
+
+	async createBinary(path: string, data: ArrayBuffer): Promise<void> {
+		if (this.attachments.has(path) || this.files.has(path)) throw new Error(`Already exists: ${path}`);
+		this.seedFile(path, data.byteLength, undefined, data);
 	}
 
 	listAttachments(): FileInfo[] {

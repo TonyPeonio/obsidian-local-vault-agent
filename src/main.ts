@@ -9,7 +9,8 @@ import { fuseRankings, keywordSearch } from "./search";
 import { DEFAULT_SETTINGS, isExcluded, type LocalVaultAgentSettings } from "./settings";
 import { LocalVaultAgentSettingTab } from "./settings-tab";
 import { ALL_TOOLS } from "./tools";
-import type { SearchHit } from "./types";
+import type { ChangeRecord, SearchHit } from "./types";
+import { UndoStack, describeChange, planRevert } from "./undo";
 import { AgentView, VIEW_TYPE } from "./view";
 
 export default class LocalVaultAgentPlugin extends Plugin {
@@ -18,6 +19,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	vault!: ObsidianVault;
 	index!: SemanticIndex;
 	agent!: Agent;
+	/** Every approved write this session, newest last; survives "New chat". */
+	readonly undo = new UndoStack();
 	private statusListeners = new Set<(s: IndexStatus) => void>();
 
 	async onload(): Promise<void> {
@@ -76,6 +79,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			},
 			getConfig: () => this.agentConfig(),
 			configDir: this.app.vault.configDir,
+			undo: this.undo,
 		});
 
 		this.registerView(VIEW_TYPE, (leaf) => new AgentView(leaf, this));
@@ -125,6 +129,26 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			},
 		});
 		this.addCommand({
+			id: "undo-last-change",
+			name: "Undo the agent's last change",
+			checkCallback: (checking) => {
+				const latest = this.undo.latest();
+				if (!latest) return false;
+				if (!checking) void this.revert(latest);
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "undo-last-message",
+			name: "Undo every change from the agent's last message",
+			checkCallback: (checking) => {
+				const latest = this.undo.latest();
+				if (!latest) return false;
+				if (!checking) void this.revertTurn(latest.turn);
+				return true;
+			},
+		});
+		this.addCommand({
 			id: "rebuild-index",
 			name: "Rebuild semantic index",
 			callback: async () => {
@@ -164,6 +188,49 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	onunload(): void {
 		this.index.cancel();
 		void this.index.flush();
+	}
+
+	/**
+	 * Undo one recorded change. The restore is shown as a diff (current → restored) and only
+	 * applied when approved, exactly like the change itself was.
+	 */
+	async revert(change: ChangeRecord): Promise<boolean> {
+		let plan;
+		try {
+			plan = await planRevert(change, this.vault);
+		} catch (err) {
+			new Notice((err as Error).message, 6000);
+			this.undo.remove(change.id);
+			return false;
+		}
+		const modal = new ApprovalModal(this.app, plan);
+		modal.open();
+		const decision = await modal.result;
+		if (decision === "reject") return false;
+		try {
+			await plan.apply();
+		} catch (err) {
+			new Notice(`Undo failed: ${(err as Error).message}`, 8000);
+			return false;
+		}
+		this.undo.remove(change.id);
+		new Notice(`Undone: ${describeChange(change)}.`);
+		return true;
+	}
+
+	/** Undo every change of one agent turn, newest first, stopping at the first rejection. */
+	async revertTurn(turn: number): Promise<void> {
+		const changes = this.undo.forTurn(turn);
+		if (changes.length === 0) {
+			new Notice("Nothing to undo.");
+			return;
+		}
+		let done = 0;
+		for (const change of changes) {
+			if (!(await this.revert(change))) break;
+			done++;
+		}
+		if (changes.length > 1) new Notice(`Undid ${done} of ${changes.length} changes.`);
 	}
 
 	/** Subscribe to index status changes. Returns an unsubscribe function. */

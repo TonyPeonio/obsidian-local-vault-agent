@@ -91,6 +91,8 @@ export interface VaultAccess {
 	resolveFile(path: string): string | null;
 	/** Move a note or attachment to the trash (never a permanent delete). */
 	trash(path: string): Promise<void>;
+	readBinary(path: string): Promise<ArrayBuffer>;
+	createBinary(path: string, data: ArrayBuffer): Promise<void>;
 	getMetadata(path: string): NoteMetadata;
 	getActiveNotePath(): string | null;
 	getSelection(): string | null;
@@ -115,6 +117,20 @@ export interface ApprovalRequest {
 
 export type ApprovalDecision = "approve" | "reject" | "approve-all";
 
+/** An approved write, with what it replaced, so it can be undone. */
+export interface ChangeRecord {
+	id: number;
+	tool: string;
+	path: string;
+	before: string;
+	after: string;
+	/** Contents of a deleted attachment (absent when it was too large to keep). */
+	binary?: ArrayBuffer;
+	time: number;
+	/** Identifies the agent turn (user message) the change belongs to. */
+	turn: number;
+}
+
 export interface ToolContext {
 	vault: VaultAccess;
 	search: (query: string, limit: number) => Promise<SearchHit[]>;
@@ -124,6 +140,8 @@ export interface ToolContext {
 	/** The vault's configuration folder (Obsidian's `Vault.configDir`); never written to. */
 	configDir?: string;
 	signal?: AbortSignal;
+	/** Called by mutating tools after a successful write so the change can be undone. */
+	recordChange?(change: Pick<ChangeRecord, "tool" | "path" | "before" | "after" | "binary">): void;
 }
 
 export interface ToolDefinition {
@@ -145,4 +163,6 @@ export interface AgentCallbacks {
 	onStatus?(text: string): void;
 	/** The agent answered the model's "shall I proceed?" for the user; `text` is the injected user turn. */
 	onAutoContinue?(text: string): void;
+	/** A write was approved and applied during `call`; `change` is its undo record. */
+	onChange?(change: ChangeRecord, call: ToolCall): void;
 }

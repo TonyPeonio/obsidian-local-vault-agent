@@ -2,7 +2,7 @@ import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIco
 import type LocalVaultAgentPlugin from "./main";
 import { GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
 import { conversationToMarkdown } from "./transcript";
-import type { ChatMessage, ToolCall } from "./types";
+import type { ChangeRecord, ChatMessage, ToolCall } from "./types";
 
 export const VIEW_TYPE = "local-vault-agent-view";
 
@@ -236,6 +236,7 @@ export class AgentView extends ItemView {
 						turn?.toolDone(call, result, ok);
 						this.scrollToBottom();
 					},
+					onChange: (change, call) => turn?.attachUndo(call, change),
 					onAutoContinue: (nudge) => {
 						this.messagesEl.createDiv({
 							cls: "lva-msg lva-note",
@@ -370,6 +371,25 @@ class TurnRenderer {
 		const body = card.createDiv({ cls: "lva-tool-body" });
 		body.createEl("pre", { cls: "lva-tool-pre", text: JSON.stringify(call.function.arguments, null, 2) });
 		this.toolCards.set(call, card);
+	}
+
+	/** Adds an "Undo" button to the tool card whose write produced `change`. */
+	attachUndo(call: ToolCall, change: ChangeRecord): void {
+		const card = this.toolCards.get(call);
+		if (!card) return;
+		const summary = card.querySelector("summary");
+		if (!summary) return;
+		const btn = summary.createEl("button", { cls: "lva-undo-btn", text: "Undo" });
+		btn.addEventListener("click", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			void this.plugin.revert(change).then((done) => {
+				if (done) {
+					btn.disabled = true;
+					btn.setText("Undone");
+				}
+			});
+		});
 	}
 
 	toolDone(call: ToolCall, result: string, ok: boolean): void {

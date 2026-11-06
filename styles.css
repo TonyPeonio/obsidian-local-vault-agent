@@ -310,3 +310,17 @@
 	width: 100%;
 	min-width: 300px;
 }
+
+/* Undo button on a tool card whose write was applied */
+.lva-undo-btn {
+	margin-left: auto;
+	font-size: var(--font-ui-smaller);
+	padding: 0 8px;
+	height: 20px;
+	line-height: 20px;
+	border-radius: var(--radius-s);
+	flex-shrink: 0;
+}
+.lva-undo-btn:disabled {
+	opacity: 0.6;
+}

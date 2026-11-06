@@ -15,6 +15,9 @@ import { hasFrontmatter } from "../prompts";
 
 export class ToolError extends Error {}
 
+/** Deleted attachments up to this size are kept in memory so the deletion can be undone. */
+export const MAX_UNDO_BINARY_BYTES = 100 * 1024 * 1024;
+
 function str(args: Record<string, unknown>, key: string, required = true): string {
 	const v = args[key];
 	if (v === undefined || v === null || (typeof v === "string" && v.trim() === "")) {
@@ -270,6 +273,7 @@ export const createNote: ToolDefinition = {
 		}
 		await requestApproval(ctx, { tool: "create_note", path, before: "", after: content, summary: `Create ${path}` });
 		await ctx.vault.create(path, content);
+		ctx.recordChange?.({ tool: "create_note", path, before: "", after: content });
 		return `Created ${path} (${content.length} characters).`;
 	},
 };
@@ -311,6 +315,7 @@ export const editNote: ToolDefinition = {
 			summary: `Edit ${path} (${result.count} replacement${result.count === 1 ? "" : "s"})`,
 		});
 		await ctx.vault.modify(path, result.content);
+		ctx.recordChange?.({ tool: "edit_note", path, before, after: result.content });
 		return `Edited ${path}: ${result.count} replacement${result.count === 1 ? "" : "s"} applied.`;
 	},
 };
@@ -335,6 +340,7 @@ export const appendToNote: ToolDefinition = {
 		const after = before + sep + content.replace(/\s+$/, "") + "\n";
 		await requestApproval(ctx, { tool: "append_to_note", path, before, after, summary: `Append to ${path}` });
 		await ctx.vault.modify(path, after);
+		ctx.recordChange?.({ tool: "append_to_note", path, before, after });
 		return `Appended ${content.length} characters to ${path}.`;
 	},
 };
@@ -371,6 +377,7 @@ export const replaceNote: ToolDefinition = {
 		}
 		await requestApproval(ctx, { tool: "replace_note", path, before, after: content, summary: `Rewrite ${path}` });
 		await ctx.vault.modify(path, content);
+		ctx.recordChange?.({ tool: "replace_note", path, before, after: content });
 		return `Rewrote ${path} (${before.length} → ${content.length} characters).`;
 	},
 };
@@ -488,13 +495,23 @@ export const deleteFile: ToolDefinition = {
 		if (!path) throw new ToolError(`No file found for "${input}". Use list_notes or list_files to find the exact path.`);
 		const isNote = /\.md$/i.test(path);
 		let before: string;
+		let binary: ArrayBuffer | undefined;
 		if (isNote) before = await ctx.vault.read(path);
 		else {
 			const info = ctx.vault.listAttachments().find((f) => f.path === path);
 			before = `(attachment${info ? `, ${formatSize(info.size)}` : ""})`;
+			// Keep a copy for undo unless it is huge.
+			if (!info || info.size <= MAX_UNDO_BINARY_BYTES) {
+				try {
+					binary = await ctx.vault.readBinary(path);
+				} catch {
+					binary = undefined;
+				}
+			}
 		}
 		await requestApproval(ctx, { tool: "delete_file", path, before, after: "", summary: `Delete ${path} (move to trash)` });
 		await ctx.vault.trash(path);
+		ctx.recordChange?.({ tool: "delete_file", path, before, after: "", binary });
 		return `Moved ${path} to the trash.`;
 	},
 };

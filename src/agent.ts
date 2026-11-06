@@ -1,6 +1,7 @@
 import type { OllamaClient } from "./ollama";
 import { OllamaError } from "./ollama";
 import { ToolError, toOllamaTools } from "./tools";
+import type { UndoStack } from "./undo";
 import type {
 	AgentCallbacks,
 	ApprovalDecision,
@@ -107,6 +108,8 @@ export interface AgentDeps {
 	getConfig: () => AgentConfig;
 	configDir?: string;
 	now?: () => Date;
+	/** Receives every approved write so it can be undone later. */
+	undo?: UndoStack;
 }
 
 export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Date): string {
@@ -161,14 +164,21 @@ export class Agent {
 		const now = this.deps.now ? this.deps.now() : new Date();
 		const toolByName = new Map(tools.map((t) => [t.name, t]));
 
+		const turn = conversation.messages.length;
 		conversation.messages.push({ role: "user", content: userText });
 
+		let currentCall: ToolCall | null = null;
 		const ctx: ToolContext = {
 			vault,
 			search: this.deps.search,
 			maxResultChars: cfg.maxToolResultChars,
 			configDir: this.deps.configDir,
 			signal,
+			recordChange: (change) => {
+				if (!this.deps.undo || !currentCall) return;
+				const record = this.deps.undo.push({ ...change, time: now.getTime(), turn });
+				callbacks.onChange?.(record, currentCall);
+			},
 			approve: async (req) => {
 				if (cfg.autoApprove || conversation.approveAll) return "approve";
 				const decision = await this.deps.approve(req);
@@ -262,7 +272,9 @@ export class Agent {
 				if (signal?.aborted) return;
 				callbacks.onToolStart?.(call);
 				toolsUsed++;
+				currentCall = call;
 				const { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
+				currentCall = null;
 				callbacks.onToolDone?.(call, result, ok);
 				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name });
 			}
