@@ -32,6 +32,10 @@ export interface AgentConfig {
 /** How many times per turn the agent answers a permission question on the user's behalf. */
 export const MAX_AUTO_CONTINUES = 3;
 
+/** Tool calls executed from one model step; the rest are refused with a hint. A model that
+ * asks for 45 notes at once is about to overflow its window and learn nothing from it. */
+export const MAX_CALLS_PER_STEP = 8;
+
 export const AUTO_CONTINUE_TEXT =
 	"Yes. Continue without asking again: carry out everything you proposed, for every note involved, in this turn. Reading needs no permission and each change goes through the approval dialog. Report when you are done.";
 
@@ -362,6 +366,13 @@ export class Agent {
 			const cap = batchBudget(cfg.numCtx);
 			for (const [i, call] of calls.entries()) {
 				if (signal?.aborted) return;
+				if (i >= MAX_CALLS_PER_STEP) {
+					const skipped = `Not executed: ${calls.length} tool calls in one step is too many (the first ${MAX_CALLS_PER_STEP} ran). To find which notes contain something use grep_vault or search_passages; then read_section or find_in_note only where needed, a few at a time.`;
+					callbacks.onToolStart?.(call);
+					callbacks.onToolDone?.(call, skipped, false);
+					conversation.messages.push({ role: "tool", content: skipped, tool_name: call.function.name });
+					continue;
+				}
 				callbacks.onToolStart?.(call);
 				toolsUsed++;
 				currentCall = call;

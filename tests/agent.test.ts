@@ -3,6 +3,7 @@ import {
 	AUTO_CONTINUE_TEXT,
 	Agent,
 	MAX_AUTO_CONTINUES,
+	MAX_CALLS_PER_STEP,
 	buildSystemPrompt,
 	linkifyNotePaths,
 	looksLikeChoiceQuestion,
@@ -513,5 +514,23 @@ describe("sources footer", () => {
 		const conv3 = newConversation();
 		await c.agent.run(conv3, "x", {});
 		expect(conv3.messages.at(-1)?.content).toBe("Done.");
+	});
+});
+
+describe("per-step call cap", () => {
+	it("runs the first eight calls of a step and refuses the rest with a hint", async () => {
+		const vault = new FakeVault({});
+		for (let i = 0; i < 12; i++) vault.seed(`N${i}.md`, `note ${i}`);
+		const ollama = new FakeOllama([
+			{ tools: Array.from({ length: 12 }, (_, i) => ({ tool: "read_note", args: { path: `N${i}` } })) },
+			{ content: "ok [[N0]]" },
+		]);
+		const agent = new Agent({ client: ollama.asClient(), vault, tools: ALL_TOOLS, search: async () => [], approve: async () => "approve", getConfig: () => config });
+		const conv = newConversation();
+		const done: boolean[] = [];
+		await agent.run(conv, "x", { onToolDone: (_c, _r, ok) => done.push(ok) });
+		expect(done.filter(Boolean)).toHaveLength(MAX_CALLS_PER_STEP);
+		expect(done.filter((ok) => !ok)).toHaveLength(4);
+		expect(conv.messages.filter((m) => m.role === "tool" && /Not executed/.test(m.content))).toHaveLength(4);
 	});
 });

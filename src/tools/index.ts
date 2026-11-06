@@ -304,7 +304,7 @@ export const readSection: ToolDefinition = {
 export const readNote: ToolDefinition = {
 	name: "read_note",
 	description:
-		"Read the full contents of a note by path (or by exact note name). Also returns its tags, outgoing links, backlinks and headings. Long notes are paged: use `offset` to continue.",
+		"Read the full contents of one note by path (or exact note name), with its tags, links, backlinks and headings. Long notes are paged with `offset`. Costs context: to find which notes mention something use grep_vault or search_passages instead; to read one heading use read_section.",
 	parameters: {
 		type: "object",
 		properties: {
