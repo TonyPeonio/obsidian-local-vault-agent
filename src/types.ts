@@ -59,6 +59,12 @@ export interface NoteInfo {
 	size: number;
 }
 
+/** A non-markdown file in the vault (recording, image, PDF, …). */
+export interface FileInfo extends NoteInfo {
+	/** Lower-case extension without the dot, e.g. "webm". */
+	extension: string;
+}
+
 export interface NoteMetadata {
 	tags: string[];
 	links: string[];
@@ -79,7 +85,11 @@ export interface VaultAccess {
 	read(path: string): Promise<string>;
 	create(path: string, content: string): Promise<void>;
 	modify(path: string, content: string): Promise<void>;
-	/** Move a note to the trash (never a permanent delete). */
+	/** Non-markdown files (attachments), excluding excluded folders. */
+	listAttachments(): FileInfo[];
+	/** Resolve a path to an existing file of any type (exact path, forward slashes), or null. */
+	resolveFile(path: string): string | null;
+	/** Move a note or attachment to the trash (never a permanent delete). */
 	trash(path: string): Promise<void>;
 	getMetadata(path: string): NoteMetadata;
 	getActiveNotePath(): string | null;

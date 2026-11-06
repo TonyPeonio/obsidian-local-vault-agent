@@ -3,10 +3,11 @@ import { keywordSearch } from "../src/search";
 import {
 	appendToNote,
 	createNote,
-	deleteNote,
+	deleteFile,
 	editNote,
 	findInNote,
 	getActiveNote,
+	listFiles,
 	listNotes,
 	nearestLines,
 	normalizeNotePath,
@@ -221,22 +222,50 @@ describe("find_in_note", () => {
 	});
 });
 
-describe("delete_note", () => {
-	it("moves the note to the trash after approval", async () => {
+describe("delete_file", () => {
+	it("moves a note to the trash after approval", async () => {
 		const vault = freshVault();
 		const { ctx, approvals } = makeCtx(vault);
-		const out = await deleteNote.execute({ path: "Ideas/Sensors" }, ctx);
+		const out = await deleteFile.execute({ path: "Ideas/Sensors" }, ctx);
 		expect(out).toContain("trash");
-		expect(approvals[0]).toMatchObject({ tool: "delete_note", path: "Ideas/Sensors.md", after: "" });
+		expect(approvals[0]).toMatchObject({ tool: "delete_file", path: "Ideas/Sensors.md", after: "" });
 		expect(approvals[0].before).toContain("Hall sensors");
 		expect(vault.exists("Ideas/Sensors.md")).toBe(false);
 		expect(vault.trashed).toEqual(["Ideas/Sensors.md"]);
 	});
-	it("keeps the note when rejected", async () => {
+	it("deletes attachments by path or bare name", async () => {
+		const vault = freshVault();
+		vault.seedFile("Recordings/CSCI578 2026-11-05 1717.webm", 2_500_000);
+		const { ctx, approvals } = makeCtx(vault);
+		await deleteFile.execute({ path: "CSCI578 2026-11-05 1717.webm" }, ctx);
+		expect(approvals[0].path).toBe("Recordings/CSCI578 2026-11-05 1717.webm");
+		expect(approvals[0].before).toContain("2.5 MB");
+		expect(vault.trashed).toEqual(["Recordings/CSCI578 2026-11-05 1717.webm"]);
+		expect(vault.listAttachments()).toHaveLength(0);
+	});
+	it("keeps the file when rejected and explains a missing path", async () => {
 		const vault = freshVault();
 		const { ctx } = makeCtx(vault, "reject");
-		await expect(deleteNote.execute({ path: "Ideas/Sensors" }, ctx)).rejects.toThrow(/rejected/);
+		await expect(deleteFile.execute({ path: "Ideas/Sensors" }, ctx)).rejects.toThrow(/rejected/);
 		expect(vault.exists("Ideas/Sensors.md")).toBe(true);
+		await expect(deleteFile.execute({ path: "nope.webm" }, ctx)).rejects.toThrow(/No file found/);
+	});
+});
+
+describe("list_files", () => {
+	it("lists attachments with filters, newest first", async () => {
+		const vault = freshVault();
+		vault.seedFile("CSCI578 2026-11-05 1717.webm", 1_000_000);
+		vault.seedFile("Attachments/sars_proteins.pdf", 50_000);
+		vault.seedFile("Attachments/diagram.png", 2_000);
+		const { ctx } = makeCtx(vault);
+		const all = await listFiles.execute({}, ctx);
+		expect(all).toMatch(/^3 files:/);
+		expect(all.indexOf("diagram.png")).toBeLessThan(all.indexOf("sars_proteins.pdf"));
+		expect(await listFiles.execute({ extension: ".webm" }, ctx)).toMatch(/^1 file:\nCSCI578 2026-11-05 1717\.webm  \(1\.0 MB/);
+		expect(await listFiles.execute({ folder: "/" }, ctx)).not.toContain("Attachments/");
+		expect(await listFiles.execute({ folder: "Attachments", name_contains: "SARS" }, ctx)).toContain("sars_proteins.pdf");
+		expect(await listFiles.execute({ extension: "mp3" }, ctx)).toMatch(/No attachments/);
 	});
 });
 
@@ -255,6 +284,16 @@ describe("replace_note", () => {
 		const { ctx, approvals } = makeCtx(vault);
 		await expect(replaceNote.execute({ path: "Big", content: "short" }, ctx)).rejects.toThrow(/less than 30%/);
 		expect(approvals).toHaveLength(0);
+	});
+	it("rejects a rewrite that opens with --- when the note had no frontmatter", async () => {
+		const vault = freshVault();
+		const { ctx, approvals } = makeCtx(vault);
+		await expect(replaceNote.execute({ path: "Ideas/Sensors", content: "---\n# Sensors\n\nHall sensors are cheap.\n" }, ctx)).rejects.toThrow(/starts with '---'/);
+		expect(approvals).toHaveLength(0);
+		// A note that already has frontmatter may of course keep it.
+		const robot = await vault.read("Projects/Chess Robot.md");
+		await replaceNote.execute({ path: "Projects/Chess Robot", content: robot + "\nMore.\n" }, ctx);
+		expect(approvals).toHaveLength(1);
 	});
 	it("is a no-op when identical", async () => {
 		const vault = freshVault();

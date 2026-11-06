@@ -4,6 +4,7 @@ import {
 	Agent,
 	MAX_AUTO_CONTINUES,
 	buildSystemPrompt,
+	looksLikeChoiceQuestion,
 	looksLikePermissionQuestion,
 	newConversation,
 	trimHistory,
@@ -208,6 +209,30 @@ describe("Agent.run", () => {
 		expect(conv.messages.at(-1)?.content).toBe("Shall I continue?");
 	});
 
+	it("never auto-continues after the user rejected a change", async () => {
+		const { agent, ollama } = setup(
+			[
+				{ tool: "delete_file", args: { path: "Ideas/Sensors" } },
+				{ content: "The deletion was rejected. Would you like me to remove the link instead?" },
+				{ content: "never reached" },
+			],
+			{ cfg: { autoContinue: true }, decision: "reject" },
+		);
+		const conv = newConversation();
+		await agent.run(conv, "delete the sensors note", {});
+		expect(ollama.requests).toHaveLength(2);
+		expect(conv.messages.at(-1)?.content).toMatch(/rejected/);
+	});
+
+	it("returns a choice between alternatives to the user", async () => {
+		const { agent, ollama } = setup(
+			[{ content: "I can delete the notes or just remove the references.\n\nWhich would you prefer? Or do you want me to:\n- Delete both?\n- Just clean up?" }],
+			{ cfg: { autoContinue: true } },
+		);
+		await agent.run(newConversation(), "x", {});
+		expect(ollama.requests).toHaveLength(1);
+	});
+
 	it("does not auto-continue a real clarifying question or when disabled", async () => {
 		const a = setup([{ content: "Which folder do you mean?" }], { cfg: { autoContinue: true } });
 		await a.agent.run(newConversation(), "x", {});
@@ -253,6 +278,24 @@ describe("grounding check", () => {
 		const { agent, ollama } = setup([{ content: "See [[Chess Robot#Status|status]] and [[Ideas/Sensors]]." }]);
 		await agent.run(newConversation(), "x", {});
 		expect(ollama.requests).toHaveLength(1);
+	});
+});
+
+describe("looksLikeChoiceQuestion", () => {
+	it("recognises questions that need the user's pick", () => {
+		for (const text of [
+			"Which would you prefer? Or do you want me to:\n- Delete both\n- Just clean up",
+			"The deletions were rejected by the approval dialog. What would you like me to do instead?",
+			"Which one should I delete?",
+			"Options:\n1. A\n2. B\nShall I proceed?",
+		]) {
+			expect(looksLikeChoiceQuestion(text), text).toBe(true);
+		}
+	});
+	it("does not flag plain go-ahead questions", () => {
+		for (const text of ["Would you like me to proceed with reading the CSCI 470 note first?", "Shall I continue?", "Done."]) {
+			expect(looksLikeChoiceQuestion(text), text).toBe(false);
+		}
 	});
 });
 

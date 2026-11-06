@@ -1,5 +1,5 @@
 import type { ChatRequest, ChatResponse, OllamaClient } from "../src/ollama";
-import type { ChatMessage, NoteInfo, NoteMetadata, ToolCall, VaultAccess } from "../src/types";
+import type { ChatMessage, FileInfo, NoteInfo, NoteMetadata, ToolCall, VaultAccess } from "../src/types";
 
 /** In-memory vault for tests and the end-to-end script. */
 export class FakeVault implements VaultAccess {
@@ -63,10 +63,42 @@ export class FakeVault implements VaultAccess {
 	}
 
 	trashed: string[] = [];
+	private attachments = new Map<string, { size: number; mtime: number }>();
+
+	/** Register a non-markdown file (attachments have no content in the fake). */
+	seedFile(path: string, size = 1000, mtime?: number): void {
+		this.attachments.set(path, { size, mtime: mtime ?? (this.clock += 1000) });
+	}
+
+	listAttachments(): FileInfo[] {
+		return Array.from(this.attachments.entries()).map(([path, f]) => {
+			const name = path.split("/").pop() ?? path;
+			const dot = name.lastIndexOf(".");
+			return {
+				path,
+				basename: dot > 0 ? name.slice(0, dot) : name,
+				extension: dot > 0 ? name.slice(dot + 1).toLowerCase() : "",
+				folder: path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "",
+				mtime: f.mtime,
+				ctime: f.mtime,
+				size: f.size,
+			};
+		});
+	}
+
+	resolveFile(path: string): string | null {
+		const p = path.trim().replace(/^!?\[\[|\]\]$/g, "").replace(/^\/+/, "");
+		if (this.files.has(p) || this.attachments.has(p)) return p;
+		for (const other of this.attachments.keys()) {
+			if ((other.split("/").pop() ?? "") === p) return other;
+		}
+		return this.resolve(p);
+	}
 
 	async trash(path: string): Promise<void> {
-		if (!this.files.has(path)) throw new Error(`Note not found: ${path}`);
-		this.files.delete(path);
+		if (this.files.has(path)) this.files.delete(path);
+		else if (this.attachments.has(path)) this.attachments.delete(path);
+		else throw new Error(`File not found: ${path}`);
 		this.trashed.push(path);
 	}
 

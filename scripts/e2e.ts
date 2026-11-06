@@ -186,6 +186,19 @@ async function main() {
 		console.log(`  auto-continues used: ${autoContinues}`);
 	}
 
+	// 6. Attachments: find and delete recordings that are not notes.
+	{
+		vault.seedFile("CSCI578 2026-11-05 1717.webm", 3_200_000);
+		vault.seedFile("Fall 2026 BIOINFORMATICS 2026-11-05 1718.webm", 2_900_000);
+		vault.seedFile("Attachments/sars_proteins.pdf", 400_000);
+		const r = await ask("Attachments", "Get rid of the WEBM recording files sitting in the root of the vault. Leave the PDF alone.");
+		const left = vault.listAttachments().map((f) => f.path);
+		check("list_files or delete_file was used", r.tools.includes("list_files") || r.tools.includes("delete_file"));
+		check("both webm files are gone", !left.some((p) => p.endsWith(".webm")));
+		check("the PDF survived", left.includes("Attachments/sars_proteins.pdf"));
+		check("did not claim it cannot delete non-markdown files", !/only work with .*\.md|cannot delete non-markdown/i.test(r.answer));
+	}
+
 	console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 	process.exit(failures === 0 ? 0 : 1);
 }

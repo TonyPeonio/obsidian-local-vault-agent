@@ -1,5 +1,5 @@
 import { App, MarkdownView, TFile, getAllTags, normalizePath } from "obsidian";
-import type { NoteInfo, NoteMetadata, VaultAccess } from "./types";
+import type { FileInfo, NoteInfo, NoteMetadata, VaultAccess } from "./types";
 
 /** `VaultAccess` backed by the live Obsidian app. */
 export class ObsidianVault implements VaultAccess {
@@ -83,9 +83,34 @@ export class ObsidianVault implements VaultAccess {
 		await this.app.vault.process(file, () => content);
 	}
 
+	listAttachments(): FileInfo[] {
+		return this.app.vault
+			.getFiles()
+			.filter((f) => f.extension.toLowerCase() !== "md" && !this.isExcluded(f.path))
+			.map((f) => ({
+				path: f.path,
+				basename: f.basename,
+				extension: f.extension.toLowerCase(),
+				folder: f.parent?.path === "/" ? "" : (f.parent?.path ?? ""),
+				mtime: f.stat.mtime,
+				ctime: f.stat.ctime,
+				size: f.stat.size,
+			}));
+	}
+
+	resolveFile(path: string): string | null {
+		const cleaned = path.trim().replace(/\\/g, "/").replace(/^!?\[\[|\]\]$/g, "").replace(/^\/+/, "");
+		if (!cleaned) return null;
+		const file = this.app.vault.getFileByPath(normalizePath(cleaned));
+		if (file) return this.isExcluded(file.path) ? null : file.path;
+		// Attachments are usually embedded by bare name; let Obsidian resolve that too.
+		const dest = this.app.metadataCache.getFirstLinkpathDest(cleaned, "");
+		return dest && !this.isExcluded(dest.path) ? dest.path : null;
+	}
+
 	async trash(path: string): Promise<void> {
-		const file = this.fileFor(path);
-		if (!file) throw new Error(`Note not found: ${path}`);
+		const file = this.app.vault.getFileByPath(normalizePath(path)) ?? this.fileFor(path);
+		if (!file) throw new Error(`File not found: ${path}`);
 		// Honours the user's "Deleted files" preference (system trash / .trash / permanent).
 		await this.app.fileManager.trashFile(file);
 	}

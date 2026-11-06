@@ -6,6 +6,7 @@ import type {
 	VaultAccess,
 } from "../types";
 import { applyTextEdit } from "../diff";
+import { hasFrontmatter } from "../prompts";
 
 /**
  * The tools the model can call. Each tool returns plain text or JSON for the model; the
@@ -356,6 +357,12 @@ export const replaceNote: ToolDefinition = {
 		const content = str(args, "content");
 		const before = await ctx.vault.read(path);
 		if (content === before) return "The new content is identical to the current note; nothing written.";
+		// Small models like to open a rewrite with "---" (a stray rule or invented frontmatter).
+		if (!hasFrontmatter(before) && /^---[ \t]*\r?\n/.test(content)) {
+			throw new ToolError(
+				"The note has no YAML frontmatter, but the new content starts with '---'. Resubmit it without that leading line (if the user explicitly asked for frontmatter, add it with edit_note instead).",
+			);
+		}
 		// Guard against a model that "rewrites" a long note into a stub.
 		if (before.length > 400 && content.length < before.length * 0.3) {
 			throw new ToolError(
@@ -425,26 +432,79 @@ export const findInNote: ToolDefinition = {
 	},
 };
 
-export const deleteNote: ToolDefinition = {
-	name: "delete_note",
+export const listFiles: ToolDefinition = {
+	name: "list_files",
 	description:
-		"Move a note to the trash (recoverable; never a permanent delete). Use it when the user asks to delete or remove a note. The user must approve first.",
+		"List the non-markdown files in the vault (attachments: audio and video recordings, images, PDFs, …), optionally filtered by folder, extension or a substring of the name. Newest first. Use it when the user talks about recordings, media or files rather than notes. Attachments cannot be read or edited, only listed and deleted.",
 	parameters: {
 		type: "object",
 		properties: {
-			path: { type: "string", description: "Path of the note to delete." },
+			folder: { type: "string", description: "Only files inside this folder (recursive). Omit for the whole vault; use '/' for the vault root only." },
+			extension: { type: "string", description: "Only files with this extension, e.g. 'webm', 'm4a', 'pdf' (without the dot)." },
+			name_contains: { type: "string", description: "Only files whose name contains this text (case-insensitive)." },
+			limit: { type: "integer", description: "Maximum results (default 50, max 300)." },
+		},
+	},
+	mutates: false,
+	async execute(args, ctx) {
+		const folder = str(args, "folder", false).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+		const rootOnly = str(args, "folder", false).trim() === "/";
+		const extension = str(args, "extension", false).replace(/^\./, "").toLowerCase();
+		const nameContains = str(args, "name_contains", false).toLowerCase();
+		const limit = int(args, "limit", 50, 1, 300);
+
+		let files = ctx.vault.listAttachments();
+		if (rootOnly) files = files.filter((f) => f.folder === "");
+		else if (folder) {
+			const prefix = folder.toLowerCase() + "/";
+			files = files.filter((f) => f.path.toLowerCase().startsWith(prefix));
+		}
+		if (extension) files = files.filter((f) => f.extension === extension);
+		if (nameContains) files = files.filter((f) => f.basename.toLowerCase().includes(nameContains));
+		files.sort((a, b) => b.mtime - a.mtime);
+		const total = files.length;
+		if (total === 0) return "No attachments matched those filters.";
+		const rows = files.slice(0, limit).map((f) => `${f.path}  (${formatSize(f.size)}, modified ${isoDate(f.mtime)})`);
+		const more = total > limit ? `\n…and ${total - limit} more. Narrow the filter or raise the limit.` : "";
+		return `${total} file${total === 1 ? "" : "s"}:\n${rows.join("\n")}${more}`;
+	},
+};
+
+export const deleteFile: ToolDefinition = {
+	name: "delete_file",
+	description:
+		"Move a note or any other vault file (an attachment such as a recording, image or PDF) to the trash. Recoverable, never a permanent delete. The user must approve each deletion; if they reject it, do not try again — ask what they want instead.",
+	parameters: {
+		type: "object",
+		properties: {
+			path: { type: "string", description: "Vault-relative path of the note or file to delete, e.g. 'Courses/CSCI578/2026-11-05.md' or 'Recordings/lecture.webm'." },
 		},
 		required: ["path"],
 	},
 	mutates: true,
 	async execute(args, ctx) {
-		const path = resolveExisting(ctx.vault, str(args, "path"));
-		const before = await ctx.vault.read(path);
-		await requestApproval(ctx, { tool: "delete_note", path, before, after: "", summary: `Delete ${path} (move to trash)` });
+		const input = str(args, "path");
+		const path = ctx.vault.resolveFile(input) ?? ctx.vault.resolve(input);
+		if (!path) throw new ToolError(`No file found for "${input}". Use list_notes or list_files to find the exact path.`);
+		const isNote = /\.md$/i.test(path);
+		let before: string;
+		if (isNote) before = await ctx.vault.read(path);
+		else {
+			const info = ctx.vault.listAttachments().find((f) => f.path === path);
+			before = `(attachment${info ? `, ${formatSize(info.size)}` : ""})`;
+		}
+		await requestApproval(ctx, { tool: "delete_file", path, before, after: "", summary: `Delete ${path} (move to trash)` });
 		await ctx.vault.trash(path);
 		return `Moved ${path} to the trash.`;
 	},
 };
+
+function formatSize(bytes: number): string {
+	if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
+	if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
+	if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(0)} kB`;
+	return `${bytes} B`;
+}
 
 /**
  * For a failed edit_note: lines containing the most distinctive word of `oldText`, so the
@@ -474,13 +534,14 @@ export const ALL_TOOLS: ToolDefinition[] = [
 	readNote,
 	findInNote,
 	listNotes,
+	listFiles,
 	vaultOverview,
 	getActiveNote,
 	createNote,
 	editNote,
 	appendToNote,
 	replaceNote,
-	deleteNote,
+	deleteFile,
 ];
 
 export function toOllamaTools(tools: ToolDefinition[]): OllamaToolSpec[] {

@@ -51,16 +51,19 @@ Things to try:
 
 ### How it works
 
-The model gets eleven tools: `search_notes`, `read_note`, `find_in_note`, `list_notes`,
-`vault_overview`, `get_active_note`, `create_note`, `edit_note`, `append_to_note`,
-`replace_note` and `delete_note`. It calls them in a loop until the task is done, then reports.
-The five mutating tools open an approval dialog with a line diff before touching the vault
-(`delete_note` moves the note to the trash according to your "Deleted files" setting).
+The model gets twelve tools: `search_notes`, `read_note`, `find_in_note`, `list_notes`,
+`list_files`, `vault_overview`, `get_active_note`, `create_note`, `edit_note`, `append_to_note`,
+`replace_note` and `delete_file`. It calls them in a loop until the task is done, then reports.
+The five mutating tools open an approval dialog with a line diff before touching the vault.
+`list_files` and `delete_file` cover attachments (recordings, images, PDFs): the agent cannot read
+them, but it can find them and move them — or any note — to the trash according to your
+"Deleted files" setting.
 
 The agent is told to finish multi-note tasks on its own rather than stopping after each step to
 ask "shall I proceed?". If a model asks anyway, the agent answers yes for you up to three times
 per message (a small note appears in the chat) — see *Keep going when the model asks for
-permission* in settings. Every write is still approved individually.
+permission* in settings. It never does this for a question that offers you a choice, nor after
+you have rejected a change in that message. Every write is still approved individually.
 
 The header has a **Copy conversation** button that copies the whole chat, including tool calls
 and results, as markdown.

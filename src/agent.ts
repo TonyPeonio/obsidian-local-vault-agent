@@ -53,6 +53,17 @@ export function groundingNudge(links: string[], readAnything: boolean): string {
 }
 
 /**
+ * True when the reply asks the user to pick between alternatives ("which one?", "A or B?",
+ * "what would you like instead?"). Answering "yes, go ahead" to that is wrong, so such a
+ * question is always returned to the user.
+ */
+export function looksLikeChoiceQuestion(text: string): boolean {
+	const t = text.trim();
+	if (!t.includes("?")) return false;
+	return /\b(which (one|ones|of these|of the|would you|do you|should i)|what would you (like|prefer|rather)|instead\s*\?|or (do|would|should) you\b|\boptions?\s*:)/i.test(t);
+}
+
+/**
  * True when an assistant reply ends its turn by asking for the go-ahead rather than acting.
  * Deliberately narrow: a real clarifying question ("which folder?") must not match.
  */
@@ -95,6 +106,7 @@ export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Dat
 		"- Never ask for permission or confirmation to search, read or change notes. Reading needs none, and every write is shown to the user as a diff they approve or reject, so the approval dialog is the confirmation. Do not end a reply with 'Would you like me to proceed?' or 'Shall I check the next note?' — proceed.",
 		"- Do not describe a plan and wait; carry it out. Stop to ask only when the request is genuinely ambiguous in a way that changes the outcome, and then ask one specific question.",
 		"- Search snippets are not the note. Before concluding that a note lacks or contains something, read it with read_note, or use find_in_note for one specific passage.",
+		"- Tool results are authoritative: a successful edit result means the note is written, so do not read it again to verify, and do not re-check notes that were already handled.",
 		"",
 		"Grounding and style:",
 		"- You know nothing about the user's notes until you read them. Every answer about the notes starts with search_notes (or read_note on a path you were given), then read_note on the relevant results. Never answer from memory or assumption, never invent note names, quotes or facts, and cite only notes you actually read. If nothing relevant exists, say so.",
@@ -104,8 +116,9 @@ export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Dat
 		"Editing:",
 		"- Small change: locate the exact passage with read_note or find_in_note, then call edit_note with old_text copied verbatim. If edit_note reports no match, use the candidate lines it returns; never guess at text you have not seen.",
 		"- Whole-note rewrite or reformat: replace_note with the complete new content, keeping wikilinks and tags intact. If the note starts with a YAML frontmatter block (--- ... ---), keep it unchanged; if it has none, never add one.",
-		"- Compile into a new note with create_note, citing the source notes as wikilinks. Add to the end of a note with append_to_note. Remove a note with delete_note (it goes to the trash).",
-		"- If the user rejects a change, ask what they want instead; never retry the same edit.",
+		"- Compile into a new note with create_note, citing the source notes as wikilinks. Add to the end of a note with append_to_note.",
+		"- Non-markdown files (recordings, images, PDFs, …) are attachments: list them with list_files; you cannot read or edit them. Remove any note or attachment with delete_file (it goes to the trash).",
+		"- If the user rejects a change, stop, tell them what was rejected and ask what they want instead; never retry the same change.",
 		"- Tool arguments must be valid JSON matching the tool's parameters.",
 		"",
 		`Today is ${now.toISOString().slice(0, 10)}. The vault has ${notes.length} markdown notes.`,
@@ -145,11 +158,15 @@ export class Agent {
 				if (cfg.autoApprove || conversation.approveAll) return "approve";
 				const decision = await this.deps.approve(req);
 				if (decision === "approve-all") conversation.approveAll = true;
+				if (decision === "reject") rejected = true;
 				return decision;
 			},
 		};
 
 		let think = cfg.think;
+		// Once the user has rejected a change in this turn, the model's next question is a real
+		// one ("what instead?") and must reach the user: no more auto-continuing.
+		let rejected = false;
 		let autoContinues = 0;
 		let groundingNudges = 0;
 		let toolsUsed = 0;
@@ -211,7 +228,13 @@ export class Agent {
 				}
 				// Small models like to stop and ask "shall I go on?". The user already said what
 				// they want and every write is approved separately, so answer for them.
-				if (cfg.autoContinue && autoContinues < MAX_AUTO_CONTINUES && looksLikePermissionQuestion(assistant.content)) {
+				if (
+					cfg.autoContinue &&
+					!rejected &&
+					autoContinues < MAX_AUTO_CONTINUES &&
+					looksLikePermissionQuestion(assistant.content) &&
+					!looksLikeChoiceQuestion(assistant.content)
+				) {
 					autoContinues++;
 					conversation.messages.push({ role: "user", content: AUTO_CONTINUE_TEXT });
 					callbacks.onAutoContinue?.(AUTO_CONTINUE_TEXT);
