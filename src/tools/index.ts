@@ -207,7 +207,7 @@ export function extractSection(content: string, heading: string): { text: string
 export const grepVault: ToolDefinition = {
 	name: "grep_vault",
 	description:
-		"Search the text of every note for a literal string (case-insensitive) or a regular expression, like grep. Returns matching lines as `path:line: text` grouped by note, optionally with context lines. The right tool for 'every note that contains X', embeds, tags, headings or exact phrases; much cheaper than reading notes.",
+		"Search the text of every note for a literal string (case-insensitive) or a regular expression, like grep. Returns matching lines as `path:line [enclosing heading]: text` grouped by note, optionally with context lines. The right tool for 'every note that contains X', embeds, tags, headings or exact phrases; much cheaper than reading notes. Two greps (e.g. for an embed and for '### Summary') with their headings tell you which sections have both.",
 	parameters: {
 		type: "object",
 		properties: {
@@ -253,12 +253,17 @@ export const grepVault: ToolDefinition = {
 		for (const n of notes) {
 			const lines = (await ctx.vault.read(n.path)).split("\n");
 			const rows: string[] = [];
+			let heading = "";
+			let inFence = false;
 			for (let i = 0; i < lines.length; i++) {
+				if (/^\s*(```|~~~)/.test(lines[i])) inFence = !inFence;
+				const h = !inFence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+				if (h) heading = `${h[1]} ${h[2].trim()}`;
 				if (!test(lines[i])) continue;
 				total++;
 				if (shown >= limit) continue;
 				shown++;
-				rows.push(`${n.path}:${i + 1}: ${lines[i]}`);
+				rows.push(`${n.path}:${i + 1}${heading && !h ? ` [${heading}]` : ""}: ${lines[i]}`);
 				for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) rows.push(`${n.path}:${j + 1}- ${lines[j]}`);
 			}
 			if (rows.length) {

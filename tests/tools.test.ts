@@ -452,9 +452,10 @@ describe("grep_vault", () => {
 		const { ctx } = makeCtx(vault);
 		const out = await grepVault.execute({ pattern: "![[Recording", context: 2 }, ctx);
 		expect(out).toMatch(/^3 matching lines in 2 notes:/);
-		expect(out).toContain("School/Lectures.md:5: ![[Recording 1.m4a]]");
+		expect(out).toContain("School/Lectures.md:5 [## 2026-09-03]: ![[Recording 1.m4a]]");
+		expect(out).toContain("School/Lectures.md:13 [## 2026-09-10]: ![[Recording 2.m4a]]");
 		expect(out).toContain("School/Lectures.md:7- ### Summary");
-		expect(out).toContain("Clubs/Club.md:3: ![[Recording 3.m4a]]");
+		expect(out).toContain("Clubs/Club.md:3 [## meeting]: ![[Recording 3.m4a]]");
 		expect(await grepVault.execute({ pattern: "recording", folder: "Clubs" }, ctx)).toMatch(/^1 matching line in 1 note/);
 		expect(await grepVault.execute({ pattern: "^## 2026", regex: true }, ctx)).toMatch(/^2 matching lines/);
 		expect(await grepVault.execute({ pattern: "zebra" }, ctx)).toMatch(/^No note contains/);
