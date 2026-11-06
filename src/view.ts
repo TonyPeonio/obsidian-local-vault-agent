@@ -1,6 +1,6 @@
 import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
-import { GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
+import { AUTO_CONTINUE_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
 import { ComposerSuggest } from "./composer-suggest";
 import { HELP_TEXT, attachMentions, matchCommands, matchNotes, parseSlash } from "./mentions";
 import { conversationToMarkdown } from "./transcript";
@@ -80,6 +80,7 @@ export class AgentView extends ItemView {
 		// Messages
 		this.messagesEl = root.createDiv({ cls: "lva-messages" });
 		this.renderWelcome();
+		void this.restoreChat();
 
 		// Composer
 		const composer = root.createDiv({ cls: "lva-composer" });
@@ -176,8 +177,50 @@ export class AgentView extends ItemView {
 		}
 	}
 
+	/** Re-renders the saved conversation (if any) when the panel opens. */
+	private async restoreChat(): Promise<void> {
+		const messages = await this.plugin.loadChat();
+		if (!messages || messages.length === 0 || this.conversation.messages.length > 0) return;
+		this.conversation = { messages, approveAll: false };
+		this.messagesEl.querySelector(".lva-welcome")?.remove();
+		await this.renderHistory(messages);
+		this.scrollToBottom();
+	}
+
+	private async renderHistory(messages: ChatMessage[]): Promise<void> {
+		for (let i = 0; i < messages.length; i++) {
+			const m = messages[i];
+			if (m.role === "user") {
+				if (m.content === AUTO_CONTINUE_TEXT || m.content.startsWith(GROUNDING_PREFIX) || /^Your reply was empty/.test(m.content)) {
+					this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: "(auto-continued)" });
+				} else {
+					const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
+					user.createDiv({ cls: "lva-bubble", text: m.content.split("\n\n(The user attached")[0] });
+				}
+			} else if (m.role === "assistant") {
+				const root = this.messagesEl.createDiv({ cls: "lva-msg lva-assistant" });
+				if (m.content.trim()) await this.renderMarkdown(m.content, root.createDiv({ cls: "lva-bubble lva-markdown" }));
+				for (const call of m.tool_calls ?? []) {
+					// The tool results follow the assistant message in call order.
+					const resultMsg = messages.slice(i + 1).find((r, k) => r.role === "tool" && k === (m.tool_calls ?? []).indexOf(call));
+					const card = root.createEl("details", { cls: "lva-tool lva-tool-ok" });
+					const summary = card.createEl("summary");
+					const icon = summary.createSpan({ cls: "lva-tool-icon" });
+					setIcon(icon, iconFor(call.function.name));
+					summary.createSpan({ cls: "lva-tool-name", text: describeCall(call) });
+					summary.createSpan({ cls: "lva-tool-args", text: resultMsg ? describeResult(call, resultMsg.content) : "" });
+					const body = card.createDiv({ cls: "lva-tool-body" });
+					body.createEl("pre", { cls: "lva-tool-pre", text: JSON.stringify(call.function.arguments, null, 2) });
+					if (resultMsg) body.createEl("pre", { cls: "lva-tool-pre lva-tool-result", text: resultMsg.content.length > 3000 ? resultMsg.content.slice(0, 3000) + "\n…" : resultMsg.content });
+				}
+			}
+		}
+		this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: "Restored from the previous session." });
+	}
+
 	private resetConversation(): void {
 		this.stop();
+		void this.plugin.clearChat();
 		this.conversation = newConversation();
 		this.usage = null;
 		this.messagesEl.empty();
@@ -364,6 +407,7 @@ export class AgentView extends ItemView {
 			this.abort = null;
 			this.setSendState(false);
 			this.plugin.agentBusy = false;
+			this.plugin.saveChat(this.conversation.messages);
 			this.updateStatus();
 			this.scrollToBottom();
 		}

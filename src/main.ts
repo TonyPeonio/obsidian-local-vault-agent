@@ -10,7 +10,7 @@ import { fuseRankings, keywordSearch } from "./search";
 import { DEFAULT_SETTINGS, isExcluded, type LocalVaultAgentSettings } from "./settings";
 import { LocalVaultAgentSettingTab } from "./settings-tab";
 import { ALL_TOOLS } from "./tools";
-import type { ChangeRecord, SearchHit } from "./types";
+import type { ChangeRecord, ChatMessage, SearchHit } from "./types";
 import { UndoStack, describeChange, planRevert } from "./undo";
 import { AgentView, VIEW_TYPE } from "./view";
 
@@ -72,6 +72,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			},
 		);
 
+		this.chatPath = `${pluginDir}/chat.json`;
 		const gistPath = `${pluginDir}/gists.json`;
 		this.gists = new GistCache(
 			this.client,
@@ -251,6 +252,40 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		void this.index.flush();
 		this.gists.cancel();
 		void this.gists.flush();
+	}
+
+	private chatPath = "";
+	private chatSaveTimer: number | null = null;
+
+	/** The last conversation, so a chat survives closing the panel or restarting Obsidian. */
+	async loadChat(): Promise<ChatMessage[] | null> {
+		try {
+			if (!this.chatPath || !(await this.app.vault.adapter.exists(this.chatPath))) return null;
+			const data = JSON.parse(await this.app.vault.adapter.read(this.chatPath)) as { messages?: ChatMessage[] };
+			return Array.isArray(data.messages) ? data.messages : null;
+		} catch {
+			return null;
+		}
+	}
+
+	saveChat(messages: ChatMessage[]): void {
+		if (!this.chatPath) return;
+		if (this.chatSaveTimer !== null) window.clearTimeout(this.chatSaveTimer);
+		this.chatSaveTimer = window.setTimeout(() => {
+			this.chatSaveTimer = null;
+			// Thinking is dropped: it is large and never shown again.
+			const slim = messages.map((m) => (m.thinking ? { ...m, thinking: undefined } : m));
+			void this.app.vault.adapter.write(this.chatPath, JSON.stringify({ messages: slim }));
+		}, 500);
+	}
+
+	async clearChat(): Promise<void> {
+		if (!this.chatPath) return;
+		try {
+			if (await this.app.vault.adapter.exists(this.chatPath)) await this.app.vault.adapter.remove(this.chatPath);
+		} catch {
+			// nothing to clear
+		}
 	}
 
 	private dailyFormat = "YYYY-MM-DD";
