@@ -21,6 +21,7 @@ import {
 	stripOutlineDecoration,
 	readNote,
 	readSection,
+	replaceLine,
 	replaceNote,
 	searchNotes,
 	searchPassages,
@@ -501,5 +502,30 @@ describe("edit_notes", () => {
 		expect(out).toContain("Stopped: the user rejected a change");
 		expect(await vault.read("Projects/Chess Robot.md")).toContain("Working.");
 		await expect(editNotes.execute({ edits: [] }, ctx)).rejects.toThrow(/non-empty/);
+	});
+});
+
+describe("edit_notes line_contains", () => {
+	it("replaces or deletes one identified line, scoped to a heading", async () => {
+		const vault = freshVault();
+		vault.seed("L.md", "# L\n\n## a\n\n![[Recording 1.m4a]]\n\n### Summary\n\n- x\n\n## b\n\n![[Recording 2.m4a]]\n\n- y\n");
+		const { ctx, approvals } = makeCtx(vault);
+		const out = await editNotes.execute(
+			{
+				edits: [
+					{ path: "L", heading: "a", line_contains: "![[Recording", new_text: "" },
+					{ path: "L", line_contains: "Recording 2", new_text: "(recording removed)" },
+					{ path: "L", line_contains: "zzz", new_text: "" },
+					{ path: "L", line_contains: "- ", new_text: "" },
+				],
+			},
+			ctx,
+		);
+		expect(out).toMatch(/^2 of 4 edits applied/);
+		expect(out).toMatch(/#3 L\.md: no line contains "zzz"/);
+		expect(out).toMatch(/#4 L\.md: "- " occurs on 2 lines/);
+		expect(approvals).toHaveLength(1);
+		expect(await vault.read("L.md")).toBe("# L\n\n## a\n\n### Summary\n\n- x\n\n## b\n\n(recording removed)\n\n- y\n");
+		expect(replaceLine("a\nb", "q", "", "nope")).toMatchObject({ ok: false });
 	});
 });

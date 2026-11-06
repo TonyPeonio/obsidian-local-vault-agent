@@ -536,7 +536,7 @@ export const editNote: ToolDefinition = {
 export const editNotes: ToolDefinition = {
 	name: "edit_notes",
 	description:
-		"Apply many small edits in one call: a list of {path, old_text, new_text}, possibly across many notes. Each old_text must match its note exactly and once (an empty new_text deletes the passage). Edits to the same note are combined into one approval. Use this for clean-ups found with grep_vault instead of one edit_note call per match. Failed edits are reported individually; the rest still apply.",
+		"Apply many small edits in one call, possibly across many notes; edits to the same note are combined into one approval. Each edit is {path, new_text} plus EITHER old_text (exact unique passage) OR line_contains (text that identifies one line; add heading to limit the search to that section). new_text replaces the passage or the whole line; an empty new_text deletes it. Example: {\"path\":\"School/Lectures.md\",\"heading\":\"2026-09-02\",\"line_contains\":\"![[Recording 20260902\",\"new_text\":\"\"}. Use this for clean-ups found with grep_vault instead of one edit_note call per match. Failed edits are reported individually; the rest still apply.",
 	parameters: {
 		type: "object",
 		properties: {
@@ -547,10 +547,12 @@ export const editNotes: ToolDefinition = {
 					type: "object",
 					properties: {
 						path: { type: "string", description: "Path of the note." },
-						old_text: { type: "string", description: "Exact text to replace (copy it from grep_vault / read_section)." },
-						new_text: { type: "string", description: "Replacement; empty string deletes the passage." },
+						old_text: { type: "string", description: "Exact text to replace (copy it from grep_vault / read_section). Omit when using line_contains." },
+						line_contains: { type: "string", description: "Text that occurs in exactly one line (of the section, when heading is given); that whole line is replaced." },
+						heading: { type: "string", description: "Optional heading text limiting line_contains to one section." },
+						new_text: { type: "string", description: "Replacement; empty string deletes the passage or line." },
 					},
-					required: ["path", "old_text", "new_text"],
+					required: ["path", "new_text"],
 				},
 			},
 		},
@@ -562,12 +564,14 @@ export const editNotes: ToolDefinition = {
 		if (!Array.isArray(raw) || raw.length === 0) throw new ToolError("edits must be a non-empty array of {path, old_text, new_text}.");
 		if (raw.length > 40) throw new ToolError("At most 40 edits per call; split the rest into another call.");
 		// Group by resolved note, keeping the order of first appearance.
-		const groups = new Map<string, { index: number; oldText: string; newText: string }[]>();
+		const groups = new Map<string, { index: number; oldText: string; newText: string; lineContains?: string; heading?: string }[]>();
 		const report: string[] = [];
 		raw.forEach((e, index) => {
 			const item = (e ?? {}) as Record<string, unknown>;
 			const pathInput = typeof item.path === "string" ? item.path : "";
 			const oldText = typeof item.old_text === "string" ? item.old_text : "";
+			const lineContains = typeof item.line_contains === "string" && item.line_contains.trim() ? item.line_contains.trim() : undefined;
+			const heading = typeof item.heading === "string" && item.heading.trim() ? item.heading.trim() : undefined;
 			const newText = typeof item.new_text === "string" ? item.new_text : "";
 			let path: string | null = null;
 			try {
@@ -580,12 +584,12 @@ export const editNotes: ToolDefinition = {
 				report.push(`#${index + 1}: missing path.`);
 				return;
 			}
-			if (!oldText) {
-				report.push(`#${index + 1} ${path}: old_text is empty.`);
+			if (!oldText && !lineContains) {
+				report.push(`#${index + 1} ${path}: give old_text or line_contains.`);
 				return;
 			}
 			const list = groups.get(path) ?? [];
-			list.push({ index, oldText, newText });
+			list.push({ index, oldText, newText, lineContains, heading });
 			groups.set(path, list);
 		});
 		let applied = 0;
@@ -594,6 +598,16 @@ export const editNotes: ToolDefinition = {
 			let content = before;
 			const okIdx: number[] = [];
 			for (const e of edits) {
+				if (e.lineContains) {
+					const r = replaceLine(content, e.lineContains, e.newText, e.heading);
+					if (!r.ok) {
+						report.push(`#${e.index + 1} ${path}: ${r.error}`);
+						continue;
+					}
+					content = r.content;
+					okIdx.push(e.index + 1);
+					continue;
+				}
 				const result = applyTextEdit(content, e.oldText, e.newText, false);
 				if (!result.ok) {
 					const hint = /not found/.test(result.error) ? nearestLines(content, e.oldText) : "";
@@ -625,6 +639,35 @@ export const editNotes: ToolDefinition = {
 		return `${applied} of ${raw.length} edit${raw.length === 1 ? "" : "s"} applied.\n${report.join("\n")}`;
 	},
 };
+
+/**
+ * Replaces the one line containing `needle` (within `heading`'s section when given) with
+ * `newText`; an empty replacement removes the line and a blank line that followed it.
+ */
+export function replaceLine(content: string, needle: string, newText: string, heading?: string): { ok: true; content: string } | { ok: false; error: string } {
+	const lines = content.split("\n");
+	let from = 0;
+	let to = lines.length;
+	if (heading) {
+		const section = extractSection(content, heading);
+		if (!section) return { ok: false, error: `no heading matching "${heading}".` };
+		from = section.startLine - 1;
+		to = section.endLine;
+	}
+	const lower = needle.toLowerCase();
+	const hits: number[] = [];
+	for (let i = from; i < to; i++) if (lines[i].toLowerCase().includes(lower)) hits.push(i);
+	if (hits.length === 0) return { ok: false, error: `no line contains "${needle}"${heading ? ` under "${heading}"` : ""}.` };
+	if (hits.length > 1) return { ok: false, error: `"${needle}" occurs on ${hits.length} lines${heading ? ` under "${heading}"` : ""} (${hits.map((i) => i + 1).join(", ")}); add heading or use a longer text.` };
+	const i = hits[0];
+	if (newText === "") {
+		const removeBlank = i + 1 < lines.length && lines[i + 1].trim() === "" && (i === 0 || lines[i - 1].trim() === "");
+		lines.splice(i, removeBlank ? 2 : 1);
+	} else {
+		lines.splice(i, 1, ...newText.split("\n"));
+	}
+	return { ok: true, content: lines.join("\n") };
+}
 
 export const appendToNote: ToolDefinition = {
 	name: "append_to_note",
