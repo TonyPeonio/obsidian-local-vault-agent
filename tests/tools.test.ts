@@ -523,7 +523,7 @@ describe("edit_notes line_contains", () => {
 		);
 		expect(out).toMatch(/^2 of 4 edits applied/);
 		expect(out).toMatch(/#3 L\.md: no line contains "zzz"/);
-		expect(out).toMatch(/#4 L\.md: "- " occurs on 2 lines/);
+		expect(out).toMatch(/#4 L\.md: "-" occurs on 2 lines \(7, 13\)/);
 		expect(approvals).toHaveLength(1);
 		expect(await vault.read("L.md")).toBe("# L\n\n## a\n\n### Summary\n\n- x\n\n## b\n\n(recording removed)\n\n- y\n");
 		expect(replaceLine("a\nb", "q", "", "nope")).toMatchObject({ ok: false });
