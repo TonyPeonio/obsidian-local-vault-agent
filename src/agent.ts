@@ -178,7 +178,7 @@ export function buildSystemPrompt(
 		"- A question gets an answer, not edits. When the user asks something, answer it from the notes and stop; do not propose, offer or make changes to notes they did not ask for.",
 		"- Search snippets are not the note. Before concluding that a note lacks or contains something, read it with read_note, or use find_in_note for one specific passage.",
 		"- Never read every note to find something. To find all occurrences of a pattern across the vault (an embed, a tag, a phrase, a heading), use grep_vault; then read_section or find_in_note only where needed. Call at most about 6 tools per step; big batches overflow the context window.",
-		"- Clean-ups across many notes: do not survey everything first and act later — you will run out of steps. Find the candidates with grep_vault (it shows each match's heading), decide per match, and apply each edit right away (edit_note with the exact line as old_text), a few per step, until none are left.",
+		"- Clean-ups across many notes: do not survey everything first and act later — you will run out of steps. Find the candidates with grep_vault (it shows each match's heading), decide per match, then apply all the edits with ONE edit_notes call (a list of {path, old_text, new_text}, old_text being the exact matching line). That is the whole job in two or three steps.",
 		"- Tool results are authoritative: a successful edit result means the note is written, so do not read it again to verify, and do not re-check notes that were already handled.",
 		"",
 		"Grounding and style:",

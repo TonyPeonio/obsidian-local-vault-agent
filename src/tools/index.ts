@@ -533,6 +533,99 @@ export const editNote: ToolDefinition = {
 	},
 };
 
+export const editNotes: ToolDefinition = {
+	name: "edit_notes",
+	description:
+		"Apply many small edits in one call: a list of {path, old_text, new_text}, possibly across many notes. Each old_text must match its note exactly and once (an empty new_text deletes the passage). Edits to the same note are combined into one approval. Use this for clean-ups found with grep_vault instead of one edit_note call per match. Failed edits are reported individually; the rest still apply.",
+	parameters: {
+		type: "object",
+		properties: {
+			edits: {
+				type: "array",
+				description: "The edits to apply, at most 40.",
+				items: {
+					type: "object",
+					properties: {
+						path: { type: "string", description: "Path of the note." },
+						old_text: { type: "string", description: "Exact text to replace (copy it from grep_vault / read_section)." },
+						new_text: { type: "string", description: "Replacement; empty string deletes the passage." },
+					},
+					required: ["path", "old_text", "new_text"],
+				},
+			},
+		},
+		required: ["edits"],
+	},
+	mutates: true,
+	async execute(args, ctx) {
+		const raw = args.edits;
+		if (!Array.isArray(raw) || raw.length === 0) throw new ToolError("edits must be a non-empty array of {path, old_text, new_text}.");
+		if (raw.length > 40) throw new ToolError("At most 40 edits per call; split the rest into another call.");
+		// Group by resolved note, keeping the order of first appearance.
+		const groups = new Map<string, { index: number; oldText: string; newText: string }[]>();
+		const report: string[] = [];
+		raw.forEach((e, index) => {
+			const item = (e ?? {}) as Record<string, unknown>;
+			const pathInput = typeof item.path === "string" ? item.path : "";
+			const oldText = typeof item.old_text === "string" ? item.old_text : "";
+			const newText = typeof item.new_text === "string" ? item.new_text : "";
+			let path: string | null = null;
+			try {
+				path = pathInput ? resolveExisting(ctx.vault, pathInput) : null;
+			} catch (err) {
+				report.push(`#${index + 1} ${pathInput}: ${(err as Error).message}`);
+				return;
+			}
+			if (!path) {
+				report.push(`#${index + 1}: missing path.`);
+				return;
+			}
+			if (!oldText) {
+				report.push(`#${index + 1} ${path}: old_text is empty.`);
+				return;
+			}
+			const list = groups.get(path) ?? [];
+			list.push({ index, oldText, newText });
+			groups.set(path, list);
+		});
+		let applied = 0;
+		for (const [path, edits] of groups) {
+			const before = await ctx.vault.read(path);
+			let content = before;
+			const okIdx: number[] = [];
+			for (const e of edits) {
+				const result = applyTextEdit(content, e.oldText, e.newText, false);
+				if (!result.ok) {
+					const hint = /not found/.test(result.error) ? nearestLines(content, e.oldText) : "";
+					report.push(`#${e.index + 1} ${path}: ${result.error}${hint ? `\n${hint}` : ""}`);
+					continue;
+				}
+				content = result.content;
+				okIdx.push(e.index + 1);
+			}
+			if (content === before) continue;
+			try {
+				await requestApproval(ctx, {
+					tool: "edit_notes",
+					path,
+					before,
+					after: content,
+					summary: `Edit ${path} (${okIdx.length} change${okIdx.length === 1 ? "" : "s"})`,
+				});
+			} catch (err) {
+				report.push(`${path}: ${(err as Error).message}`);
+				report.push("Stopped: the user rejected a change. Do not retry it; ask what they want instead.");
+				break;
+			}
+			await ctx.vault.modify(path, content);
+			ctx.recordChange?.({ tool: "edit_note", path, before, after: content });
+			applied += okIdx.length;
+			report.push(`${path}: applied edit${okIdx.length === 1 ? "" : "s"} ${okIdx.map((i) => `#${i}`).join(", ")}.`);
+		}
+		return `${applied} of ${raw.length} edit${raw.length === 1 ? "" : "s"} applied.\n${report.join("\n")}`;
+	},
+};
+
 export const appendToNote: ToolDefinition = {
 	name: "append_to_note",
 	description: "Append markdown to the end of an existing note. The user must approve before it is written.",
@@ -845,6 +938,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
 	getActiveNote,
 	createNote,
 	editNote,
+	editNotes,
 	appendToNote,
 	replaceNote,
 	moveNote,

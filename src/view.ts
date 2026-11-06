@@ -609,6 +609,10 @@ function describeCall(call: ToolCall): string {
 			return `Created ${short(a.path)}`;
 		case "edit_note":
 			return `Edited ${short(a.path)}`;
+		case "edit_notes": {
+			const n = Array.isArray(a.edits) ? a.edits.length : 0;
+			return `Applied ${n} edit${n === 1 ? "" : "s"} across notes`;
+		}
 		case "append_to_note":
 			return `Appended to ${short(a.path)}`;
 		case "replace_note":

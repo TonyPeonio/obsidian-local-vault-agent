@@ -5,6 +5,7 @@ import {
 	createNote,
 	deleteFile,
 	editNote,
+	editNotes,
 	extractSection,
 	findInNote,
 	getActiveNote,
@@ -460,5 +461,45 @@ describe("grep_vault", () => {
 		expect(await grepVault.execute({ pattern: "^## 2026", regex: true }, ctx)).toMatch(/^2 matching lines/);
 		expect(await grepVault.execute({ pattern: "zebra" }, ctx)).toMatch(/^No note contains/);
 		expect(await grepVault.execute({ pattern: "Recording", limit: 1 }, ctx)).toContain("2 more matching lines");
+	});
+});
+
+describe("edit_notes", () => {
+	it("groups edits by note, one approval per note, reports failures and records undo", async () => {
+		const vault = freshVault();
+		vault.seed("L.md", "# L\n\n## a\n\n![[Recording 1.m4a]]\n\n### Summary\n\n## b\n\n![[Recording 2.m4a]]\n");
+		const { ctx, approvals } = makeCtx(vault);
+		const changes: unknown[] = [];
+		ctx.recordChange = (c) => changes.push(c);
+		const out = await editNotes.execute(
+			{
+				edits: [
+					{ path: "L", old_text: "![[Recording 1.m4a]]\n\n", new_text: "" },
+					{ path: "L", old_text: "![[Recording 2.m4a]]\n", new_text: "" },
+					{ path: "Ideas/Sensors", old_text: "cheap", new_text: "pricey" },
+					{ path: "Ideas/Sensors", old_text: "nonexistent 20260101.m4a", new_text: "" },
+					{ path: "Nope", old_text: "x", new_text: "y" },
+				],
+			},
+			ctx,
+		);
+		expect(out).toMatch(/^3 of 5 edits applied\./);
+		expect(out).toContain("L.md: applied edits #1, #2.");
+		expect(out).toContain("Ideas/Sensors.md: applied edit #3.");
+		expect(out).toMatch(/#4 Ideas\/Sensors\.md: old_text was not found/);
+		expect(out).toMatch(/#5 Nope: No note found/);
+		expect(approvals.map((a) => a.path)).toEqual(["L.md", "Ideas/Sensors.md"]);
+		expect(await vault.read("L.md")).toBe("# L\n\n## a\n\n### Summary\n\n## b\n\n");
+		expect(await vault.read("Ideas/Sensors.md")).toContain("pricey");
+		expect(changes).toHaveLength(2);
+	});
+	it("stops at a rejection and validates input", async () => {
+		const vault = freshVault();
+		const { ctx } = makeCtx(vault, "reject");
+		const out = await editNotes.execute({ edits: [{ path: "Ideas/Sensors", old_text: "cheap", new_text: "x" }, { path: "Projects/Chess Robot", old_text: "Working.", new_text: "Done." }] }, ctx);
+		expect(out).toMatch(/^0 of 2 edits applied/);
+		expect(out).toContain("Stopped: the user rejected a change");
+		expect(await vault.read("Projects/Chess Robot.md")).toContain("Working.");
+		await expect(editNotes.execute({ edits: [] }, ctx)).rejects.toThrow(/non-empty/);
 	});
 });

@@ -87,8 +87,9 @@ function largest(max: number, ok: (n: number) => boolean): number {
 
 /**
  * Share of the context window (in characters, ~3.2 per token) spent on the outline: 12%
- * for names and headings, 30% when gists are available since they are what the budget buys.
+ * for names and headings, 18% when gists are available (measured: 30% at 32k left too little room for
+ * a long task's tool results).
  */
 export function outlineBudget(numCtx: number, withGists = false): number {
-	return Math.floor(numCtx * 3.2 * (withGists ? 0.3 : 0.12));
+	return Math.floor(numCtx * 3.2 * (withGists ? 0.18 : 0.12));
 }

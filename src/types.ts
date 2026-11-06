@@ -32,7 +32,7 @@ export interface JsonSchema {
 			type: "string" | "number" | "integer" | "boolean" | "array";
 			description: string;
 			enum?: string[];
-			items?: { type: string };
+			items?: { type: string; properties?: Record<string, { type: string; description: string }>; required?: string[] };
 		}
 	>;
 	required?: string[];
