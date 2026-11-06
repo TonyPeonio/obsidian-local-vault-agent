@@ -44,8 +44,8 @@ export class ApprovalModal extends Modal {
 		contentEl.createDiv({ cls: "lva-approval-hint", text: "Enter approves · A approves all in this chat · Esc rejects" });
 		this.scope.register([], "Enter", (e) => {
 			// A button the user tabbed to keeps its own Enter behaviour.
-			const focused = document.activeElement;
-			if (focused instanceof HTMLButtonElement && focused !== approve) return true;
+			const focused = activeDocument.activeElement;
+			if (focused && focused.instanceOf(HTMLButtonElement) && focused !== approve) return true;
 			e.preventDefault();
 			this.finish("approve");
 			return false;
