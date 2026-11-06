@@ -54,12 +54,13 @@ Things to try:
 
 ### How it works
 
-The model gets seventeen tools. Reading: `search_passages` (matching note *sections*, verbatim),
+The model gets eighteen tools. Reading: `search_passages` (matching note *sections*, verbatim),
 `search_notes`, `grep_vault` (grep every note for a string or regex, with context lines),
 `read_note`, `read_section`, `find_in_note`, `list_notes` (folder, tag, name, modified dates),
 `list_files`, `read_file` (text of PDFs and text attachments), `vault_overview`,
-`get_active_note`. Writing: `create_note`, `edit_note`, `append_to_note`, `replace_note`,
-`move_note` (links are updated) and `delete_file` (notes *or* attachments, to the trash). It calls
+`get_active_note`. Writing: `create_note`, `edit_note`, `edit_notes` (many edits across notes in one call, one
+approval per note), `append_to_note`, `replace_note`, `move_note` (links are updated) and
+`delete_file` (notes *or* attachments, to the trash). It calls
 them in a loop until the task is done, then reports. Every write opens an approval dialog with a
 line diff before touching the vault (Enter approves, A approves all in this chat, Esc rejects).
 
