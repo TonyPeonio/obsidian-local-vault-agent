@@ -485,6 +485,33 @@ describe("context guards", () => {
 		expect(results[0].content.length).toBeGreaterThan(1000); // the first results survive
 		expect(nudges).toHaveLength(1);
 		expect(nudges[0]).toMatch(/reply was empty/);
-		expect(conv.messages.at(-1)?.content).toBe("Here is the answer.");
+		expect(conv.messages.at(-1)?.content).toMatch(/^Here is the answer\.\n\nSources: \[\[N0\]\]/);
+	});
+});
+
+describe("sources footer", () => {
+	it("appends the notes read when an answer cites nothing, and not after writes", async () => {
+		const { agent } = setup([
+			{ tool: "read_note", args: { path: "Projects/Chess Robot" } },
+			{ tool: "read_section", args: { path: "Projects/Chess Robot", heading: "Chess Robot" } },
+			{ content: "The gantry uses an electromagnet." },
+		]);
+		const conv = newConversation();
+		await agent.run(conv, "how does it move pieces?", {});
+		expect(conv.messages.at(-1)?.content).toBe("The gantry uses an electromagnet.\n\nSources: [[Projects/Chess Robot]]");
+
+		const b = setup([{ tool: "read_note", args: { path: "Ideas/Sensors" } }, { content: "See [[Ideas/Sensors]]." }]);
+		const conv2 = newConversation();
+		await b.agent.run(conv2, "x", {});
+		expect(conv2.messages.at(-1)?.content).toBe("See [[Ideas/Sensors]].");
+
+		const c = setup([
+			{ tool: "read_note", args: { path: "Ideas/Sensors" } },
+			{ tool: "edit_note", args: { path: "Ideas/Sensors", old_text: "cheap", new_text: "pricey" } },
+			{ content: "Done." },
+		]);
+		const conv3 = newConversation();
+		await c.agent.run(conv3, "x", {});
+		expect(conv3.messages.at(-1)?.content).toBe("Done.");
 	});
 });

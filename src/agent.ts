@@ -37,6 +37,14 @@ export const AUTO_CONTINUE_TEXT =
 
 export const GROUNDING_PREFIX = "Grounding check:";
 
+const READ_TOOLS = new Set(["read_note", "read_section", "get_active_note"]);
+
+/** Appends "Sources: [[A]], [[B]]" (at most six) to an answer that cited nothing. */
+export function withSources(content: string, paths: string[]): string {
+	const links = paths.slice(0, 6).map((p) => `[[${p.replace(/\.md$/i, "")}]]`);
+	return `${content.trimEnd()}\n\nSources: ${links.join(", ")}`;
+}
+
 /**
  * Small models cite notes as `` `Projects/Note.md` `` instead of [[Projects/Note]]. Turn a
  * backticked path that resolves to a note into a wikilink so citations are clickable; code
@@ -253,6 +261,9 @@ export class Agent {
 		let groundingNudges = 0;
 		let emptyNudges = 0;
 		let toolsUsed = 0;
+		let writes = 0;
+		/** Notes the model read this turn, in order, for the sources footer. */
+		const readPaths: string[] = [];
 		for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
 			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, this.deps.dailyNote?.() ?? null) };
@@ -314,6 +325,11 @@ export class Agent {
 				continue;
 			}
 			if (calls.length === 0) {
+				// An answer built from notes it read but cites none of them gets a sources footer.
+				if (writes === 0 && readPaths.length > 0 && !/\[\[/.test(assistant.content) && assistant.content.trim()) {
+					assistant.content = withSources(assistant.content, readPaths);
+					callbacks.onAssistantDone?.(assistant);
+				}
 				// A reply that cites notes which do not exist is fabricated. Send it back once.
 				if (groundingNudges < 1) {
 					const bad = unresolvedLinks(assistant.content, vault);
@@ -359,6 +375,14 @@ export class Agent {
 				}
 				callbacks.onToolDone?.(call, result, ok);
 				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name });
+				if (ok) {
+					const tool = toolByName.get(call.function.name);
+					if (tool?.mutates) writes++;
+					if (READ_TOOLS.has(call.function.name)) {
+						const header = /^# (.+?)(?: \(lines [^)]*\))?$/m.exec(result);
+						if (header && !readPaths.includes(header[1].trim())) readPaths.push(header[1].trim());
+					}
+				}
 			}
 		}
 
