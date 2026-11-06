@@ -118,3 +118,15 @@ describe("agent records approved writes", () => {
 		expect(undo.list()[0].before).toBe("Hall sensors are cheap.");
 	});
 });
+
+describe("planRevert for moves", () => {
+	it("moves the file back", async () => {
+		const vault = new FakeVault({ "Archive/A.md": "a" });
+		const plan = await planRevert(change({ tool: "move_note", path: "Archive/A.md", before: "Projects/A.md", after: "Archive/A.md" }), vault);
+		expect(plan.summary).toBe("Undo: move Archive/A.md back to Projects/A.md");
+		await plan.apply();
+		expect(vault.exists("Projects/A.md")).toBe(true);
+		expect(vault.exists("Archive/A.md")).toBe(false);
+		await expect(planRevert(change({ tool: "move_note", path: "Archive/A.md", before: "Projects/A.md", after: "Archive/A.md" }), vault)).rejects.toThrow(/no longer there/);
+	});
+});

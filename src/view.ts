@@ -1,6 +1,8 @@
 import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
 import { GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
+import { ComposerSuggest } from "./composer-suggest";
+import { HELP_TEXT, attachMentions, matchCommands, matchNotes, parseSlash } from "./mentions";
 import { conversationToMarkdown } from "./transcript";
 import type { ChangeRecord, ChatMessage, ToolCall, UsageInfo } from "./types";
 
@@ -25,6 +27,7 @@ export class AgentView extends ItemView {
 	private unsubscribeStatus: (() => void) | null = null;
 	private unsubscribeGists: (() => void) | null = null;
 	private usage: UsageInfo | null = null;
+	private suggest: ComposerSuggest | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -82,8 +85,25 @@ export class AgentView extends ItemView {
 		const composer = root.createDiv({ cls: "lva-composer" });
 		this.inputEl = composer.createEl("textarea", {
 			cls: "lva-input",
-			attr: { placeholder: "Ask about your notes… (Enter to send, Shift+Enter for a new line)", rows: "2" },
+			attr: { placeholder: "Ask about your notes… (@ to attach a note, / for commands, Shift+Enter for a new line)", rows: "2" },
 		});
+		// Registered before the Enter-to-send handler so picking a suggestion wins.
+		this.suggest = new ComposerSuggest(this.inputEl, composer, [
+			{
+				char: "@",
+				items: (q) =>
+					matchNotes(q, this.plugin.vault.listNotes()).map((n) => ({ key: n.path, title: n.basename, detail: n.folder || "/" })),
+				pick: (item, replace) => replace(`[[${item.key.replace(/\.md$/i, "")}]] `),
+			},
+			{
+				char: "/",
+				items: (q) => matchCommands(q).map((c) => ({ key: c.id, title: c.name, detail: c.description })),
+				pick: (item, replace) => {
+					replace("");
+					void this.runSlash(item.key);
+				},
+			},
+		]);
 		this.inputEl.addEventListener("keydown", (e) => {
 			if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
 				e.preventDefault();
@@ -211,15 +231,64 @@ export class AgentView extends ItemView {
 		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
 	}
 
+	/** Runs a `/command` from the composer. */
+	async runSlash(id: string): Promise<void> {
+		this.suggest?.close();
+		switch (id) {
+			case "reformat":
+				await this.plugin.reformatCurrentNote(this);
+				break;
+			case "summarize":
+				await this.plugin.summarizeCurrentNote(this);
+				break;
+			case "undo":
+				await this.plugin.undoLast();
+				break;
+			case "undo-all":
+				await this.plugin.undoLastTurn();
+				break;
+			case "new":
+				this.resetConversation();
+				break;
+			case "gists":
+				new Notice("Regenerating gists in the background…");
+				void this.plugin.gists.syncAll(true);
+				break;
+			case "index":
+				new Notice("Rebuilding the semantic index…");
+				void this.plugin.index.syncAll(true);
+				break;
+			case "help": {
+				this.messagesEl.querySelector(".lva-welcome")?.remove();
+				const el = this.messagesEl.createDiv({ cls: "lva-msg lva-assistant" });
+				await this.renderMarkdown(HELP_TEXT, el.createDiv({ cls: "lva-bubble lva-markdown" }));
+				this.scrollToBottom();
+				break;
+			}
+			default:
+				new Notice(`Unknown command /${id}. Type / to see the list.`);
+		}
+	}
+
 	private async submit(): Promise<void> {
 		const text = this.inputEl.value.trim();
 		if (!text || this.running) return;
+		const slash = parseSlash(text);
+		if (slash) {
+			this.inputEl.value = "";
+			await this.runSlash(slash.id);
+			return;
+		}
 		this.messagesEl.querySelector(".lva-welcome")?.remove();
 		this.inputEl.value = "";
 		this.autoGrow();
 
 		const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
 		user.createDiv({ cls: "lva-bubble", text });
+		const { message, attached } = await attachMentions(text, this.plugin.vault, this.plugin.settings.maxToolResultChars * 2);
+		if (attached.length) {
+			user.createDiv({ cls: "lva-attached", text: `Attached: ${attached.map((p) => p.replace(/\.md$/i, "")).join(", ")}` });
+		}
 		this.scrollToBottom();
 
 		this.abort = new AbortController();
@@ -230,7 +299,7 @@ export class AgentView extends ItemView {
 		try {
 			await this.plugin.agent.run(
 				this.conversation,
-				text,
+				message,
 				{
 					onStatus: (s) => this.updateStatus(s),
 					onAssistantStart: () => {

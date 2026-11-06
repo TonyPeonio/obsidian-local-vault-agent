@@ -150,7 +150,7 @@ export function buildSystemPrompt(
 		"- Small change: locate the exact passage with read_note or find_in_note, then call edit_note with old_text copied verbatim. If edit_note reports no match, use the candidate lines it returns; never guess at text you have not seen.",
 		"- Whole-note rewrite or reformat: replace_note with the complete new content, keeping wikilinks and tags intact. If the note starts with a YAML frontmatter block (--- ... ---), keep it unchanged; if it has none, never add one.",
 		"- Compile into a new note with create_note, citing the source notes as wikilinks. Add to the end of a note with append_to_note.",
-		"- Non-markdown files (recordings, images, PDFs, …) are attachments: list them with list_files; you cannot read or edit them. Remove any note or attachment with delete_file (it goes to the trash).",
+		"- Non-markdown files (recordings, images, PDFs, …) are attachments: list them with list_files; you cannot read or edit them. Move or rename with move_note (links in other notes are updated). Remove any note or attachment with delete_file (it goes to the trash).",
 		"- If the user rejects a change, stop, tell them what was rejected and ask what they want instead; never retry the same change.",
 		"- Tool arguments must be valid JSON matching the tool's parameters.",
 		"",

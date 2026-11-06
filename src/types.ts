@@ -93,6 +93,8 @@ export interface VaultAccess {
 	trash(path: string): Promise<void>;
 	readBinary(path: string): Promise<ArrayBuffer>;
 	createBinary(path: string, data: ArrayBuffer): Promise<void>;
+	/** Move or rename a note or attachment; links pointing at it are updated. */
+	rename(path: string, newPath: string): Promise<void>;
 	getMetadata(path: string): NoteMetadata;
 	getActiveNotePath(): string | null;
 	getSelection(): string | null;

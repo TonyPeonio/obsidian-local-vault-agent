@@ -78,6 +78,15 @@ export class ObsidianVault implements VaultAccess {
 		await this.app.vault.createBinary(normalized, data);
 	}
 
+	async rename(path: string, newPath: string): Promise<void> {
+		const file = this.app.vault.getFileByPath(normalizePath(path)) ?? this.fileFor(path);
+		if (!file) throw new Error(`File not found: ${path}`);
+		const target = normalizePath(newPath);
+		await this.ensureFolder(target);
+		// FileManager.renameFile rewrites links in other notes; Vault.rename would not.
+		await this.app.fileManager.renameFile(file, target);
+	}
+
 	/** Creates each missing ancestor folder of `normalizedPath` in turn. */
 	private async ensureFolder(normalizedPath: string): Promise<void> {
 		const folder = normalizedPath.includes("/") ? normalizedPath.slice(0, normalizedPath.lastIndexOf("/")) : "";

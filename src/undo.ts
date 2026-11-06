@@ -64,6 +64,8 @@ export function describeChange(change: ChangeRecord): string {
 			return `created ${change.path}`;
 		case "delete_file":
 			return `deleted ${change.path}`;
+		case "move_note":
+			return `moved ${change.before} to ${change.after}`;
 		case "append_to_note":
 			return `appended to ${change.path}`;
 		case "replace_note":
@@ -92,6 +94,20 @@ export async function planRevert(change: ChangeRecord, vault: VaultAccess): Prom
 				after: "",
 				summary: `Undo: delete ${path} (the agent created it)`,
 				apply: () => vault.trash(path),
+			};
+		}
+		case "move_note": {
+			const from = change.after;
+			const to = change.before;
+			if (!vault.resolveFile(from)) throw new Error(`${from} is no longer there; nothing to undo.`);
+			if (vault.resolveFile(to)) throw new Error(`${to} already exists; cannot move back.`);
+			return {
+				tool: "undo",
+				path: from,
+				before: from,
+				after: to,
+				summary: `Undo: move ${from} back to ${to}`,
+				apply: () => vault.rename(from, to),
 			};
 		}
 		case "delete_file": {

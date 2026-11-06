@@ -48,25 +48,42 @@ Things to try:
 | Reformat the current note | Asks the agent to tidy the open note into clean markdown (diff-approved) |
 | Summarize the current note | Bullet-point summary of the open note |
 | Rebuild semantic index | Re-embeds every note from scratch |
+| Rebuild note gists | Regenerates the one-sentence gist of every note |
+| Undo the agent's last change | Reverts the most recent approved write (diff-approved) |
+| Undo every change from the agent's last message | Reverts that message's writes, newest first |
 
 ### How it works
 
-The model gets twelve tools: `search_notes`, `read_note`, `find_in_note`, `list_notes`,
-`list_files`, `vault_overview`, `get_active_note`, `create_note`, `edit_note`, `append_to_note`,
-`replace_note` and `delete_file`. It calls them in a loop until the task is done, then reports.
-The five mutating tools open an approval dialog with a line diff before touching the vault.
-`list_files` and `delete_file` cover attachments (recordings, images, PDFs): the agent cannot read
-them, but it can find them and move them — or any note — to the trash according to your
-"Deleted files" setting.
+The model gets fifteen tools. Reading: `search_passages` (matching note *sections*, verbatim),
+`search_notes`, `read_note`, `read_section`, `find_in_note`, `list_notes`, `list_files`,
+`vault_overview`, `get_active_note`. Writing: `create_note`, `edit_note`, `append_to_note`,
+`replace_note`, `move_note` (links are updated) and `delete_file` (notes *or* attachments, to the
+trash). It calls them in a loop until the task is done, then reports. Every write opens an approval
+dialog with a line diff before touching the vault.
 
-The agent is told to finish multi-note tasks on its own rather than stopping after each step to
-ask "shall I proceed?". If a model asks anyway, the agent answers yes for you up to three times
-per message (a small note appears in the chat) — see *Keep going when the model asks for
-permission* in settings. It never does this for a question that offers you a choice, nor after
-you have rejected a change in that message. Every write is still approved individually.
+**What it sees on every message.** Besides your question, the model gets an outline of the whole
+vault — every note's folder, name, headings and tags, budgeted to the context window — and, when
+*Note gists* is on, a one-sentence gist of each note written by the chat model in the background
+(paused while you chat, cached until the note changes). Together with the per-heading semantic
+index that is how it "knows" a 200-note vault that could never fit in context. A **conventions
+note** (`AGENT.md` by default, like a CLAUDE.md) is included verbatim: folder meanings, naming
+rules, things never to touch.
 
-The header has a **Copy conversation** button that copies the whole chat, including tool calls
-and results, as markdown.
+**Autonomy.** The agent is told to finish multi-note tasks on its own rather than stopping after
+each step to ask "shall I proceed?". If a model asks anyway, the agent answers yes for you up to
+three times per message (a small note appears in the chat) — see *Keep going when the model asks
+for permission* in settings. It never does this for a question that offers you a choice, nor after
+you have rejected a change in that message, and a question always gets an answer rather than edits.
+
+**Undo.** Every approved write is recorded with what it replaced. *Undo the agent's last change* and
+*Undo every change from the agent's last message* are commands (also `/undo`, `/undo-all`), and each
+tool card has an **Undo** button. A revert is shown as a diff and applied only when approved.
+
+**Composer.** `@` picks a note to attach to your message (its content is included, so no tool call
+is needed); `/` lists commands (`/reformat`, `/summarize`, `/undo`, `/undo-all`, `/new`, `/gists`,
+`/index`, `/help`). The header has a **Copy conversation** button that copies the whole chat,
+including tool calls and results, as markdown. The footer shows index and gist status and the
+context used by the last model call.
 
 Semantic search chunks each note by heading, embeds the chunks with the embedding model, and
 stores the vectors in `.obsidian/plugins/local-vault-agent/index.json`. The index updates
@@ -74,9 +91,13 @@ incrementally when you change notes. Search results merge semantic and keyword r
 
 ## Settings worth knowing
 
-- **Context window (`num_ctx`)** — default 16384. Ollama's own default of 4096 is far too small
+- **Context window (`num_ctx`)** — default 32768. Ollama's own default of 4096 is far too small
   for reading notes; if answers seem to ignore what the tools returned, this is usually why.
-  32768 works well on 12 GB cards with a 9B model.
+  32768 works on 12 GB cards with a 9B model; set `OLLAMA_FLASH_ATTENTION=1` and
+  `OLLAMA_KV_CACHE_TYPE=q8_0` on the Ollama server to roughly halve the KV-cache memory.
+- **Note gists** — on by default. The first pass over a large vault takes a few minutes of GPU
+  time in the background; turn it off on a laptop that shares the GPU with other work.
+- **Conventions note** — `AGENT.md` by default; *Create / open* writes a starter you can edit.
 - **Thinking mode** — Qwen3 / DeepSeek-R1 style reasoning. "Auto" uses the model default. Turn it
   off for faster replies on simple questions.
 - **Auto-approve edits** — off by default. Leave it off; use "Approve all in this chat" in the

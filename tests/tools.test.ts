@@ -10,6 +10,7 @@ import {
 	getActiveNote,
 	listFiles,
 	listNotes,
+	moveNote,
 	nearestLines,
 	normalizeNotePath,
 	readNote,
@@ -347,5 +348,31 @@ describe("read_section / extractSection", () => {
 		const miss = await readSection.execute({ path: "Long", heading: "Zebra" }, ctx);
 		expect(miss).toMatch(/No heading matching "Zebra"/);
 		expect(miss).toContain("## Status");
+	});
+});
+
+describe("move_note", () => {
+	it("moves a note after approval, creating folders, and records the change", async () => {
+		const vault = freshVault();
+		const { ctx, approvals } = makeCtx(vault);
+		const changes: unknown[] = [];
+		ctx.recordChange = (c) => changes.push(c);
+		const out = await moveNote.execute({ path: "Ideas/Sensors", new_path: "Archive/2025/Sensors" }, ctx);
+		expect(out).toContain("Moved Ideas/Sensors.md to Archive/2025/Sensors.md");
+		expect(approvals[0]).toMatchObject({ tool: "move_note", before: "Ideas/Sensors.md", after: "Archive/2025/Sensors.md" });
+		expect(vault.exists("Archive/2025/Sensors.md")).toBe(true);
+		expect(vault.exists("Ideas/Sensors.md")).toBe(false);
+		expect(changes[0]).toMatchObject({ tool: "move_note", path: "Archive/2025/Sensors.md", before: "Ideas/Sensors.md" });
+	});
+	it("moves attachments, refuses collisions and rejections", async () => {
+		const vault = freshVault();
+		vault.seedFile("rec.webm", 10);
+		const { ctx } = makeCtx(vault);
+		await moveNote.execute({ path: "rec.webm", new_path: "Recordings/rec.webm" }, ctx);
+		expect(vault.listAttachments()[0].path).toBe("Recordings/rec.webm");
+		await expect(moveNote.execute({ path: "Ideas/Sensors", new_path: "Projects/Chess Robot" }, ctx)).rejects.toThrow(/already exists/);
+		const rejected = makeCtx(vault, "reject");
+		await expect(moveNote.execute({ path: "Ideas/Sensors", new_path: "X" }, rejected.ctx)).rejects.toThrow(/rejected/);
+		expect(vault.exists("Ideas/Sensors.md")).toBe(true);
 	});
 });

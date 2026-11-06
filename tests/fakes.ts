@@ -106,6 +106,22 @@ export class FakeVault implements VaultAccess {
 		return this.resolve(p);
 	}
 
+	renamed: [string, string][] = [];
+
+	async rename(path: string, newPath: string): Promise<void> {
+		if (this.files.has(newPath) || this.attachments.has(newPath)) throw new Error(`Already exists: ${newPath}`);
+		const note = this.files.get(path);
+		const att = this.attachments.get(path);
+		if (note) {
+			this.files.delete(path);
+			this.files.set(newPath, note);
+		} else if (att) {
+			this.attachments.delete(path);
+			this.attachments.set(newPath, att);
+		} else throw new Error(`File not found: ${path}`);
+		this.renamed.push([path, newPath]);
+	}
+
 	async trash(path: string): Promise<void> {
 		if (this.files.has(path)) this.files.delete(path);
 		else if (this.attachments.has(path)) this.attachments.delete(path);

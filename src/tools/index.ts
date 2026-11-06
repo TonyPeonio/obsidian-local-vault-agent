@@ -45,6 +45,18 @@ function bool(args: Record<string, unknown>, key: string, fallback = false): boo
  * Normalize a model-supplied path: forward slashes, `.md` extension, no leading slash.
  * `configDir` is the vault's configuration folder (`Vault.configDir`), which is off limits.
  */
+/** Like normalizeNotePath but keeps whatever extension the path has (attachments). */
+export function normalizeFilePath(input: string, configDir?: string): string {
+	let p = input.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+	p = p.replace(/^!?\[\[|\]\]$/g, "").replace(/\/{2,}/g, "/").replace(/^\.\//, "");
+	if (p.split("/").some((seg) => seg === "..")) throw new ToolError("Paths may not contain '..'.");
+	if (configDir) {
+		const cfg = configDir.replace(/^\/+|\/+$/g, "").toLowerCase();
+		if (cfg && p.toLowerCase().startsWith(cfg + "/")) throw new ToolError(`The ${configDir} folder is off limits.`);
+	}
+	return p;
+}
+
 export function normalizeNotePath(input: string, configDir?: string): string {
 	let p = input.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
 	p = p.replace(/^\[\[|\]\]$/g, "");
@@ -605,6 +617,34 @@ export const deleteFile: ToolDefinition = {
 	},
 };
 
+export const moveNote: ToolDefinition = {
+	name: "move_note",
+	description:
+		"Move or rename a note (or an attachment) to a new path. Wikilinks to it in other notes are updated automatically; missing folders are created. Use it to organise the vault. The user must approve first.",
+	parameters: {
+		type: "object",
+		properties: {
+			path: { type: "string", description: "Current path of the note or file." },
+			new_path: { type: "string", description: "New vault-relative path, e.g. 'Archive/2025/Old Project.md'. Keep the extension." },
+		},
+		required: ["path", "new_path"],
+	},
+	mutates: true,
+	async execute(args, ctx) {
+		const input = str(args, "path");
+		const path = ctx.vault.resolveFile(input) ?? ctx.vault.resolve(input);
+		if (!path) throw new ToolError(`No file found for "${input}". Use list_notes or list_files to find the exact path.`);
+		const isNote = /\.md$/i.test(path);
+		const newPath = isNote ? normalizeNotePath(str(args, "new_path"), ctx.configDir) : normalizeFilePath(str(args, "new_path"), ctx.configDir);
+		if (newPath === path) return "The new path is the same as the current one; nothing moved.";
+		if (ctx.vault.resolveFile(newPath) || ctx.vault.exists(newPath)) throw new ToolError(`"${newPath}" already exists. Choose another path.`);
+		await requestApproval(ctx, { tool: "move_note", path, before: path, after: newPath, summary: `Move ${path} → ${newPath}` });
+		await ctx.vault.rename(path, newPath);
+		ctx.recordChange?.({ tool: "move_note", path: newPath, before: path, after: newPath });
+		return `Moved ${path} to ${newPath}. Links in other notes were updated.`;
+	},
+};
+
 function formatSize(bytes: number): string {
 	if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
 	if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
@@ -649,6 +689,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
 	editNote,
 	appendToNote,
 	replaceNote,
+	moveNote,
 	deleteFile,
 ];
 

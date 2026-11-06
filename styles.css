@@ -328,3 +328,51 @@
 .lva-status.lva-ctx-warn {
 	color: var(--text-warning);
 }
+
+/* Composer completion popup (@ notes, / commands) */
+.lva-composer {
+	position: relative;
+}
+.lva-suggest {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 100%;
+	margin-bottom: 4px;
+	max-height: 260px;
+	overflow-y: auto;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	box-shadow: var(--shadow-s);
+	z-index: 10;
+	padding: 4px 0;
+}
+.lva-suggest-item {
+	display: flex;
+	gap: 8px;
+	align-items: baseline;
+	padding: 4px 10px;
+	cursor: pointer;
+	font-size: var(--font-ui-small);
+}
+.lva-suggest-item.is-selected,
+.lva-suggest-item:hover {
+	background: var(--background-modifier-hover);
+}
+.lva-suggest-title {
+	font-weight: 500;
+}
+.lva-suggest-detail {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.lva-attached {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin-top: 2px;
+	text-align: right;
+}

@@ -145,15 +145,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			id: "reformat-current-note",
 			name: "Reformat the current note",
 			checkCallback: (checking) => {
-				const file = this.app.workspace.getActiveFile();
-				if (!file || file.extension !== "md") return false;
-				if (!checking) {
-					void (async () => {
-						const content = await this.app.vault.cachedRead(file);
-						const view = await this.activateView();
-						await view?.send(reformatPrompt(file.path, content));
-					})();
-				}
+				if (!this.activeNote()) return false;
+				if (!checking) void this.reformatCurrentNote();
 				return true;
 			},
 		});
@@ -161,11 +154,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			id: "summarize-current-note",
 			name: "Summarize the current note",
 			checkCallback: (checking) => {
-				const file = this.app.workspace.getActiveFile();
-				if (!file || file.extension !== "md") return false;
-				if (!checking) {
-					void this.activateView().then((view) => view?.send(summarizePrompt(file.path)));
-				}
+				if (!this.activeNote()) return false;
+				if (!checking) void this.summarizeCurrentNote();
 				return true;
 			},
 		});
@@ -173,9 +163,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			id: "undo-last-change",
 			name: "Undo the agent's last change",
 			checkCallback: (checking) => {
-				const latest = this.undo.latest();
-				if (!latest) return false;
-				if (!checking) void this.revert(latest);
+				if (!this.undo.latest()) return false;
+				if (!checking) void this.undoLast();
 				return true;
 			},
 		});
@@ -183,9 +172,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			id: "undo-last-message",
 			name: "Undo every change from the agent's last message",
 			checkCallback: (checking) => {
-				const latest = this.undo.latest();
-				if (!latest) return false;
-				if (!checking) void this.revertTurn(latest.turn);
+				if (!this.undo.latest()) return false;
+				if (!checking) void this.undoLastTurn();
 				return true;
 			},
 		});
@@ -259,6 +247,52 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		void this.index.flush();
 		this.gists.cancel();
 		void this.gists.flush();
+	}
+
+	private activeNote(): TFile | null {
+		const file = this.app.workspace.getActiveFile();
+		return file && file.extension === "md" ? file : null;
+	}
+
+	/** Sends the reformat prompt for the open note (command and /reformat). */
+	async reformatCurrentNote(view?: AgentView | null): Promise<void> {
+		const file = this.activeNote();
+		if (!file) {
+			new Notice("Open a markdown note first.");
+			return;
+		}
+		const content = await this.app.vault.cachedRead(file);
+		const target = view ?? (await this.activateView());
+		await target?.send(reformatPrompt(file.path, content));
+	}
+
+	/** Sends the summarize prompt for the open note (command and /summarize). */
+	async summarizeCurrentNote(view?: AgentView | null): Promise<void> {
+		const file = this.activeNote();
+		if (!file) {
+			new Notice("Open a markdown note first.");
+			return;
+		}
+		const target = view ?? (await this.activateView());
+		await target?.send(summarizePrompt(file.path));
+	}
+
+	async undoLast(): Promise<void> {
+		const latest = this.undo.latest();
+		if (!latest) {
+			new Notice("Nothing to undo.");
+			return;
+		}
+		await this.revert(latest);
+	}
+
+	async undoLastTurn(): Promise<void> {
+		const latest = this.undo.latest();
+		if (!latest) {
+			new Notice("Nothing to undo.");
+			return;
+		}
+		await this.revertTurn(latest.turn);
 	}
 
 	/**
