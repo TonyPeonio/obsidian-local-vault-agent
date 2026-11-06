@@ -72,6 +72,14 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			vault: this.vault,
 			tools: ALL_TOOLS,
 			search: (q, limit) => this.hybridSearch(q, limit),
+			searchPassages: async (q, limit) => {
+				if (!this.index.ready) return [];
+				try {
+					return await this.index.searchPassages(q, limit);
+				} catch {
+					return [];
+				}
+			},
 			approve: (req) => {
 				const modal = new ApprovalModal(this.app, req);
 				modal.open();

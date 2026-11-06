@@ -1,5 +1,6 @@
 import type { OllamaClient } from "./ollama";
 import { OllamaError } from "./ollama";
+import { buildOutline, outlineBudget } from "./outline";
 import { ToolError, toOllamaTools } from "./tools";
 import type { UndoStack } from "./undo";
 import type {
@@ -104,6 +105,8 @@ export interface AgentDeps {
 	vault: VaultAccess;
 	tools: ToolDefinition[];
 	search: ToolContext["search"];
+	/** Chunk-level semantic search; absent when there is no embedding index. */
+	searchPassages?: ToolContext["searchPassages"];
 	approve: (req: ApprovalRequest) => Promise<ApprovalDecision>;
 	getConfig: () => AgentConfig;
 	configDir?: string;
@@ -127,7 +130,8 @@ export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Dat
 		"- Tool results are authoritative: a successful edit result means the note is written, so do not read it again to verify, and do not re-check notes that were already handled.",
 		"",
 		"Grounding and style:",
-		"- You know nothing about the user's notes until you read them. Every answer about the notes starts with search_notes (or read_note on a path you were given), then read_note on the relevant results. Never answer from memory or assumption, never invent note names, quotes or facts, and cite only notes you actually read. If nothing relevant exists, say so.",
+		"- You know nothing about the contents of the user's notes until you read them. The vault outline below tells you which notes exist and their headings, nothing more. Every answer about the notes starts with search_passages or search_notes (or read_note / read_section on a path from the outline), then reading the relevant results. Never answer from memory or assumption, never invent note names, quotes or facts, and cite only notes you actually read. If nothing relevant exists, say so.",
+		"- Prefer search_passages for questions: it returns the matching sections verbatim, which is usually enough to answer. Use read_section to get one heading's full text, and read_note only when you need the whole note.",
 		"- Refer to notes with wikilinks, e.g. [[Projects/Chess Robot]] (path without the .md extension), so the user can click through.",
 		"- Keep answers concise and in markdown. When the task is complete, stop calling tools and give a short report of what you did and anything you could not do.",
 		"",
@@ -141,6 +145,9 @@ export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Dat
 		"",
 		`Today is ${now.toISOString().slice(0, 10)}. The vault has ${notes.length} markdown notes.`,
 		active ? `The user currently has this note open: ${active}` : "No note is currently open in the editor.",
+		"",
+		"Vault outline (every note, grouped by folder, with its headings; use these paths as given):",
+		buildOutline(vault, outlineBudget(cfg.numCtx)),
 	];
 	if (cfg.extraSystemPrompt.trim()) lines.push("", "Additional instructions from the user:", cfg.extraSystemPrompt.trim());
 	return lines.join("\n");
@@ -171,6 +178,7 @@ export class Agent {
 		const ctx: ToolContext = {
 			vault,
 			search: this.deps.search,
+			searchPassages: this.deps.searchPassages,
 			maxResultChars: cfg.maxToolResultChars,
 			configDir: this.deps.configDir,
 			signal,
@@ -237,6 +245,9 @@ export class Agent {
 			const assistant = response.message;
 			conversation.messages.push(assistant);
 			callbacks.onAssistantDone?.(assistant);
+			if (response.promptTokens !== undefined) {
+				callbacks.onUsage?.({ promptTokens: response.promptTokens, completionTokens: response.completionTokens ?? 0, numCtx: cfg.numCtx });
+			}
 
 			const calls = assistant.tool_calls ?? [];
 			if (calls.length === 0) {

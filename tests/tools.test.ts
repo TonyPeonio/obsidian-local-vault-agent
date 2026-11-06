@@ -5,6 +5,7 @@ import {
 	createNote,
 	deleteFile,
 	editNote,
+	extractSection,
 	findInNote,
 	getActiveNote,
 	listFiles,
@@ -12,8 +13,10 @@ import {
 	nearestLines,
 	normalizeNotePath,
 	readNote,
+	readSection,
 	replaceNote,
 	searchNotes,
+	searchPassages,
 	vaultOverview,
 } from "../src/tools";
 import type { ApprovalDecision, ApprovalRequest, ToolContext } from "../src/types";
@@ -301,5 +304,48 @@ describe("replace_note", () => {
 		const out = await replaceNote.execute({ path: "Ideas/Sensors", content: await vault.read("Ideas/Sensors.md") }, ctx);
 		expect(out).toMatch(/identical/);
 		expect(approvals).toHaveLength(0);
+	});
+});
+
+describe("search_passages", () => {
+	it("returns passages verbatim from the injected passage search", async () => {
+		const { ctx } = makeCtx(freshVault());
+		ctx.searchPassages = async (q, limit) => [
+			{ path: "Projects/Chess Robot.md", heading: "Status", text: `Working. (${q}, ${limit})`, score: 0.81 },
+			{ path: "Ideas/Sensors.md", heading: "", text: "Hall sensors are cheap.", score: 0.5 },
+		];
+		const out = await searchPassages.execute({ query: "gantry status", limit: 2 }, ctx);
+		expect(out).toMatch(/^2 passages/);
+		expect(out).toContain("--- [1] Projects/Chess Robot.md › Status (score 0.81)\nWorking. (gantry status, 2)");
+		expect(out).toContain("--- [2] Ideas/Sensors.md (score 0.50)\nHall sensors are cheap.");
+	});
+	it("falls back to keyword snippets without an index", async () => {
+		const { ctx } = makeCtx(freshVault());
+		const out = await searchPassages.execute({ query: "hall sensors" }, ctx);
+		expect(out).toMatch(/semantic index is not available/);
+		expect(out).toContain("Ideas/Sensors.md");
+		expect(await searchPassages.execute({ query: "zzzz" }, ctx)).toMatch(/No passages matched/);
+	});
+});
+
+describe("read_section / extractSection", () => {
+	const note = "# Title\n\nintro\n\n## Status\n\nWorking.\n\n### Detail\n\n```\n## not a heading\n```\n\n## Open problems\n\n- one\n";
+	it("extracts a heading and its subsections up to the next heading of the same level", () => {
+		const s = extractSection(note, "status");
+		expect(s?.text).toBe("## Status\n\nWorking.\n\n### Detail\n\n```\n## not a heading\n```");
+		expect(s).toMatchObject({ startLine: 5, endLine: 14 });
+		expect(extractSection(note, "Open")?.text).toBe("## Open problems\n\n- one");
+		expect(extractSection(note, "nope")).toBeNull();
+	});
+	it("reads a section by prefix and lists headings when missing", async () => {
+		const vault = freshVault();
+		vault.seed("Long.md", note);
+		const { ctx } = makeCtx(vault);
+		const out = await readSection.execute({ path: "Long", heading: "open" }, ctx);
+		expect(out).toContain("# Long.md (lines 15–18)");
+		expect(out).toContain("## Open problems\n\n- one");
+		const miss = await readSection.execute({ path: "Long", heading: "Zebra" }, ctx);
+		expect(miss).toMatch(/No heading matching "Zebra"/);
+		expect(miss).toContain("## Status");
 	});
 });

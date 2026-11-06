@@ -53,7 +53,7 @@ async function main() {
 
 	const cfg: AgentConfig = {
 		model: MODEL,
-		numCtx: 16384,
+		numCtx: 32768,
 		temperature: 0.3,
 		think: THINK === "on" ? true : THINK === "off" ? false : undefined,
 		keepAlive: "10m",
@@ -72,6 +72,7 @@ async function main() {
 			const se = await index.search(q, limit * 2);
 			return fuseRankings([se, kw], limit);
 		},
+		searchPassages: (q, limit) => index.searchPassages(q, limit),
 		approve: async () => "approve",
 		getConfig: () => cfg,
 	});

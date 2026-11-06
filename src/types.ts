@@ -105,6 +105,20 @@ export interface SearchHit {
 	heading?: string;
 }
 
+/** One indexed section of a note, returned verbatim by passage search. */
+export interface Passage {
+	path: string;
+	heading: string;
+	text: string;
+	score: number;
+}
+
+export interface UsageInfo {
+	promptTokens: number;
+	completionTokens: number;
+	numCtx: number;
+}
+
 export interface ApprovalRequest {
 	tool: string;
 	path: string;
@@ -134,6 +148,8 @@ export interface ChangeRecord {
 export interface ToolContext {
 	vault: VaultAccess;
 	search: (query: string, limit: number) => Promise<SearchHit[]>;
+	/** Chunk-level semantic search; undefined when no embedding index is available. */
+	searchPassages?: (query: string, limit: number) => Promise<Passage[]>;
 	/** Ask the user to approve a mutation. Resolves to the decision. */
 	approve: (req: ApprovalRequest) => Promise<ApprovalDecision>;
 	maxResultChars: number;
@@ -165,4 +181,6 @@ export interface AgentCallbacks {
 	onAutoContinue?(text: string): void;
 	/** A write was approved and applied during `call`; `change` is its undo record. */
 	onChange?(change: ChangeRecord, call: ToolCall): void;
+	/** Token counts of the latest model call, for a context meter. */
+	onUsage?(usage: UsageInfo): void;
 }

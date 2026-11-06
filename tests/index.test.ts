@@ -130,3 +130,17 @@ describe("SemanticIndex", () => {
 		expect(index.status().indexedFiles).toBe(3);
 	});
 });
+
+describe("searchPassages", () => {
+	it("returns chunk-level hits with text, capped per note", async () => {
+		const { index } = setup();
+		await index.syncAll();
+		const all = await index.searchPassages("hall sensors detect pieces", 10);
+		expect(all.length).toBe(4); // two chunks of Chess Robot + Pasta + Templates/Daily
+		expect(all[0]).toMatchObject({ path: "Projects/Chess Robot.md", heading: "Sensors" });
+		expect(all[0].text).toContain("Hall sensors detect pieces");
+		const capped = await index.searchPassages("hall sensors detect pieces", 10, 1);
+		expect(capped.filter((p) => p.path === "Projects/Chess Robot.md")).toHaveLength(1);
+		expect(await index.searchPassages("x", 2)).toHaveLength(2);
+	});
+});

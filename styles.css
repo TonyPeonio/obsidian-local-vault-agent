@@ -324,3 +324,7 @@
 .lva-undo-btn:disabled {
 	opacity: 0.6;
 }
+
+.lva-status.lva-ctx-warn {
+	color: var(--text-warning);
+}

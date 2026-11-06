@@ -2,7 +2,7 @@ import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIco
 import type LocalVaultAgentPlugin from "./main";
 import { GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
 import { conversationToMarkdown } from "./transcript";
-import type { ChangeRecord, ChatMessage, ToolCall } from "./types";
+import type { ChangeRecord, ChatMessage, ToolCall, UsageInfo } from "./types";
 
 export const VIEW_TYPE = "local-vault-agent-view";
 
@@ -23,6 +23,7 @@ export class AgentView extends ItemView {
 	private abort: AbortController | null = null;
 	private running = false;
 	private unsubscribeStatus: (() => void) | null = null;
+	private usage: UsageInfo | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -153,6 +154,7 @@ export class AgentView extends ItemView {
 	private resetConversation(): void {
 		this.stop();
 		this.conversation = newConversation();
+		this.usage = null;
 		this.messagesEl.empty();
 		this.renderWelcome();
 		this.inputEl.focus();
@@ -184,7 +186,15 @@ export class AgentView extends ItemView {
 		else if (s.building) parts.push(`Indexing… ${s.indexedFiles} notes (${s.pending} left)`);
 		else if (s.lastError) parts.push(`Index: ${s.lastError}`);
 		else parts.push(`Index: ${s.indexedFiles} notes, ${s.totalChunks} chunks`);
+		let warn = false;
+		if (this.usage) {
+			const used = this.usage.promptTokens + this.usage.completionTokens;
+			const pct = Math.round((used / this.usage.numCtx) * 100);
+			warn = pct >= 85;
+			parts.push(`Context ${fmtK(used)} / ${fmtK(this.usage.numCtx)} (${pct}%)`);
+		}
 		this.statusEl.setText(parts.join(" · "));
+		this.statusEl.toggleClass("lva-ctx-warn", warn);
 	}
 
 	private scrollToBottom(): void {
@@ -237,6 +247,10 @@ export class AgentView extends ItemView {
 						this.scrollToBottom();
 					},
 					onChange: (change, call) => turn?.attachUndo(call, change),
+					onUsage: (u) => {
+						this.usage = u;
+						this.updateStatus("Working…");
+					},
 					onAutoContinue: (nudge) => {
 						this.messagesEl.createDiv({
 							cls: "lva-msg lva-note",
@@ -403,6 +417,10 @@ class TurnRenderer {
 			text: result.length > 3000 ? result.slice(0, 3000) + "\n…" : result,
 		});
 	}
+}
+
+function fmtK(n: number): string {
+	return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
 }
 
 function iconFor(tool: string): string {

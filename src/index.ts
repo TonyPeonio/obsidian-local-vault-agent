@@ -1,6 +1,6 @@
 import { chunkMarkdown } from "./chunker";
 import type { OllamaClient } from "./ollama";
-import type { SearchHit, VaultAccess } from "./types";
+import type { Passage, SearchHit, VaultAccess } from "./types";
 
 /**
  * Semantic index: embeds note chunks with an Ollama embedding model and answers
@@ -227,6 +227,30 @@ export class SemanticIndex {
 		}
 		hits.sort((a, b) => b.score - a.score);
 		return hits.slice(0, limit).map(({ chunkIndex, ...h }) => h);
+	}
+
+	/**
+	 * Chunk-level search: the best-matching sections across the vault, verbatim, at most
+	 * `perNote` from any one note so a single long note cannot crowd out the others.
+	 */
+	async searchPassages(query: string, limit: number, perNote = 3, signal?: AbortSignal): Promise<Passage[]> {
+		if (!this.ready) return [];
+		const model = this.opts.getModel();
+		const [qv] = await this.client.embed(model, [embedInput(model, query, "query")], signal);
+		const q = new Float32Array(qv);
+		const scored: (Passage & { index: number })[] = [];
+		for (const [path, file] of Object.entries(this.data.files)) {
+			const vecs = this.vectorsFor(path, file);
+			const mine: (Passage & { index: number })[] = [];
+			for (let i = 0; i < vecs.length; i++) {
+				const chunk = file.chunks[i];
+				mine.push({ path, heading: chunk.heading, text: chunk.text, score: cosine(q, vecs[i]), index: i });
+			}
+			mine.sort((a, b) => b.score - a.score);
+			scored.push(...mine.slice(0, perNote));
+		}
+		scored.sort((a, b) => b.score - a.score);
+		return scored.slice(0, limit).map(({ index, ...p }) => p);
 	}
 
 	private vectorsFor(path: string, file: StoredFile): Float32Array[] {

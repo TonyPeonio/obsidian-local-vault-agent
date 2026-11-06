@@ -24,7 +24,7 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	model: "qwen3.5:9b",
 	embeddingModel: "nomic-embed-text",
 	semanticSearch: true,
-	numCtx: 16384,
+	numCtx: 32768,
 	temperature: 0.3,
 	thinking: "auto",
 	showThinking: true,
