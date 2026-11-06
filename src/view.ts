@@ -1,6 +1,7 @@
 import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
-import { newConversation, type Conversation } from "./agent";
+import { GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
+import { conversationToMarkdown } from "./transcript";
 import type { ChatMessage, ToolCall } from "./types";
 
 export const VIEW_TYPE = "local-vault-agent-view";
@@ -56,6 +57,17 @@ export class AgentView extends ItemView {
 		const newChat = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": "New chat" } });
 		setIcon(newChat, "plus");
 		newChat.addEventListener("click", () => this.resetConversation());
+		const copyChat = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": "Copy conversation as markdown" } });
+		setIcon(copyChat, "clipboard-copy");
+		copyChat.addEventListener("click", () => {
+			const md = conversationToMarkdown(this.conversation.messages);
+			if (!md.trim()) {
+				new Notice("Nothing to copy yet.");
+				return;
+			}
+			void navigator.clipboard.writeText(md);
+			new Notice("Conversation copied as markdown.");
+		});
 		const refresh = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": "Refresh model list" } });
 		setIcon(refresh, "refresh-cw");
 		refresh.addEventListener("click", () => void this.populateModels(true));
@@ -222,6 +234,15 @@ export class AgentView extends ItemView {
 					},
 					onToolDone: (call, result, ok) => {
 						turn?.toolDone(call, result, ok);
+						this.scrollToBottom();
+					},
+					onAutoContinue: (nudge) => {
+						this.messagesEl.createDiv({
+							cls: "lva-msg lva-note",
+							text: nudge.startsWith(GROUNDING_PREFIX)
+								? "The reply cited notes that do not exist — sent it back to search the vault first."
+								: "The model asked whether to continue — answered yes automatically.",
+						});
 						this.scrollToBottom();
 					},
 				},

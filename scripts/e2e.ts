@@ -7,7 +7,7 @@
  */
 import { readFileSync, readdirSync, statSync } from "fs";
 import { join, relative } from "path";
-import { Agent, newConversation, type AgentConfig } from "../src/agent";
+import { Agent, looksLikePermissionQuestion, newConversation, type AgentConfig } from "../src/agent";
 import { SemanticIndex, type IndexData } from "../src/index";
 import { OllamaClient } from "../src/ollama";
 import { fuseRankings, keywordSearch } from "../src/search";
@@ -60,6 +60,7 @@ async function main() {
 		maxIterations: 12,
 		maxToolResultChars: 12000,
 		autoApprove: true,
+		autoContinue: true,
 		extraSystemPrompt: "",
 	};
 	const agent = new Agent({
@@ -76,6 +77,7 @@ async function main() {
 	});
 
 	let failures = 0;
+	let autoContinues = 0;
 	const check = (label: string, ok: boolean) => {
 		console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
 		if (!ok) failures++;
@@ -93,6 +95,10 @@ async function main() {
 				if (!ok) console.log(`  [tool error] ${r.slice(0, 200)}`);
 			},
 			onAssistantDone: (m) => (answer = m.content || answer),
+			onAutoContinue: () => {
+				autoContinues++;
+				console.log("  [auto-continue] the model asked for permission; answered yes");
+			},
 		});
 		console.log(`--- answer (${Date.now() - start} ms, tools: ${tools.join(" → ") || "none"}):\n${answer.trim()}\n`);
 		return { answer, tools, conv };
@@ -147,6 +153,37 @@ async function main() {
 		const r = await ask("Follow-up", "Which daily note says the drift problem was fixed, and how was it fixed?");
 		check("mentions re-homing", /hom(e|ing)/i.test(r.answer));
 		check("mentions 2026-02-03", /2026-02-03/.test(r.answer));
+	}
+
+	// 5. Autonomy: a multi-note clean-up must run to the end without stopping to ask.
+	{
+		vault.seed(
+			"School/Algorithms/Lectures.md",
+			"# Algorithms lectures\n\n## 2026-09-17\n\n![[Recording 20260917135752.m4a]]\n\n### Summary\n\n- Dijkstra with a binary heap is O((V+E) log V).\n- Negative edges break it; use Bellman-Ford instead.\n",
+		);
+		vault.seed(
+			"School/Machine Learning/Lectures.md",
+			"# ML lectures\n\n## 2026-10-22\n\n![[Recording 20261022150637.m4a]]\n\n- [ ] Activity: anomaly detection\n",
+		);
+		vault.seed(
+			"Clubs/MEAL Club.md",
+			"# MEAL Club\n\n## 2026-09-21 meeting\n\n![[Recording 20260921130651.m4a]]\n\n### Summary\n\n- Potluck on the 30th; bring a dish and a recipe card.\n",
+		);
+		vault.activePath = null;
+		autoContinues = 0;
+		const r = await ask(
+			"Autonomy",
+			"Every lecture or meeting note that embeds an audio recording (a line like ![[Recording ….m4a]]) and already has a Summary section no longer needs the recording. Find all such notes and remove the audio embed line from each of them. Leave notes that have no summary untouched. Do all of them now.",
+		);
+		const algo = await vault.read("School/Algorithms/Lectures.md");
+		const meal = await vault.read("Clubs/MEAL Club.md");
+		const ml = await vault.read("School/Machine Learning/Lectures.md");
+		check("removed the embed from Algorithms (has summary)", !/Recording/.test(algo));
+		check("removed the embed from MEAL Club (has summary)", !/Recording/.test(meal));
+		check("kept the embed in ML (no summary)", /Recording 20261022150637/.test(ml));
+		check("kept the Algorithms summary", /Bellman-Ford/.test(algo));
+		check("did not end on a permission question", !looksLikePermissionQuestion(r.answer));
+		console.log(`  auto-continues used: ${autoContinues}`);
 	}
 
 	console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);

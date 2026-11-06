@@ -203,10 +203,20 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Keep going when the model asks for permission")
+			.setDesc("Small models like to stop with 'Would you like me to proceed?'. When on, the agent answers yes for you (up to three times per message) so multi-note tasks run to the end. Every write still goes through approval.")
+			.addToggle((t) =>
+				t.setValue(s.autoContinue).onChange(async (v) => {
+					s.autoContinue = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
 			.setName("Max tool calls per message")
-			.setDesc("Stops runaway loops. Raise it for big compilation tasks.")
+			.setDesc("Stops runaway loops. Multi-note clean-ups need 2–3 calls per note, so keep this generous.")
 			.addSlider((sl) =>
-				sl.setLimits(3, 50, 1).setValue(s.maxIterations).onChange(async (v) => {
+				sl.setLimits(3, 100, 1).setValue(s.maxIterations).onChange(async (v) => {
 					s.maxIterations = v;
 					await this.plugin.saveSettings();
 				}),

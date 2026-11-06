@@ -62,6 +62,14 @@ export class FakeVault implements VaultAccess {
 		f.mtime = this.clock += 1000;
 	}
 
+	trashed: string[] = [];
+
+	async trash(path: string): Promise<void> {
+		if (!this.files.has(path)) throw new Error(`Note not found: ${path}`);
+		this.files.delete(path);
+		this.trashed.push(path);
+	}
+
 	getMetadata(path: string): NoteMetadata {
 		const content = this.files.get(path)?.content ?? "";
 		const tags = Array.from(new Set(Array.from(content.matchAll(/(^|\s)(#[\p{L}\p{N}_/-]+)/gu)).map((m) => m[2])));

@@ -83,6 +83,13 @@ export class ObsidianVault implements VaultAccess {
 		await this.app.vault.process(file, () => content);
 	}
 
+	async trash(path: string): Promise<void> {
+		const file = this.fileFor(path);
+		if (!file) throw new Error(`Note not found: ${path}`);
+		// Honours the user's "Deleted files" preference (system trash / .trash / permanent).
+		await this.app.fileManager.trashFile(file);
+	}
+
 	getMetadata(path: string): NoteMetadata {
 		const file = this.fileFor(path);
 		const empty: NoteMetadata = { tags: [], links: [], backlinks: [], headings: [], frontmatter: {} };

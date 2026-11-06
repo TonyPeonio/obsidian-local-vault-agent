@@ -3,9 +3,12 @@ import { keywordSearch } from "../src/search";
 import {
 	appendToNote,
 	createNote,
+	deleteNote,
 	editNote,
+	findInNote,
 	getActiveNote,
 	listNotes,
+	nearestLines,
 	normalizeNotePath,
 	readNote,
 	replaceNote,
@@ -166,6 +169,15 @@ describe("edit_note", () => {
 		const { ctx } = makeCtx(freshVault());
 		await expect(editNote.execute({ path: "Ideas/Sensors", old_text: "zzz", new_text: "" }, ctx)).rejects.toThrow(/not found/);
 	});
+	it("shows the real lines when old_text was guessed from a snippet", async () => {
+		const vault = freshVault();
+		vault.seed("Lectures.md", "# Week 1\n\n![[Recording 20260910121426.m4a]]\n\nNotes here.");
+		const { ctx } = makeCtx(vault);
+		await expect(
+			editNote.execute({ path: "Lectures", old_text: "![[Recording 20260910121426.m4a|audio]]", new_text: "" }, ctx),
+		).rejects.toThrow(/3 \| !\[\[Recording 20260910121426\.m4a\]\]/);
+		expect(nearestLines("a\nb", "zzzz qqqq")).toMatch(/Nothing similar/);
+	});
 	it("allows deleting text with an empty new_text", async () => {
 		const vault = freshVault();
 		const { ctx } = makeCtx(vault);
@@ -180,6 +192,51 @@ describe("append_to_note", () => {
 		const { ctx } = makeCtx(vault);
 		await appendToNote.execute({ path: "Ideas/Sensors", content: "More.\n\n" }, ctx);
 		expect(await vault.read("Ideas/Sensors.md")).toBe("#hardware\nHall sensors are cheap.\n\nMore.\n");
+	});
+});
+
+describe("find_in_note", () => {
+	it("returns numbered matches with context", async () => {
+		const { ctx } = makeCtx(freshVault());
+		const out = await findInNote.execute({ path: "Chess Robot", pattern: "GANTRY" }, ctx);
+		expect(out).toMatch(/^1 match in Projects\/Chess Robot\.md/);
+		expect(out).toContain(">    6 | The gantry moves pieces. See [[Sensors]].");
+		expect(out).toContain("     5 | ");
+	});
+	it("supports regex and reports no match or a bad regex", async () => {
+		const { ctx } = makeCtx(freshVault());
+		expect(await findInNote.execute({ path: "Chess Robot", pattern: "^## ", regex: true }, ctx)).toContain("| ## Status");
+		expect(await findInNote.execute({ path: "Chess Robot", pattern: "zebra" }, ctx)).toMatch(/No lines .* contain "zebra"/);
+		const fallback = await findInNote.execute({ path: "Chess Robot", pattern: "[[Sensors", regex: true }, ctx);
+		expect(fallback).toMatch(/not a valid regular expression/);
+		expect(fallback).toContain("| The gantry moves pieces. See [[Sensors]].");
+	});
+	it("caps the number of matches", async () => {
+		const vault = freshVault();
+		vault.seed("Many.md", Array.from({ length: 30 }, (_, i) => `item ${i}`).join("\n"));
+		const { ctx } = makeCtx(vault);
+		const out = await findInNote.execute({ path: "Many", pattern: "item", limit: 2 }, ctx);
+		expect(out).toMatch(/^30 matches/);
+		expect(out).toContain("and 28 more matches");
+	});
+});
+
+describe("delete_note", () => {
+	it("moves the note to the trash after approval", async () => {
+		const vault = freshVault();
+		const { ctx, approvals } = makeCtx(vault);
+		const out = await deleteNote.execute({ path: "Ideas/Sensors" }, ctx);
+		expect(out).toContain("trash");
+		expect(approvals[0]).toMatchObject({ tool: "delete_note", path: "Ideas/Sensors.md", after: "" });
+		expect(approvals[0].before).toContain("Hall sensors");
+		expect(vault.exists("Ideas/Sensors.md")).toBe(false);
+		expect(vault.trashed).toEqual(["Ideas/Sensors.md"]);
+	});
+	it("keeps the note when rejected", async () => {
+		const vault = freshVault();
+		const { ctx } = makeCtx(vault, "reject");
+		await expect(deleteNote.execute({ path: "Ideas/Sensors" }, ctx)).rejects.toThrow(/rejected/);
+		expect(vault.exists("Ideas/Sensors.md")).toBe(true);
 	});
 });
 

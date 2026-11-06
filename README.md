@@ -51,10 +51,19 @@ Things to try:
 
 ### How it works
 
-The model gets nine tools: `search_notes`, `read_note`, `list_notes`, `vault_overview`,
-`get_active_note`, `create_note`, `edit_note`, `append_to_note` and `replace_note`. It calls
-them in a loop until it has what it needs, then answers. The four writing tools open an
-approval dialog with a line diff before touching the vault.
+The model gets eleven tools: `search_notes`, `read_note`, `find_in_note`, `list_notes`,
+`vault_overview`, `get_active_note`, `create_note`, `edit_note`, `append_to_note`,
+`replace_note` and `delete_note`. It calls them in a loop until the task is done, then reports.
+The five mutating tools open an approval dialog with a line diff before touching the vault
+(`delete_note` moves the note to the trash according to your "Deleted files" setting).
+
+The agent is told to finish multi-note tasks on its own rather than stopping after each step to
+ask "shall I proceed?". If a model asks anyway, the agent answers yes for you up to three times
+per message (a small note appears in the chat) — see *Keep going when the model asks for
+permission* in settings. Every write is still approved individually.
+
+The header has a **Copy conversation** button that copies the whole chat, including tool calls
+and results, as markdown.
 
 Semantic search chunks each note by heading, embeds the chunks with the embedding model, and
 stores the vectors in `.obsidian/plugins/local-vault-agent/index.json`. The index updates
@@ -69,6 +78,10 @@ incrementally when you change notes. Search results merge semantic and keyword r
   off for faster replies on simple questions.
 - **Auto-approve edits** — off by default. Leave it off; use "Approve all in this chat" in the
   dialog when you trust a particular task.
+- **Keep going when the model asks for permission** — on by default. Turn it off if you prefer
+  the model to stop and check in with you after each step.
+- **Max tool calls per message** — default 40. A clean-up across many notes needs two or three
+  calls per note; raise it if the agent reports it ran out.
 - **Excluded folders** — folders the agent never searches, indexes or edits (templates, etc.).
 - **Extra instructions** — appended to the system prompt. Tell it about your vault's conventions.
 

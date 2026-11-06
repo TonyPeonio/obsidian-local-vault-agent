@@ -79,6 +79,8 @@ export interface VaultAccess {
 	read(path: string): Promise<string>;
 	create(path: string, content: string): Promise<void>;
 	modify(path: string, content: string): Promise<void>;
+	/** Move a note to the trash (never a permanent delete). */
+	trash(path: string): Promise<void>;
 	getMetadata(path: string): NoteMetadata;
 	getActiveNotePath(): string | null;
 	getSelection(): string | null;
@@ -131,4 +133,6 @@ export interface AgentCallbacks {
 	onToolStart?(call: ToolCall): void;
 	onToolDone?(call: ToolCall, result: string, ok: boolean): void;
 	onStatus?(text: string): void;
+	/** The agent answered the model's "shall I proceed?" for the user; `text` is the injected user turn. */
+	onAutoContinue?(text: string): void;
 }

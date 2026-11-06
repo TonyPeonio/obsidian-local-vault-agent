@@ -11,6 +11,8 @@ export interface LocalVaultAgentSettings {
 	maxIterations: number;
 	maxToolResultChars: number;
 	autoApproveEdits: boolean;
+	/** When the model stops to ask "shall I proceed?", answer yes for the user (a few times per turn). */
+	autoContinue: boolean;
 	keepAlive: string;
 	/** Folder prefixes (one per line in the UI) that are never searched or indexed. */
 	excludedFolders: string[];
@@ -26,9 +28,10 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	temperature: 0.3,
 	thinking: "auto",
 	showThinking: true,
-	maxIterations: 15,
+	maxIterations: 40,
 	maxToolResultChars: 12000,
 	autoApproveEdits: false,
+	autoContinue: true,
 	keepAlive: "10m",
 	excludedFolders: ["templates", "Templates"],
 	extraSystemPrompt: "",

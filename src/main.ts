@@ -183,6 +183,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			maxIterations: s.maxIterations,
 			maxToolResultChars: s.maxToolResultChars,
 			autoApprove: s.autoApproveEdits,
+			autoContinue: s.autoContinue,
 			extraSystemPrompt: s.extraSystemPrompt,
 		};
 	}

@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { Agent, buildSystemPrompt, newConversation, trimHistory, type AgentConfig } from "../src/agent";
+import {
+	AUTO_CONTINUE_TEXT,
+	Agent,
+	MAX_AUTO_CONTINUES,
+	buildSystemPrompt,
+	looksLikePermissionQuestion,
+	newConversation,
+	trimHistory,
+	type AgentConfig,
+} from "../src/agent";
 import { OllamaError } from "../src/ollama";
 import { keywordSearch } from "../src/search";
 import { ALL_TOOLS } from "../src/tools";
@@ -15,6 +24,7 @@ const config: AgentConfig = {
 	maxIterations: 4,
 	maxToolResultChars: 4000,
 	autoApprove: false,
+	autoContinue: false,
 	extraSystemPrompt: "",
 };
 
@@ -168,6 +178,106 @@ describe("Agent.run", () => {
 		await agent.run(conv, "second", {});
 		const sent = ollama.requests[1].messages.map((m) => m.role);
 		expect(sent).toEqual(["system", "user", "assistant", "user"]);
+	});
+
+	it("answers a 'shall I proceed?' for the user when autoContinue is on", async () => {
+		const { agent, ollama } = setup(
+			[
+				{ content: "I found 3 notes with recordings.\n\nWould you like me to proceed with checking the first one?" },
+				{ tool: "list_notes", args: {} },
+				{ content: "All done." },
+			],
+			{ cfg: { autoContinue: true } },
+		);
+		const conv = newConversation();
+		const nudges: string[] = [];
+		await agent.run(conv, "clean up the recordings", { onAutoContinue: (t) => nudges.push(t) });
+		expect(nudges).toEqual([AUTO_CONTINUE_TEXT]);
+		expect(ollama.requests).toHaveLength(3);
+		expect(ollama.requests[1].messages.at(-1)).toMatchObject({ role: "user", content: AUTO_CONTINUE_TEXT });
+		expect(conv.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant", "tool", "assistant"]);
+		expect(conv.messages.at(-1)?.content).toBe("All done.");
+	});
+
+	it("gives up after MAX_AUTO_CONTINUES permission questions", async () => {
+		const ask = { content: "Shall I continue?" };
+		const { agent, ollama } = setup([ask, ask, ask, ask, ask], { cfg: { autoContinue: true, maxIterations: 10 } });
+		const conv = newConversation();
+		await agent.run(conv, "x", {});
+		expect(ollama.requests).toHaveLength(MAX_AUTO_CONTINUES + 1);
+		expect(conv.messages.at(-1)?.content).toBe("Shall I continue?");
+	});
+
+	it("does not auto-continue a real clarifying question or when disabled", async () => {
+		const a = setup([{ content: "Which folder do you mean?" }], { cfg: { autoContinue: true } });
+		await a.agent.run(newConversation(), "x", {});
+		expect(a.ollama.requests).toHaveLength(1);
+
+		const b = setup([{ content: "Would you like me to proceed?" }], { cfg: { autoContinue: false } });
+		await b.agent.run(newConversation(), "x", {});
+		expect(b.ollama.requests).toHaveLength(1);
+	});
+});
+
+describe("grounding check", () => {
+	it("sends back an answer that cites notes which do not exist", async () => {
+		const { agent, ollama } = setup([
+			{ content: "The magnet was weak [[Troubleshooting/Chess Robot Issues]] and [[Projects/Chess Robot]]." },
+			{ tool: "search_notes", args: { query: "magnet" } },
+			{ content: "The gantry uses an electromagnet [[Projects/Chess Robot]]." },
+		]);
+		const conv = newConversation();
+		const nudges: string[] = [];
+		await agent.run(conv, "magnet problems?", { onAutoContinue: (t) => nudges.push(t) });
+		expect(nudges).toHaveLength(1);
+		expect(nudges[0]).toMatch(/^Grounding check: you have not searched/);
+		expect(nudges[0]).toContain("[[Troubleshooting/Chess Robot Issues]]");
+		expect(nudges[0]).not.toContain("[[Projects/Chess Robot]]");
+		expect(ollama.requests).toHaveLength(3);
+		expect(conv.messages.at(-1)?.content).toMatch(/electromagnet/);
+	});
+
+	it("uses the milder wording after tools were used, and only nudges once", async () => {
+		const bad = { content: "See [[Nope/Missing]]." };
+		const { agent, ollama } = setup([{ tool: "list_notes", args: {} }, bad, bad]);
+		const conv = newConversation();
+		const nudges: string[] = [];
+		await agent.run(conv, "x", { onAutoContinue: (t) => nudges.push(t) });
+		expect(nudges).toHaveLength(1);
+		expect(nudges[0]).toMatch(/cites notes that do not exist/);
+		expect(nudges[0]).not.toMatch(/have not searched/);
+		expect(ollama.requests).toHaveLength(3);
+	});
+
+	it("accepts links that resolve, including bare names, aliases and headings", async () => {
+		const { agent, ollama } = setup([{ content: "See [[Chess Robot#Status|status]] and [[Ideas/Sensors]]." }]);
+		await agent.run(newConversation(), "x", {});
+		expect(ollama.requests).toHaveLength(1);
+	});
+});
+
+describe("looksLikePermissionQuestion", () => {
+	it("matches the ways small models ask for the go-ahead", () => {
+		for (const text of [
+			"Would you like me to check the full content of any specific note?",
+			"### Next Steps\n- Read the note.\n\nWould you like me to proceed with reading the **School/CSCI 470** note first?",
+			"I can delete the link once we confirm. Shall I proceed?",
+			"Do you want me to continue with the remaining notes?",
+			"Ready to proceed?",
+		]) {
+			expect(looksLikePermissionQuestion(text), text).toBe(true);
+		}
+	});
+	it("ignores answers and genuine clarifying questions", () => {
+		for (const text of [
+			"Here is the summary of your notes.",
+			"Which folder do you mean, Projects or Archive?",
+			"Let me know if you want more detail.",
+			"Did you mean the 2026 syllabus or the 2025 one?",
+			"",
+		]) {
+			expect(looksLikePermissionQuestion(text), text).toBe(false);
+		}
 	});
 });
 

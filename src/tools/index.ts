@@ -295,7 +295,12 @@ export const editNote: ToolDefinition = {
 		const replaceAll = bool(args, "replace_all");
 		const before = await ctx.vault.read(path);
 		const result = applyTextEdit(before, oldText, newText, replaceAll);
-		if (!result.ok) throw new ToolError(result.error);
+		if (!result.ok) {
+			// A miss usually means the model worked from a search snippet or a paged read.
+			// Show it the real lines so the retry is grounded instead of guessed.
+			const hint = /not found/.test(result.error) ? nearestLines(before, oldText) : null;
+			throw new ToolError(hint ? `${result.error}\n${hint}` : result.error);
+		}
 		if (result.content === before) return "The edit would not change anything; nothing written.";
 		await requestApproval(ctx, {
 			tool: "edit_note",
@@ -363,9 +368,111 @@ export const replaceNote: ToolDefinition = {
 	},
 };
 
+export const findInNote: ToolDefinition = {
+	name: "find_in_note",
+	description:
+		"Find the lines of a note that contain a text (case-insensitive) or a regular expression. Returns 1-based line numbers with one line of context. Use it to locate the exact passage for edit_note in a long note instead of reading the whole note, or to check whether a note mentions something.",
+	parameters: {
+		type: "object",
+		properties: {
+			path: { type: "string", description: "Path of the note to search." },
+			pattern: { type: "string", description: "Text to look for, or a JavaScript regular expression when regex is true." },
+			regex: { type: "boolean", description: "Treat pattern as a regular expression (default false)." },
+			limit: { type: "integer", description: "Maximum matches to return (default 20, max 100)." },
+		},
+		required: ["path", "pattern"],
+	},
+	mutates: false,
+	async execute(args, ctx) {
+		const path = resolveExisting(ctx.vault, str(args, "path"));
+		const pattern = str(args, "pattern");
+		const useRegex = bool(args, "regex");
+		const limit = int(args, "limit", 20, 1, 100);
+		const content = await ctx.vault.read(path);
+		const lines = content.split("\n");
+		let test: (line: string) => boolean;
+		let note = "";
+		let re: RegExp | null = null;
+		if (useRegex) {
+			try {
+				re = new RegExp(pattern, "i");
+			} catch (err) {
+				// Small models mangle escapes in regexes; a literal search is more useful than an error.
+				note = `(The pattern is not a valid regular expression: ${(err as Error).message}. Searched for it as literal text instead.)\n`;
+			}
+		}
+		if (re) {
+			const compiled = re;
+			test = (line) => compiled.test(line);
+		} else {
+			const lower = pattern.toLowerCase();
+			test = (line) => line.toLowerCase().includes(lower);
+		}
+		const hits: number[] = [];
+		for (let i = 0; i < lines.length; i++) if (test(lines[i])) hits.push(i);
+		if (hits.length === 0) {
+			return `${note}No lines in ${path} contain "${pattern}". The note has ${lines.length} lines (${content.length} characters).`;
+		}
+		const blocks = hits.slice(0, limit).map((i) => {
+			const rows: string[] = [];
+			for (let j = Math.max(0, i - 1); j <= Math.min(lines.length - 1, i + 1); j++) {
+				rows.push(`${j === i ? ">" : " "} ${String(j + 1).padStart(4)} | ${lines[j]}`);
+			}
+			return rows.join("\n");
+		});
+		const more = hits.length > limit ? `\n…and ${hits.length - limit} more matches.` : "";
+		return `${note}${hits.length} match${hits.length === 1 ? "" : "es"} in ${path} (${lines.length} lines). The matching line is marked with ">".\n${blocks.join("\n---\n")}${more}`;
+	},
+};
+
+export const deleteNote: ToolDefinition = {
+	name: "delete_note",
+	description:
+		"Move a note to the trash (recoverable; never a permanent delete). Use it when the user asks to delete or remove a note. The user must approve first.",
+	parameters: {
+		type: "object",
+		properties: {
+			path: { type: "string", description: "Path of the note to delete." },
+		},
+		required: ["path"],
+	},
+	mutates: true,
+	async execute(args, ctx) {
+		const path = resolveExisting(ctx.vault, str(args, "path"));
+		const before = await ctx.vault.read(path);
+		await requestApproval(ctx, { tool: "delete_note", path, before, after: "", summary: `Delete ${path} (move to trash)` });
+		await ctx.vault.trash(path);
+		return `Moved ${path} to the trash.`;
+	},
+};
+
+/**
+ * For a failed edit_note: lines containing the most distinctive word of `oldText`, so the
+ * model can copy the real text instead of guessing again.
+ */
+export function nearestLines(content: string, oldText: string): string {
+	const lines = content.split("\n");
+	const tokens = Array.from(new Set(oldText.split(/[^\p{L}\p{N}_.-]+/u).filter((t) => t.length >= 4))).sort(
+		(a, b) => b.length - a.length,
+	);
+	for (const token of tokens.slice(0, 4)) {
+		const lower = token.toLowerCase();
+		const hits: number[] = [];
+		for (let i = 0; i < lines.length && hits.length < 5; i++) {
+			if (lines[i].toLowerCase().includes(lower)) hits.push(i);
+		}
+		if (hits.length > 0) {
+			const rows = hits.map((i) => `${String(i + 1).padStart(4)} | ${lines[i]}`).join("\n");
+			return `Lines in the note that contain "${token}" (copy old_text exactly from the note, or call find_in_note for more context):\n${rows}`;
+		}
+	}
+	return `Nothing similar was found. The note has ${lines.length} lines (${content.length} characters); use find_in_note or read_note to locate the passage.`;
+}
+
 export const ALL_TOOLS: ToolDefinition[] = [
 	searchNotes,
 	readNote,
+	findInNote,
 	listNotes,
 	vaultOverview,
 	getActiveNote,
@@ -373,6 +480,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
 	editNote,
 	appendToNote,
 	replaceNote,
+	deleteNote,
 ];
 
 export function toOllamaTools(tools: ToolDefinition[]): OllamaToolSpec[] {
