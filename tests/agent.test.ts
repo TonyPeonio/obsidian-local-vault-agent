@@ -347,8 +347,8 @@ describe("buildSystemPrompt", () => {
 		expect(p).toContain("Today is 2026-11-05");
 		expect(p).toContain("A.md");
 		expect(p).toContain("Vault outline");
-		expect(p).toContain("  A — Alpha");
-		expect(p).toContain("Sub/\n  B");
+		expect(p).toContain("  A.md — Alpha");
+		expect(p).toContain("Sub/\n  B.md");
 		expect(p).toContain("vault conventions");
 		expect(p).toContain("Daily notes live in Daily/.");
 		expect(p).toContain("Be terse.");

@@ -71,8 +71,26 @@ export function normalizeNotePath(input: string, configDir?: string): string {
 	return p;
 }
 
+/** A model that copied an outline line ("Folder/Note.md — heading › heading #tag") still gets the note. */
+export function stripOutlineDecoration(input: string): string {
+	return input.replace(/\s+(—|›|\|)\s.*$/, "").replace(/\s+#\S.*$/, "").replace(/\s+\(.*\)$/, "").trim();
+}
+
+/** Resolve a note or attachment path, tolerating outline decorations. */
+export function resolveAny(vault: VaultAccess, input: string): string | null {
+	const direct = vault.resolveFile(input) ?? vault.resolve(input);
+	if (direct) return direct;
+	const stripped = stripOutlineDecoration(input);
+	if (stripped && stripped !== input) return vault.resolveFile(stripped) ?? vault.resolve(stripped);
+	return null;
+}
+
 function resolveExisting(vault: VaultAccess, input: string): string {
-	const resolved = vault.resolve(input);
+	let resolved = vault.resolve(input);
+	if (!resolved) {
+		const stripped = stripOutlineDecoration(input);
+		if (stripped && stripped !== input) resolved = vault.resolve(stripped);
+	}
 	if (!resolved) {
 		throw new ToolError(
 			`No note found for "${input}". Use search_notes or list_notes to find the exact path.`,
@@ -592,7 +610,7 @@ export const deleteFile: ToolDefinition = {
 	mutates: true,
 	async execute(args, ctx) {
 		const input = str(args, "path");
-		const path = ctx.vault.resolveFile(input) ?? ctx.vault.resolve(input);
+		const path = resolveAny(ctx.vault, input);
 		if (!path) throw new ToolError(`No file found for "${input}". Use list_notes or list_files to find the exact path.`);
 		const isNote = /\.md$/i.test(path);
 		let before: string;
@@ -632,7 +650,7 @@ export const moveNote: ToolDefinition = {
 	mutates: true,
 	async execute(args, ctx) {
 		const input = str(args, "path");
-		const path = ctx.vault.resolveFile(input) ?? ctx.vault.resolve(input);
+		const path = resolveAny(ctx.vault, input);
 		if (!path) throw new ToolError(`No file found for "${input}". Use list_notes or list_files to find the exact path.`);
 		const isNote = /\.md$/i.test(path);
 		const newPath = isNote ? normalizeNotePath(str(args, "new_path"), ctx.configDir) : normalizeFilePath(str(args, "new_path"), ctx.configDir);

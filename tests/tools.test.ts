@@ -13,6 +13,8 @@ import {
 	moveNote,
 	nearestLines,
 	normalizeNotePath,
+	resolveAny,
+	stripOutlineDecoration,
 	readNote,
 	readSection,
 	replaceNote,
@@ -374,5 +376,20 @@ describe("move_note", () => {
 		const rejected = makeCtx(vault, "reject");
 		await expect(moveNote.execute({ path: "Ideas/Sensors", new_path: "X" }, rejected.ctx)).rejects.toThrow(/rejected/);
 		expect(vault.exists("Ideas/Sensors.md")).toBe(true);
+	});
+});
+
+describe("outline-decorated paths", () => {
+	it("strips what a model copies from the outline and still resolves", async () => {
+		expect(stripOutlineDecoration("Clubs/MEAL Club.md — MEAL Club › 2026-09-21 meeting › Summary")).toBe("Clubs/MEAL Club.md");
+		expect(stripOutlineDecoration("Ideas/Sensors.md #hardware")).toBe("Ideas/Sensors.md");
+		expect(stripOutlineDecoration("Ideas/Sensors.md (+3)")).toBe("Ideas/Sensors.md");
+		const vault = freshVault();
+		vault.seedFile("rec.webm", 5);
+		expect(resolveAny(vault, "Ideas/Sensors.md — Sensors › Notes")).toBe("Ideas/Sensors.md");
+		expect(resolveAny(vault, "rec.webm — recording")).toBe("rec.webm");
+		const { ctx } = makeCtx(vault);
+		const out = await readNote.execute({ path: "Projects/Chess Robot.md — Chess Robot › Status" }, ctx);
+		expect(out).toContain("# Projects/Chess Robot.md");
 	});
 });

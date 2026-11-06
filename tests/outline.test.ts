@@ -15,16 +15,16 @@ function vault(n = 3): FakeVault {
 describe("buildOutline", () => {
 	it("lists every note grouped by folder with headings and tags when it fits", () => {
 		const out = buildOutline(vault(), 10_000);
-		expect(out).toContain("/\n  Welcome — Welcome #intro");
-		expect(out).toContain("Projects/\n  Chess Robot — Chess Robot › Status › Open problems #project\n  Engine Notes");
-		expect(out).toContain("Daily/\n  2026-01-01 — Day 0");
+		expect(out).toContain("/\n  Welcome.md — Welcome #intro");
+		expect(out).toContain("Projects/\n  Chess Robot.md — Chess Robot › Status › Open problems #project\n  Engine Notes.md");
+		expect(out).toContain("Daily/\n  2026-01-01.md — Day 0");
 	});
 
 	it("drops headings, then notes, to stay within budget", () => {
 		const full = buildOutline(vault(), 10_000);
 		const bare = buildOutline(vault(), full.length - 1);
 		expect(bare).not.toContain("›");
-		expect(bare).toContain("  Chess Robot\n  Engine Notes");
+		expect(bare).toContain("  Chess Robot.md\n  Engine Notes.md");
 		const cut = buildOutline(vault(40), 200);
 		expect(cut.length).toBeLessThanOrEqual(200);
 		expect(cut).toMatch(/…and \d+ more notes/);
@@ -41,12 +41,12 @@ describe("buildOutline with gists", () => {
 		const v = vault(6);
 		const gist = (p: string) => (p.startsWith("Daily/") ? `Day gist for ${p}` : undefined);
 		const all = buildOutline(v, { budgetChars: 10_000, gist });
-		expect(all).toContain("  2026-01-01 — Day gist for Daily/2026-01-01.md");
-		expect(all).toContain("Chess Robot — Chess Robot › Status › Open problems #project"); // no gist → headings
+		expect(all).toContain("  2026-01-01.md — Day gist for Daily/2026-01-01.md");
+		expect(all).toContain("Chess Robot.md — Chess Robot › Status › Open problems #project"); // no gist → headings
 		const tight = buildOutline(v, { budgetChars: all.length - 10, gist });
 		expect(tight).toContain("Day gist for Daily/2026-01-06.md"); // most recent keeps its gist
 		expect(tight).not.toContain("Day gist for Daily/2026-01-01.md");
-		expect(tight).toContain("  2026-01-01 — Day 0"); // older note falls back to headings
+		expect(tight).toContain("  2026-01-01.md — Day 0"); // older note falls back to headings
 		expect(outlineBudget(32768, true)).toBeGreaterThan(outlineBudget(32768));
 	});
 });

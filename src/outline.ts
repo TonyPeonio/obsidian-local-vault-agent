@@ -31,7 +31,7 @@ export function buildOutline(vault: VaultAccess, opts: OutlineOptions | number):
 				folder = note.folder;
 				lines.push(folder === "" ? "/" : `${folder}/`);
 			}
-			let line = `  ${note.basename}`;
+			let line = `  ${note.basename}.md`;
 			if (detail !== "none") {
 				const meta = vault.getMetadata(note.path);
 				const g = detail === "gists" && gisted.has(note.path) ? gist?.(note.path) : undefined;
