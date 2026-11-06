@@ -119,7 +119,10 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			undo: this.undo,
 			gist: (path) => (this.settings.gists ? this.gists.get(path) : undefined),
 			readAttachmentText: (path) => this.readAttachmentText(path),
-			dailyNote: () => this.dailyNote(),
+			dailyNote: async () => {
+				await this.loadDailyNoteSettings();
+				return this.dailyNote();
+			},
 			readConventions: async () => {
 				const path = this.vault.resolve(this.settings.conventionsNote);
 				return path ? this.vault.read(path) : null;

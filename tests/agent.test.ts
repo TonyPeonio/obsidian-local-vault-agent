@@ -534,3 +534,24 @@ describe("per-step call cap", () => {
 		expect(conv.messages.filter((m) => m.role === "tool" && /Not executed/.test(m.content))).toHaveLength(4);
 	});
 });
+
+describe("trimHistory after dropped turns", () => {
+	const msg = (role: ChatMessage["role"], content: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({ role, content, ...extra });
+	it("still shortens the current turn's results when earlier turns were dropped", () => {
+		const big = (tag: string) => `# ${tag}.md\n` + "x".repeat(3000);
+		const m = [
+			msg("user", "q1"),
+			msg("assistant", "a".repeat(2000)),
+			msg("user", "q2"),
+			msg("assistant", "", { tool_calls: [{ function: { name: "read_note", arguments: {} } }] }),
+			msg("tool", big("A"), { tool_name: "read_note" }),
+			msg("tool", big("B"), { tool_name: "read_note" }),
+			msg("tool", big("C"), { tool_name: "read_note" }),
+			msg("tool", big("D"), { tool_name: "read_note" }),
+		];
+		const out = trimHistory(m, 2048);
+		expect(out[0].content).toBe("q2");
+		expect(out[2].content).toMatch(/shortened to save context/);
+		expect(out[5].content.length).toBe(big("D").length);
+	});
+});

@@ -202,7 +202,8 @@ export class AgentView extends ItemView {
 				if (m.content.trim()) await this.renderMarkdown(m.content, root.createDiv({ cls: "lva-bubble lva-markdown" }));
 				for (const call of m.tool_calls ?? []) {
 					// The tool results follow the assistant message in call order.
-					const resultMsg = messages.slice(i + 1).find((r, k) => r.role === "tool" && k === (m.tool_calls ?? []).indexOf(call));
+					const candidate = messages[i + 1 + (m.tool_calls ?? []).indexOf(call)];
+					const resultMsg = candidate?.role === "tool" ? candidate : undefined;
 					const card = root.createEl("details", { cls: "lva-tool lva-tool-ok" });
 					const summary = card.createEl("summary");
 					const icon = summary.createSpan({ cls: "lva-tool-icon" });

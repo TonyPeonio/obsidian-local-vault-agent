@@ -153,8 +153,8 @@ export interface AgentDeps {
 	gist?: (path: string) => string | undefined;
 	/** Text of an attachment (PDF, text file) for read_file. */
 	readAttachmentText?: ToolContext["readAttachmentText"];
-	/** Today's daily note, per the user's daily-notes settings. */
-	dailyNote?: () => { path: string; exists: boolean } | null;
+	/** Today's daily note, per the user's daily-notes settings (re-read on every run). */
+	dailyNote?: () => Promise<{ path: string; exists: boolean } | null> | { path: string; exists: boolean } | null;
 }
 
 export function buildSystemPrompt(
@@ -233,6 +233,12 @@ export class Agent {
 		} catch {
 			conventions = null;
 		}
+		let daily: { path: string; exists: boolean } | null = null;
+		try {
+			daily = (await this.deps.dailyNote?.()) ?? null;
+		} catch {
+			daily = null;
+		}
 
 		let currentCall: ToolCall | null = null;
 		const ctx: ToolContext = {
@@ -271,7 +277,7 @@ export class Agent {
 		const readPaths: string[] = [];
 		for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
-			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, this.deps.dailyNote?.() ?? null) };
+			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, daily) };
 			const history = trimHistory(conversation.messages, cfg.numCtx, (m) => {
 				// A shortened read is no longer "already above"; let the model read it again.
 				const header = /^# (.+)$/m.exec(m.content);
@@ -314,6 +320,10 @@ export class Agent {
 
 			const assistant = response.message;
 			if (assistant.content) assistant.content = linkifyNotePaths(assistant.content, vault);
+			// An answer built from notes it read but citing none of them gets a sources footer.
+			if (!assistant.tool_calls?.length && writes === 0 && readPaths.length > 0 && !/\[\[/.test(assistant.content) && assistant.content.trim()) {
+				assistant.content = withSources(assistant.content, readPaths);
+			}
 			conversation.messages.push(assistant);
 			callbacks.onAssistantDone?.(assistant);
 			if (response.promptTokens !== undefined) {
@@ -330,11 +340,6 @@ export class Agent {
 				continue;
 			}
 			if (calls.length === 0) {
-				// An answer built from notes it read but cites none of them gets a sources footer.
-				if (writes === 0 && readPaths.length > 0 && !/\[\[/.test(assistant.content) && assistant.content.trim()) {
-					assistant.content = withSources(assistant.content, readPaths);
-					callbacks.onAssistantDone?.(assistant);
-				}
 				// A reply that cites notes which do not exist is fabricated. Send it back once.
 				if (groundingNudges < 1) {
 					const bad = unresolvedLinks(assistant.content, vault);
@@ -382,7 +387,7 @@ export class Agent {
 				// A batch of forty read_note calls would overflow the window on its own; keep the
 				// batch within budget and tell the model to work in smaller steps.
 				batchChars += result.length;
-				if (batchChars > cap && i < calls.length - 1 && result.length > 400) {
+				if (batchChars > cap && result.length > 400) {
 					result = result.slice(0, 400) + `\n[truncated: this batch of ${calls.length} tool calls returned too much at once. Call fewer tools per step (at most ~6) and use grep_vault, search_passages or read_section instead of reading whole notes.]`;
 				}
 				callbacks.onToolDone?.(call, result, ok);
@@ -400,7 +405,7 @@ export class Agent {
 
 		// Ran out of iterations: ask the model to wrap up without tools.
 		callbacks.onAssistantStart?.();
-		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, this.deps.dailyNote?.() ?? null) };
+		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, daily) };
 		const response = await this.deps.client.chat({
 			model: cfg.model,
 			messages: [
@@ -488,7 +493,8 @@ export function trimHistory(messages: ChatMessage[], numCtx: number, onShortened
 	// Pass 3: still over budget inside the current turn (a long multi-note task). Shorten this
 	// turn's tool results oldest first, keeping the two most recent intact, so the system prompt
 	// and the user's request are never pushed out of the window by Ollama's own truncation.
-	const current = out.map((m, i) => (i > lastUser && m.role === "tool" ? i : -1)).filter((i) => i >= 0);
+	const lastUserNow = out.map((m) => m.role).lastIndexOf("user");
+	const current = out.map((m, i) => (i > lastUserNow && m.role === "tool" ? i : -1)).filter((i) => i >= 0);
 	for (let k = 0; k < current.length - 2 && total > budget; k++) {
 		const m = out[current[k]];
 		if (m.content.length > 600) {
