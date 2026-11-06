@@ -71,7 +71,15 @@ export function looksLikePermissionQuestion(text: string): boolean {
 	const t = text.trim();
 	if (!t.includes("?")) return false;
 	const tail = t.slice(-600);
-	return /\b(would you like me to|do you want me to|shall i\b|should i (proceed|continue|start|go ahead)|want me to (proceed|continue|go ahead|start)|ready to proceed|may i (proceed|continue)|(proceed|continue|go ahead)\s*\?\s*$)/i.test(tail);
+	// An offer of *new* work ("would you like me to create a summary note?") is not a request
+	// to continue the task the user gave; it goes back to the user.
+	if (/\b(would you like|do you want|want me|shall i|should i|may i|can i)\b[^?]{0,40}\b(create|make|write|add|draft|generate|build|compile|consolidate|set up|summari[sz]e|organi[sz]e|turn (this|these|it) into)\b/i.test(tail)) {
+		return false;
+	}
+	const continuing =
+		"(proceed|continue|go ahead|carry on|move on|start|begin|keep going|do (the|all|every|each|that|this|these|those|so|it)|check(ing)? (the )?(full|next|other|remaining|rest)|(read|open|look at|inspect|handle|process|clean up|fix|update|remove|delete|apply|run)(ing)? (the |all |each |every |these |those )?(next|other|remaining|rest|full|same|changes?|edits?|notes?|files?|deletions?))";
+	const asks = new RegExp(`\\b(would you like me to|do you want me to|shall i|should i|want me to|may i)\\s+(also\\s+)?${continuing}\\b`, "i");
+	return asks.test(tail) || /\b(ready to proceed|(proceed|continue|go ahead|carry on)\s*\?\s*$)/i.test(tail);
 }
 
 export interface Conversation {
@@ -105,6 +113,7 @@ export function buildSystemPrompt(vault: VaultAccess, cfg: AgentConfig, now: Dat
 		"- Finish the whole task in this turn. If it spans many notes, handle them one after another until every one is done; do not stop after the first to report progress.",
 		"- Never ask for permission or confirmation to search, read or change notes. Reading needs none, and every write is shown to the user as a diff they approve or reject, so the approval dialog is the confirmation. Do not end a reply with 'Would you like me to proceed?' or 'Shall I check the next note?' — proceed.",
 		"- Do not describe a plan and wait; carry it out. Stop to ask only when the request is genuinely ambiguous in a way that changes the outcome, and then ask one specific question.",
+		"- A question gets an answer, not edits. When the user asks something, answer it from the notes and stop; do not propose, offer or make changes to notes they did not ask for.",
 		"- Search snippets are not the note. Before concluding that a note lacks or contains something, read it with read_note, or use find_in_note for one specific passage.",
 		"- Tool results are authoritative: a successful edit result means the note is written, so do not read it again to verify, and do not re-check notes that were already handled.",
 		"",

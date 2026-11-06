@@ -94,10 +94,14 @@ async function main() {
 				tools.push(c.function.name);
 				if (!ok) console.log(`  [tool error] ${r.slice(0, 200)}`);
 			},
-			onAssistantDone: (m) => (answer = m.content || answer),
-			onAutoContinue: () => {
+			onAssistantDone: (m) => {
+				answer = m.content || answer;
+				if (m.content.trim() && m.tool_calls?.length) console.log(`  [said] ${m.content.trim().replace(/\s+/g, " ").slice(0, 200)}`);
+			},
+			onAutoContinue: (nudge) => {
 				autoContinues++;
-				console.log("  [auto-continue] the model asked for permission; answered yes");
+				const asked = conv.messages.at(-2)?.content.trim().replace(/\s+/g, " ").slice(-300) ?? "";
+				console.log(`  [auto-continue] ${nudge.slice(0, 40)}… ← model said: "${asked}"`);
 			},
 		});
 		console.log(`--- answer (${Date.now() - start} ms, tools: ${tools.join(" → ") || "none"}):\n${answer.trim()}\n`);

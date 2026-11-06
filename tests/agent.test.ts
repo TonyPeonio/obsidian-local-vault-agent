@@ -311,12 +311,15 @@ describe("looksLikePermissionQuestion", () => {
 			expect(looksLikePermissionQuestion(text), text).toBe(true);
 		}
 	});
-	it("ignores answers and genuine clarifying questions", () => {
+	it("ignores answers, genuine clarifying questions and offers of new work", () => {
 		for (const text of [
 			"Here is the summary of your notes.",
 			"Which folder do you mean, Projects or Archive?",
 			"Let me know if you want more detail.",
 			"Did you mean the 2026 syllabus or the 2025 one?",
+			"The magnet drags neighbours [[Projects/Chess Robot]].\n\nWould you like me to create a consolidated note about the magnet problems?",
+			"Would you like me to also write a summary of these lectures?",
+			"Do you want me to set up a tracking note for this?",
 			"",
 		]) {
 			expect(looksLikePermissionQuestion(text), text).toBe(false);
