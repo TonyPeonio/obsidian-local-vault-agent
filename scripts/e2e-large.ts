@@ -31,6 +31,8 @@ const ONLY = process.env.ONLY; // comma-separated scenario ids
 const TEMPERATURE = process.env.TEMPERATURE !== undefined ? Number(process.env.TEMPERATURE) : DEFAULT_SETTINGS.temperature;
 const PRESENCE = process.env.PRESENCE !== undefined ? Number(process.env.PRESENCE) : SAMPLING.presence_penalty;
 const TAG = process.env.TAG ?? "";
+/** "auto" | "on" | "off"; the plugin default unless THINK is set. */
+const THINK = process.env.THINK ?? DEFAULT_SETTINGS.thinking;
 
 interface Facts {
 	lectures: { course: string; date: string; topic: string; term: string; note: string }[];
@@ -101,7 +103,7 @@ async function main() {
 		numCtx: NUM_CTX,
 		temperature: TEMPERATURE,
 		sampling: { ...SAMPLING, presence_penalty: PRESENCE },
-		think: process.env.THINK === "on" ? true : process.env.THINK === "off" ? false : undefined,
+		think: THINK === "on" ? true : THINK === "off" ? false : undefined,
 		keepAlive: "10m",
 		maxIterations: 60,
 		maxToolResultChars: 12000,
@@ -464,7 +466,7 @@ async function main() {
 		model: MODEL,
 		numCtx: NUM_CTX,
 		gists: GISTS,
-		think: process.env.THINK ?? "auto",
+		think: THINK,
 		temperature: TEMPERATURE,
 		presencePenalty: PRESENCE,
 		tag: TAG,

@@ -32,7 +32,7 @@ export interface LocalVaultAgentSettings {
 }
 
 /** The current settings schema; `migrateSettings` brings older saved data up to it. */
-export const SETTINGS_VERSION = 2;
+export const SETTINGS_VERSION = 3;
 
 /**
  * Sampling sent with every chat request besides temperature. The Qwen3 model card warns that
@@ -50,7 +50,9 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	semanticSearch: true,
 	numCtx: 32768,
 	temperature: 0.6,
-	thinking: "auto",
+	// Off by default since 0.5.0: on the benchmark vault qwen3.5:9b passed as many checks without
+	// thinking (92–94/96) as with it (90–91/96) in a third of the time and with fewer tool calls.
+	thinking: "off",
 	showThinking: true,
 	maxIterations: 60,
 	maxToolResultChars: 12000,
@@ -71,12 +73,15 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
  * Saved settings from an older version, filled in with current defaults. Version 1 (no
  * `settingsVersion`) defaulted temperature to 0.3, which is close enough to greedy to make
  * small models loop; a user still on that default moves to the new one, a changed value stays.
+ * Versions 1 and 2 defaulted thinking to "auto" (on, for Qwen3); a user still on that default
+ * moves to "off", which benchmarked as fast and as accurate. "On" chosen explicitly stays.
  */
 export function migrateSettings(data: Partial<LocalVaultAgentSettings> | null): LocalVaultAgentSettings {
 	const saved = data ?? {};
 	const version = typeof saved.settingsVersion === "number" ? saved.settingsVersion : 1;
 	const settings: LocalVaultAgentSettings = { ...DEFAULT_SETTINGS, ...saved };
 	if (version < 2 && saved.temperature === 0.3) settings.temperature = DEFAULT_SETTINGS.temperature;
+	if (version < 3 && saved.thinking === "auto") settings.thinking = "off";
 	settings.settingsVersion = SETTINGS_VERSION;
 	return settings;
 }

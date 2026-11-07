@@ -15,6 +15,13 @@ describe("migrateSettings", () => {
 		expect(s.settingsVersion).toBe(SETTINGS_VERSION);
 	});
 
+	it("moves a user still on the old 'auto' thinking default to off, and keeps an explicit choice", () => {
+		expect(migrateSettings({ thinking: "auto", settingsVersion: 2 }).thinking).toBe("off");
+		expect(migrateSettings({ thinking: "auto" }).thinking).toBe("off");
+		expect(migrateSettings({ thinking: "on", settingsVersion: 2 }).thinking).toBe("on");
+		expect(migrateSettings({ thinking: "auto", settingsVersion: 3 }).thinking).toBe("auto");
+	});
+
 	it("keeps a temperature the user chose", () => {
 		expect(migrateSettings({ temperature: 0.1 }).temperature).toBe(0.1);
 		expect(migrateSettings({ temperature: 0.3, settingsVersion: 2 }).temperature).toBe(0.3);

@@ -89,6 +89,30 @@ export const AUTO_CONTINUE_TEXT =
 
 export const GROUNDING_PREFIX = "Grounding check:";
 
+export const FOLLOW_THROUGH_TEXT =
+	"You described your next step instead of taking it. Do it now with the tools (reading needs no permission; each change goes through the approval dialog), then give the final answer. Never end a reply by announcing what you will do.";
+
+/** The second time it happens the step was probably too big to emit in one call. */
+export const FOLLOW_THROUGH_TEXTS = [
+	FOLLOW_THROUGH_TEXT,
+	`${FOLLOW_THROUGH_TEXT} If the call is large, split it: at most 6 edits per edit_notes call, then the next 6 in the following step.`,
+];
+
+/**
+ * True when a reply ends by announcing work the model has not done ("To find the loss, I'll
+ * check the NNUE Training note."), which models answering without thinking do instead of
+ * calling the tool. Questions are not announcements; they are handled separately.
+ */
+export function announcesNextStep(text: string): boolean {
+	const t = text.trim();
+	if (!t || t.endsWith("?")) return false;
+	const tail = (t.split(/\n+/).filter((l) => l.trim()).at(-1) ?? "").slice(-300);
+	if (/\blet me know\b/i.test(tail)) return false;
+	return /\b(i(?:'ll| will| am going to|'m going to| need to| should| can)|let me|next,? i(?:'ll| will)?|now i(?:'ll| will)?)\b[^.!?\n]{0,60}?\b(check|read|open|search|look|grep|list|find|verify|inspect|scan|examine|review|run|edit|update|create|move|rename|remove|delete|fix|apply|write|add|process|compile|handle|clean)\b/i.test(
+		tail,
+	);
+}
+
 const READ_TOOLS = new Set(["read_note", "read_section", "get_active_note"]);
 
 /** Appends "Sources: [[A]], [[B]]" (at most six) to an answer that cited nothing. */
@@ -326,10 +350,13 @@ export class Agent {
 		let autoContinues = 0;
 		let groundingNudges = 0;
 		let emptyNudges = 0;
+		let followThroughNudges = 0;
 		let toolsUsed = 0;
 		let writes = 0;
 		/** Notes the model read this turn, in order, for the sources footer. */
 		const readPaths: string[] = [];
+		/** Notes grep_vault matched this turn; an answer given straight from a grep cites these. */
+		const hitPaths: string[] = [];
 		/** Results of read-only calls this turn by callKey, so an identical call is not run again.
 		 * Cleared after every write, since the vault may then differ. */
 		const callCache = new Map<string, string>();
@@ -387,8 +414,11 @@ export class Agent {
 			const assistant = response.message;
 			if (assistant.content) assistant.content = linkifyNotePaths(assistant.content, vault);
 			// An answer built from notes it read but citing none of them gets a sources footer.
-			if (!assistant.tool_calls?.length && writes === 0 && readPaths.length > 0 && !/\[\[/.test(assistant.content) && assistant.content.trim()) {
-				assistant.content = withSources(assistant.content, readPaths);
+			// A grep that hit a few notes counts too: models answer "it was on 2026-11-06" straight
+			// from the matching lines without citing the note they came from.
+			const sources = readPaths.length ? readPaths : hitPaths.length <= 3 ? hitPaths : [];
+			if (!assistant.tool_calls?.length && writes === 0 && sources.length > 0 && !/\[\[/.test(assistant.content) && assistant.content.trim()) {
+				assistant.content = withSources(assistant.content, sources);
 			}
 			conversation.messages.push(assistant);
 			callbacks.onAssistantDone?.(assistant);
@@ -416,6 +446,14 @@ export class Agent {
 						callbacks.onAutoContinue?.(nudge);
 						continue;
 					}
+				}
+				// "I'll check the other note." with no tool call: the model narrated the step
+				// instead of taking it (common with thinking off). Send it back once.
+				if (cfg.autoContinue && !rejected && followThroughNudges < FOLLOW_THROUGH_TEXTS.length && announcesNextStep(assistant.content)) {
+					const nudge = FOLLOW_THROUGH_TEXTS[followThroughNudges++];
+					conversation.messages.push({ role: "user", content: nudge });
+					callbacks.onAutoContinue?.(nudge);
+					continue;
 				}
 				// Small models like to stop and ask "shall I go on?". The user already said what
 				// they want and every write is approved separately, so answer for them.
@@ -489,6 +527,8 @@ export class Agent {
 					if (READ_TOOLS.has(call.function.name)) {
 						const header = /^# (.+?)(?: \(lines [^)]*\))?$/m.exec(result);
 						if (header && !readPaths.includes(header[1].trim())) readPaths.push(header[1].trim());
+					} else if (call.function.name === "grep_vault") {
+						for (const m of result.matchAll(/^(.+?\.md):\d+[ :-]/gm)) if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
 					}
 				}
 			}

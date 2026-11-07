@@ -274,9 +274,15 @@ export const grepVault: ToolDefinition = {
 		const limit = int(args, "limit", 60, 1, 200);
 		let notes = ctx.vault.listNotes();
 		if (folder) {
-			// A note path given as "folder" means: just that note.
-			const single = ctx.vault.resolve(str(args, "folder", false));
-			notes = single ? notes.filter((n) => n.path === single) : notes.filter((n) => n.path.toLowerCase().startsWith(folder + "/"));
+			// The folder wins when it exists: "Daily" must mean the Daily/ folder even when a note
+			// called Daily.md (the daily template, say) would resolve. Only a name that matches no
+			// folder is taken as a single note.
+			const inFolder = notes.filter((n) => n.path.toLowerCase().startsWith(folder + "/"));
+			if (inFolder.length) notes = inFolder;
+			else {
+				const single = ctx.vault.resolve(str(args, "folder", false));
+				notes = single ? notes.filter((n) => n.path === single) : [];
+			}
 		}
 		notes.sort((a, b) => a.path.localeCompare(b.path));
 		const texts = await Promise.all(notes.map((n) => ctx.vault.read(n.path)));

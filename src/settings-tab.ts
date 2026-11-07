@@ -126,7 +126,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Thinking mode")
-			.setDesc("For models that support reasoning (Qwen3, DeepSeek-R1). 'Auto' uses the model default. 'Off' is faster.")
+			.setDesc("For models that support reasoning (Qwen3, DeepSeek-R1). 'Off' (the default) answered as accurately as thinking in the benchmark and two to three times faster. 'Auto' uses the model default.")
 			.addDropdown((d) =>
 				d
 					.addOptions({ auto: "Auto", on: "On", off: "Off" })

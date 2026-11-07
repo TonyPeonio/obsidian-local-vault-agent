@@ -12,9 +12,11 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 const MATRIX = {
-	base: {},
+	base: {}, // the plugin defaults (thinking off since 0.5.0)
+	think: { THINK: "on" },
 	temp03: { TEMPERATURE: "0.3", PRESENCE: "0" },
-	nothink: { THINK: "off" },
+	ctx16: { NUM_CTX: "16384" },
+	q14: { MODEL: "qwen3:14b" },
 	big: { MODEL: "qwen3.5:35b-a3b" },
 };
 

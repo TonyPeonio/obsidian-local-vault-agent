@@ -668,6 +668,16 @@ describe("list_sections", () => {
 });
 
 describe("grep_vault with a note path as folder", () => {
+	it("prefers an existing folder over a note of the same name", async () => {
+		const vault = freshVault();
+		vault.seed("Templates/Daily.md", "# Daily\n\n## Capture\n");
+		vault.seed("Daily/2026-11-01.md", "## Capture\n\n> A quote\n");
+		const { ctx } = makeCtx(vault);
+		const out = await grepVault.execute({ pattern: "A quote", folder: "Daily" }, ctx);
+		expect(out).toMatch(/^1 matching line in 1 note/);
+		expect(out).toContain("Daily/2026-11-01.md:3");
+	});
+
 	it("searches just that note", async () => {
 		const { ctx } = makeCtx(freshVault());
 		const out = await grepVault.execute({ pattern: "sensors", folder: "Ideas/Sensors.md" }, ctx);

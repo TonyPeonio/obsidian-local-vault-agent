@@ -20,9 +20,11 @@ edit a note** and it shows you a diff that you approve before anything is writte
 
 1. [Ollama](https://ollama.com) installed and running.
 2. A chat model that supports **tool calling**. Recommended, by GPU size:
-   - 12 GB VRAM (e.g. RTX 3060/4070/5070): `ollama pull qwen3.5:9b` (default) or `qwen3:14b`
-   - 8 GB VRAM: `ollama pull qwen3:8b` or `llama3.1:8b`
-   - 24 GB VRAM: `ollama pull qwen3:32b`
+   - 12 GB VRAM (e.g. RTX 3060/4070/5070): `ollama pull qwen3.5:9b` (default; the model the
+     [benchmark](#benchmarks) is measured on). The older `qwen3:14b` scored much lower.
+   - 8 GB VRAM: `ollama pull qwen3.5:4b` or `qwen3:8b`
+   - 24 GB VRAM: `ollama pull qwen3.5:35b-a3b`. On a 12 GB card it spills into system RAM and
+     was both slower and less accurate than the 9B; stay with the 9B there.
 3. An embedding model for semantic search: `ollama pull nomic-embed-text` (274 MB).
 
 The plugin checks all of this for you: **Settings → Local Vault Agent → Test connection**.
@@ -150,8 +152,10 @@ incrementally when you change notes. Search results merge semantic and keyword r
 - **Note gists** — on by default. The first pass over a large vault takes a few minutes of GPU
   time in the background; turn it off on a laptop that shares the GPU with other work.
 - **Conventions note** — `AGENT.md` by default; *Create / open* writes a starter you can edit.
-- **Thinking mode** — Qwen3 / DeepSeek-R1 style reasoning. "Auto" uses the model default. Turn it
-  off for faster replies on simple questions.
+- **Thinking mode** — Qwen3 / DeepSeek-R1 style reasoning, **off by default**. On the benchmark
+  vault `qwen3.5:9b` passed as many checks without thinking as with it, in a third of the time
+  and with fewer tool calls (see Benchmarks); the agent loop already gives the model a step at a
+  time to reason about. "Auto" uses the model default; "On" forces it.
 - **Auto-approve edits** — off by default. Leave it off; use "Approve all in this chat" in the
   dialog when you trust a particular task.
 - **Keep going when the model asks for permission** — on by default. Turn it off if you prefer
@@ -166,6 +170,47 @@ incrementally when you change notes. Search results merge semantic and keyword r
 Set the Ollama URL to a LAN address (e.g. `http://192.168.1.10:11434`) and start Ollama with
 `OLLAMA_HOST=0.0.0.0`. Modern Ollama already allows requests from Obsidian (`app://*`); if you
 see a CORS/network error, set `OLLAMA_ORIGINS=app://obsidian.md*` on the Ollama server.
+
+## Benchmarks
+
+Every release is run through a scored benchmark: 16 scenarios on a generated 339-note vault
+(questions across notes, enumeration, a clean-up over 40 lecture sections, moving finished
+projects, processing 127 daily notes, acting on the Vault Suggestions note, editing a selection,
+a note that does not exist, and the loop failures reported from real vaults). Each scenario is
+timed and counted for tool calls, tool errors, guessed paths and repeated calls, and checked
+against facts the generator recorded. 96 checks in all; the vault is restored after every run.
+
+Version 0.5.0, 2026-11-07, RTX 5070 12 GB, Ollama 0.40, 32k context unless noted. Identical
+runs differ by up to 2× in wall time, so each configuration was run twice where it mattered.
+
+| Configuration | Checks | Seconds | Tool calls | Repeated calls |
+|---|---:|---:|---:|---:|
+| **qwen3.5:9b, defaults (thinking off, temp 0.6)** | **94, 92** | **232, 160** | 103, 61 | 0, 0 |
+| qwen3.5:9b, 16k context | 93 | 170 | 67 | 0 |
+| qwen3.5:9b, temperature 0.3, presence 0 | 93, 90 | 146, 263 | 61, 207 | 3, 3 |
+| qwen3.5:9b, thinking on | 89 | 588 | 274 | 7 |
+| qwen3.5:9b, thinking on, before the 0.5.0 fixes | 91, 90 | 801, 451 | 262, 108 | 1, 4 |
+| qwen3:14b, thinking off | 82 | 521 | 66 | 0 |
+| qwen3.5:35b-a3b, thinking on (56% in system RAM) | 84, 87 | 934, 1192 | 114, 260 | 0, 3 |
+| 0.4.1 (71 checks, 9 scenarios then) | 66/71 | 397 | 198 | 4 |
+
+What the numbers say:
+
+- **Thinking off is the default** because it was as accurate and two to three times faster;
+  with thinking on the model also repeated searches it had already run. The agent loop gives
+  the model one step at a time, which is most of what thinking buys.
+- **Temperature 0.6** stays: 0.3 was not more precise and looped more often.
+- **16k context** loses almost nothing on this vault; 32k is the default because larger vaults
+  need the room for outlines and results.
+- **A bigger model does not help on a 12 GB card.** The 35B spilled into RAM, took twice as
+  long and passed fewer checks. `qwen3:14b` (previous generation) sent 45 tool calls in one step
+  and failed the daily-notes job entirely.
+- The failures that remain are concentrated in one scenario, the clean-up across 40 lecture
+  sections, where the model sometimes announces the batch edit and then emits nothing; the
+  follow-through nudge added in 0.5.0 recovers one of the two cases.
+
+Run it yourself with `npm run make-vault && npm run e2e:large` (see Development); results land
+in `bench/`.
 
 ## Privacy and network use
 
@@ -196,11 +241,14 @@ npm run make-vault && npm run e2e:large   # the scored benchmark (see Benchmarks
 npm run build   # type-check + Obsidian review lint + production bundle
 ```
 
-The benchmark (`scripts/e2e-large.ts`) runs 14 scenarios on a generated 339-note vault
+The benchmark (`scripts/e2e-large.ts`) runs 16 scenarios on a generated 339-note vault
 (`scripts/make-vault.mjs`, with `scripts/large-facts.json` recording the facts the checks look
 for) and saves per-scenario seconds, tool calls, errors, guessed paths, repeated calls and
-pass/fail to `bench/<version>.json`. `MODEL=`, `NUM_CTX=`, `THINK=on|off`, `GISTS=1` and
-`ONLY=id,id` select what runs. Add a scenario whenever a real-vault failure is reproduced.
+pass/fail to `bench/<version>[-tag].json`. `MODEL=`, `NUM_CTX=`, `THINK=on|off`, `TEMPERATURE=`,
+`PRESENCE=`, `GISTS=1`, `TAG=` and `ONLY=id,id` select what runs. `npm run bench-matrix` runs
+several configurations back to back (`RUNS=2` for variance) and prints one table;
+`npm run bench-table a.json b.json` renders a before/after comparison. Add a scenario whenever a
+real-vault failure is reproduced; the results in `bench/` are the release gate.
 
 To release: bump `version` in `manifest.json` and `package.json`, add the version to
 `versions.json`, write `release-notes/<version>.md`, commit, then push a tag named exactly

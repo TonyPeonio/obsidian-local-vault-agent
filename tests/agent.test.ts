@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	AUTO_CONTINUE_TEXT,
 	Agent,
+	FOLLOW_THROUGH_TEXT,
+	announcesNextStep,
 	MAX_AUTO_CONTINUES,
 	MAX_CALLS_PER_STEP,
 	REPEATED_CALLS_WRAP_UP,
@@ -205,6 +207,23 @@ describe("Agent.run", () => {
 		expect(conv.messages.at(-1)?.content).toBe("All done.");
 	});
 
+	it("sends a reply that only announces the next step back once", async () => {
+		const { agent, ollama } = setup(
+			[
+				{ content: "The note names the net but not the loss.\n\nTo find the validation loss, I'll check the Sensors note." },
+				{ tool: "read_note", args: { path: "Ideas/Sensors.md" } },
+				{ content: "Hall sensors are cheap." },
+			],
+			{ cfg: { autoContinue: true } },
+		);
+		const conv = newConversation();
+		const nudges: string[] = [];
+		await agent.run(conv, "what is the loss?", { onAutoContinue: (t) => nudges.push(t) });
+		expect(nudges).toEqual([FOLLOW_THROUGH_TEXT]);
+		expect(ollama.requests[1].messages.at(-1)).toMatchObject({ role: "user", content: FOLLOW_THROUGH_TEXT });
+		expect(conv.messages.at(-1)?.content).toContain("Hall sensors are cheap.");
+	});
+
 	it("gives up after MAX_AUTO_CONTINUES permission questions", async () => {
 		const ask = { content: "Shall I continue?" };
 		const { agent, ollama } = setup([ask, ask, ask, ask, ask], { cfg: { autoContinue: true, maxIterations: 10 } });
@@ -294,6 +313,31 @@ describe("grounding check", () => {
 		]);
 		await agent.run(newConversation(), "x", {});
 		expect(ollama.requests).toHaveLength(1);
+	});
+});
+
+describe("announcesNextStep", () => {
+	it("recognises a reply that ends by narrating work not yet done", () => {
+		for (const t of [
+			"The note does not mention the loss.\n\nTo find it, I'll check the [[NNUE Training]] note.",
+			"Let me search the Daily folder for that phrase.",
+			"Now I will read the remaining three notes and apply the edits.",
+			"Next, I need to grep the vault for the recording embeds.",
+		]) {
+			expect(announcesNextStep(t), t).toBe(true);
+		}
+	});
+
+	it("leaves answers, questions and sign-offs alone", () => {
+		for (const t of [
+			"The validation loss was 0.071 ([[NNUE Training]]).",
+			"I'll check the other notes too. Shall I continue?",
+			"Done. Let me know if you want me to check the other courses.",
+			"I checked both notes; neither mentions wheels.",
+			"",
+		]) {
+			expect(announcesNextStep(t), t).toBe(false);
+		}
 	});
 });
 
@@ -494,6 +538,13 @@ describe("context guards", () => {
 });
 
 describe("sources footer", () => {
+	it("cites the notes a grep matched when the answer came straight from the matching lines", async () => {
+		const { agent } = setup([{ tool: "grep_vault", args: { pattern: "electromagnet" } }, { content: "It moves pieces with an electromagnet." }]);
+		const conv = newConversation();
+		await agent.run(conv, "how does it move pieces?", {});
+		expect(conv.messages.at(-1)?.content).toBe("It moves pieces with an electromagnet.\n\nSources: [[Projects/Chess Robot]]");
+	});
+
 	it("appends the notes read when an answer cites nothing, and not after writes", async () => {
 		const { agent } = setup([
 			{ tool: "read_note", args: { path: "Projects/Chess Robot" } },
