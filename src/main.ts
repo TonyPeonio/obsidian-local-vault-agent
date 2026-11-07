@@ -1,13 +1,15 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf, loadPdfJs, moment, normalizePath, requestUrl } from "obsidian";
+import { MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf, loadPdfJs, moment, normalizePath, requestUrl } from "obsidian";
 import { Agent, type AgentConfig } from "./agent";
 import { ApprovalModal } from "./approval-modal";
+import { SUGGESTIONS_NOTE, gardenVault, renderGardenReport } from "./gardener";
 import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, type IndexData, type IndexStatus } from "./index";
 import { ObsidianVault } from "./obsidian-vault";
 import { OllamaClient } from "./ollama";
-import { reformatPrompt, summarizePrompt } from "./prompts";
+import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
+import { editSelectionPrompt, processDailyNotesPrompt, reformatPrompt, summarizePrompt } from "./prompts";
 import { fuseRankings, keywordSearch } from "./search";
-import { DEFAULT_SETTINGS, isExcluded, type LocalVaultAgentSettings } from "./settings";
+import { DEFAULT_SETTINGS, SAMPLING, isExcluded, migrateSettings, type LocalVaultAgentSettings } from "./settings";
 import { LocalVaultAgentSettingTab } from "./settings-tab";
 import { ALL_TOOLS } from "./tools";
 import type { ChangeRecord, ChatMessage, SearchHit } from "./types";
@@ -164,6 +166,25 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				if (!checking) void this.summarizeCurrentNote();
 				return true;
 			},
+		});
+		this.addCommand({
+			id: "edit-selection",
+			name: "Edit the selected text with an instruction",
+			editorCheckCallback: (checking, editor) => {
+				if (!editor.getSelection().trim()) return false;
+				if (!checking) void this.editSelection();
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "process-daily-notes",
+			name: "Process my daily notes (compile inboxes into topic notes)",
+			callback: () => void this.processDailyNotes(),
+		});
+		this.addCommand({
+			id: "suggest-improvements",
+			name: "Suggest vault improvements (write the Vault Suggestions note)",
+			callback: () => void this.suggestImprovements(),
 		});
 		this.addCommand({
 			id: "undo-last-change",
@@ -380,6 +401,86 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		await target?.send(reformatPrompt(file.path, content));
 	}
 
+	/** The markdown editor showing the active note, even when the chat panel has focus. */
+	private activeEditorView(): MarkdownView | null {
+		const direct = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (direct) return direct;
+		const path = this.activeNote()?.path;
+		if (!path) return null;
+		for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+			const view = leaf.view;
+			if (view instanceof MarkdownView && view.file?.path === path) return view;
+		}
+		return null;
+	}
+
+	/** Asks for an instruction and has the agent rewrite the selected text (command and /edit). */
+	async editSelection(view?: AgentView | null): Promise<void> {
+		const editorView = this.activeEditorView();
+		const selection = editorView?.editor.getSelection() ?? "";
+		const file = editorView?.file;
+		if (!file || !selection.trim()) {
+			new Notice("Select some text in a note first.");
+			return;
+		}
+		const modal = new InstructionModal(this.app, selection);
+		modal.open();
+		const instruction = await modal.result;
+		if (!instruction) return;
+		const target = view ?? (await this.activateView());
+		await target?.send(editSelectionPrompt(file.path, selection, instruction));
+	}
+
+	/** Asks for options and runs the daily-notes distillation (command and /daily). */
+	async processDailyNotes(view?: AgentView | null): Promise<void> {
+		const s = this.settings;
+		const modal = new ProcessDailyModal(this.app, {
+			folder: this.dailyFolder,
+			heading: s.dailyInboxHeading,
+			destination: s.dailyTopicsFolder,
+			move: s.dailyMoveItems,
+		});
+		modal.open();
+		const opts = await modal.result;
+		if (!opts) return;
+		s.dailyInboxHeading = opts.heading;
+		s.dailyTopicsFolder = opts.destination;
+		s.dailyMoveItems = opts.move;
+		await this.saveSettings();
+		const target = view ?? (await this.activateView());
+		await target?.send(processDailyNotesPrompt(opts));
+	}
+
+	/**
+	 * The vault gardener: analyses the vault without a model and writes (or refreshes) the
+	 * Vault Suggestions note after the usual diff approval, then opens it.
+	 */
+	async suggestImprovements(): Promise<void> {
+		const hasIndex = this.settings.semanticSearch && this.index.ready;
+		const report = await gardenVault(this.vault, {
+			dailyFolder: this.dailyFolder,
+			inboxHeading: this.settings.dailyInboxHeading,
+			exclude: (p) => isExcluded(p, this.settings.excludedFolders),
+			noteVectors: hasIndex ? this.index.noteVectors() : undefined,
+		});
+		const after = renderGardenReport(report, { hasIndex });
+		const path = SUGGESTIONS_NOTE;
+		const existing = this.app.vault.getFileByPath(path);
+		const before = existing ? await this.app.vault.cachedRead(existing) : "";
+		if (before === after) {
+			new Notice("Vault Suggestions is already up to date.");
+			await this.app.workspace.openLinkText(path, "", false);
+			return;
+		}
+		const modal = new ApprovalModal(this.app, { tool: existing ? "replace_note" : "create_note", path, before, after, summary: `${existing ? "Update" : "Create"} ${path}` });
+		modal.open();
+		const decision = await modal.result;
+		if (decision === "reject") return;
+		if (existing) await this.app.vault.modify(existing, after);
+		else await this.app.vault.create(path, after);
+		await this.app.workspace.openLinkText(path, "", false);
+	}
+
 	/** Sends the summarize prompt for the open note (command and /summarize). */
 	async summarizeCurrentNote(view?: AgentView | null): Promise<void> {
 		const file = this.activeNote();
@@ -470,6 +571,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			model: s.model,
 			numCtx: s.numCtx,
 			temperature: s.temperature,
+			sampling: SAMPLING,
 			think: s.thinking === "auto" ? undefined : s.thinking === "on",
 			keepAlive: s.keepAlive,
 			maxIterations: s.maxIterations,
@@ -505,7 +607,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		const data = (await this.loadData()) as Partial<LocalVaultAgentSettings> | null;
-		this.settings = { ...DEFAULT_SETTINGS, ...(data ?? {}) };
+		this.settings = migrateSettings(data);
 	}
 
 	async saveSettings(): Promise<void> {

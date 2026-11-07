@@ -21,6 +21,8 @@ export interface ChatMessage {
 	tool_calls?: ToolCall[];
 	/** For role === "tool": the name of the tool that produced this result. */
 	tool_name?: string;
+	/** For role === "tool": the agent's repeated-call cache key for this result (not sent to the model). */
+	cacheKey?: string;
 }
 
 /** JSON-schema subset that Ollama accepts for tool parameters. */

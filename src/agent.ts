@@ -18,6 +18,8 @@ export interface AgentConfig {
 	model: string;
 	numCtx: number;
 	temperature: number;
+	/** Extra sampling options sent with every request (top_p, top_k, presence_penalty). */
+	sampling?: { top_p?: number; top_k?: number; presence_penalty?: number; repeat_penalty?: number };
 	/** undefined = model default. */
 	think?: boolean;
 	keepAlive: string;
@@ -55,6 +57,17 @@ function canonicalJson(value: unknown): string {
 		return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
 	}
 	return JSON.stringify(value) ?? "null";
+}
+
+/** Tools whose result depends on one note only (named in their arguments). */
+const PER_NOTE_TOOLS = /^(read_note|read_section|find_in_note|get_active_note) /;
+
+/** Drops cached results a write to `paths` may have changed. Over-invalidation is harmless. */
+export function invalidateCache(cache: Map<string, string>, paths: Iterable<string>): void {
+	const names = Array.from(paths).map((p) => (p.split("/").pop() ?? p).replace(/\.md$/i, ""));
+	for (const key of Array.from(cache.keys())) {
+		if (!PER_NOTE_TOOLS.test(key) || names.some((n) => key.includes(n))) cache.delete(key);
+	}
 }
 
 export function repeatedCallNotice(name: string, priorResult: string, repeat: number): string {
@@ -214,7 +227,7 @@ export function buildSystemPrompt(
 		"- Search snippets are not the note. Before concluding that a note lacks or contains something, read it with read_note, or use find_in_note for one specific passage.",
 		"- Never read every note to find something. To find all occurrences of a pattern across the vault (an embed, a tag, a phrase, a heading), use grep_vault; then read_section or find_in_note only where needed. Call at most about 6 tools per step; big batches overflow the context window.",
 		"- Never guess a path. The outline below lists every note; to enumerate a folder (which daily notes exist, say) call list_notes with that folder — it returns every path with its size — and read only paths it returned. A note that does not exist is not a note to try the next date for.",
-		"- To survey one section across many notes (what each daily note's '## Capture' holds, which lecture sections are empty), ONE grep_vault call with the heading as the pattern and context: 8 shows the first lines of every such section; list_notes' sizes show which notes are too small to hold anything. Do not read the notes one by one.",
+		"- To survey one section across many notes (which daily notes have a full '## Capture', which lecture sections are empty), ONE list_sections call with heading: 'Capture' and the folder lists that section of every note with its size and first line; grep_vault with the heading as the pattern and context: 8 shows more of each. Then read_section only the few that matter. Never read the notes one by one.",
 		"- A tool call with the same arguments returns the same result; never repeat one. When a search finds nothing, that is the answer for that pattern: change the pattern, the folder or the tool, or report it.",
 		"- search_passages and search_notes find notes by topic (meaning and keywords). They cannot find notes that are 'messy', 'long', 'empty' or 'unstructured': such structural questions are answered by list_notes (sizes), list_sections (which sections contain what), grep_vault (headings, patterns) and the outline.",
 		"- Clean-ups across many notes: do not survey everything first and act later — you will run out of steps. Find the candidates with grep_vault (it shows each match's heading), decide per match, then apply all the edits with ONE edit_notes call (a list of {path, old_text, new_text}). old_text is the smallest unique passage — normally the single matching line, never a whole section. Example: list_sections({containing: ['![[Recording', '### Summary']}) tells you per section which it has; every section with both becomes one edit_notes item {path, heading, line_contains: '![[Recording', new_text: ''}. That is the whole job in two steps; never read the sections one by one.",
@@ -280,6 +293,8 @@ export class Agent {
 		}
 
 		let currentCall: ToolCall | null = null;
+		/** Paths the current mutating call wrote, so only reads of those are forgotten. */
+		const changedPaths = new Set<string>();
 		const ctx: ToolContext = {
 			vault,
 			search: this.deps.search,
@@ -290,6 +305,7 @@ export class Agent {
 			readLog: new Map(),
 			readAttachmentText: this.deps.readAttachmentText,
 			recordChange: (change) => {
+				changedPaths.add(change.path);
 				if (!this.deps.undo || !currentCall) return;
 				const record = this.deps.undo.push({ ...change, time: now.getTime(), turn });
 				callbacks.onChange?.(record, currentCall);
@@ -320,13 +336,18 @@ export class Agent {
 		let repeats = 0;
 		/** Set when the loop stops for a reason other than running out of iterations. */
 		let wrapUpText: string | null = null;
+		// Built once per turn, not per step: Ollama caches the KV state of the prompt prefix, so an
+		// identical system prompt makes every later step's prefill nearly free. Rebuilding it after
+		// a write (the outline would show the new note) invalidated that cache on every step.
+		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, daily) };
+		const options = { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}) };
 		iterations: for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
-			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, daily) };
 			const history = trimHistory(conversation.messages, cfg.numCtx, (m) => {
-				// A shortened read is no longer "already above"; let the model read it again.
+				// A shortened result is no longer "already above"; let the model call for it again.
 				const header = /^# (.+)$/m.exec(m.content);
 				if (m.tool_name === "read_note" && header) ctx.readLog?.delete(header[1].trim());
+				if (m.cacheKey) callCache.delete(m.cacheKey);
 			});
 			callbacks.onStatus?.(iteration === 0 ? "Thinking…" : "Working…");
 			callbacks.onAssistantStart?.();
@@ -338,7 +359,7 @@ export class Agent {
 					messages: [system, ...history],
 					tools: toOllamaTools(tools),
 					think,
-					options: { num_ctx: cfg.numCtx, temperature: cfg.temperature },
+					options,
 					keep_alive: cfg.keepAlive,
 					signal,
 					onDelta: (d) => {
@@ -446,9 +467,14 @@ export class Agent {
 				let { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
 				currentCall = null;
 				if (tool && ok) {
-					if (tool.mutates) callCache.clear();
-					else callCache.set(key, result);
+					if (tool.mutates) {
+						// A write makes vault-wide results (grep, lists, searches) and reads of the
+						// changed notes stale; reads of other notes are still current.
+						if (changedPaths.size) invalidateCache(callCache, changedPaths);
+						else callCache.clear();
+					} else callCache.set(key, result);
 				}
+				changedPaths.clear();
 				// A batch of forty read_note calls would overflow the window on its own; keep the
 				// batch within budget and tell the model to work in smaller steps.
 				batchChars += result.length;
@@ -456,7 +482,8 @@ export class Agent {
 					result = result.slice(0, 400) + `\n[truncated: this batch of ${calls.length} tool calls returned too much at once. Call fewer tools per step (at most ~6) and use grep_vault, search_passages or read_section instead of reading whole notes.]`;
 				}
 				callbacks.onToolDone?.(call, result, ok);
-				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name });
+				const cached = tool && ok && !tool.mutates;
+				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name, ...(cached ? { cacheKey: key } : {}) });
 				if (ok) {
 					if (tool?.mutates) writes++;
 					if (READ_TOOLS.has(call.function.name)) {
@@ -470,7 +497,6 @@ export class Agent {
 		// Ran out of iterations (or was stopped for repeating itself): ask the model to wrap up without tools.
 		if (signal?.aborted) return;
 		callbacks.onAssistantStart?.();
-		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, daily) };
 		const response = await this.deps.client.chat({
 			model: cfg.model,
 			messages: [
@@ -484,7 +510,7 @@ export class Agent {
 				},
 			],
 			think,
-			options: { num_ctx: cfg.numCtx, temperature: cfg.temperature },
+			options,
 			keep_alive: cfg.keepAlive,
 			signal,
 			onDelta: (d) => {

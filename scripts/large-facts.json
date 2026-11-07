@@ -603,14 +603,81 @@
       },
       {
         "note": "Daily/2026-10-14.md",
-        "rec": "Recording 20261014132836.m4a"
+        "rec": "Recording 20261014132804.m4a"
       }
     ]
   },
   "counts": {
-    "daily": 118,
-    "notes": 330,
-    "chars": 180915
+    "daily": 127,
+    "notes": 339,
+    "chars": 187816
+  },
+  "garden": {
+    "brokenNote": "Projects/Chess Robot.md",
+    "brokenTarget": "Projects/Gantry Spec"
+  },
+  "daily": {
+    "messy": [
+      {
+        "note": "Daily/2026-07-14.md",
+        "date": "2026-07-14",
+        "topic": "workshop and hackathon planning",
+        "phrase": "participation certificate"
+      },
+      {
+        "note": "Daily/2026-07-21.md",
+        "date": "2026-07-21",
+        "topic": "small language model research",
+        "phrase": "cross-entropy"
+      },
+      {
+        "note": "Daily/2026-08-25.md",
+        "date": "2026-08-25",
+        "topic": "possible quantum advisors",
+        "phrase": "Rahul Nandkishore"
+      },
+      {
+        "note": "Daily/2026-09-01.md",
+        "date": "2026-09-01",
+        "topic": "oil and gas companies",
+        "phrase": "Bison Oil and Gas"
+      },
+      {
+        "note": "Daily/2026-09-14.md",
+        "date": "2026-09-14",
+        "topic": "immunology lecture",
+        "phrase": "pattern recognition receptors"
+      },
+      {
+        "note": "Daily/2026-09-21.md",
+        "date": "2026-09-21",
+        "topic": "fellowship applications",
+        "phrase": "NDSEG"
+      }
+    ],
+    "snippets": [
+      {
+        "note": "Daily/2026-06-12.md",
+        "date": "2026-06-12",
+        "lang": "bash",
+        "key": "salloc -N 1 -t 02:00:00"
+      },
+      {
+        "note": "Daily/2026-07-09.md",
+        "date": "2026-07-09",
+        "lang": "python",
+        "key": "def rolling_mean(xs, k):"
+      }
+    ],
+    "quoted": [
+      "Daily/2026-07-21.md",
+      "Daily/2026-08-04.md",
+      "Daily/2026-08-20.md",
+      "Daily/2026-09-14.md",
+      "Daily/2026-09-21.md",
+      "Daily/2026-10-19.md"
+    ],
+    "captureCount": 127
   },
   "attachments": [
     {
@@ -770,28 +837,28 @@
       "size": 25000000
     },
     {
-      "path": "Recording 20261014132836.m4a",
+      "path": "Recording 20261014132804.m4a",
       "size": 9000000
     },
     {
       "path": "Attachments/sars_proteins.pdf",
-      "size": 2970378
+      "size": 2965504
     },
     {
       "path": "Attachments/CSCI470-lecture10-slides.pdf",
-      "size": 4247325
+      "size": 3266966
     },
     {
       "path": "Attachments/robot-frame.png",
-      "size": 3237742
+      "size": 2366681
     },
     {
       "path": "Attachments/wiring-v2.png",
-      "size": 1164467
+      "size": 483494
     },
     {
       "path": "Attachments/syllabus-CSCI406.pdf",
-      "size": 2632013
+      "size": 2388966
     }
   ]
 }

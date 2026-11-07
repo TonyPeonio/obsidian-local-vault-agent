@@ -253,6 +253,23 @@ export class SemanticIndex {
 		return scored.slice(0, limit).map(({ index, ...p }) => p);
 	}
 
+	/** One unit vector per indexed note: the normalised mean of its chunk vectors. */
+	noteVectors(): Map<string, Float32Array> {
+		const out = new Map<string, Float32Array>();
+		for (const [path, file] of Object.entries(this.data.files)) {
+			const vecs = this.vectorsFor(path, file);
+			if (vecs.length === 0) continue;
+			const sum = new Float32Array(vecs[0].length);
+			for (const v of vecs) for (let i = 0; i < sum.length; i++) sum[i] += v[i];
+			let norm = 0;
+			for (let i = 0; i < sum.length; i++) norm += sum[i] * sum[i];
+			norm = Math.sqrt(norm) || 1;
+			for (let i = 0; i < sum.length; i++) sum[i] /= norm;
+			out.set(path, sum);
+		}
+		return out;
+	}
+
 	private vectorsFor(path: string, file: StoredFile): Float32Array[] {
 		let vecs = this.decoded.get(path);
 		if (!vecs) {

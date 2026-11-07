@@ -387,3 +387,33 @@
 	font-size: var(--font-ui-smaller);
 	color: var(--text-muted);
 }
+
+/* Option dialogs (Process my daily notes, Edit selection, speed test) */
+.lva-options-modal .lva-modal-help {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin: 0 0 var(--size-4-3);
+}
+.lva-options-modal .lva-modal-preview {
+	max-height: 10em;
+	overflow: auto;
+	white-space: pre-wrap;
+	font-size: var(--font-ui-smaller);
+	background: var(--background-secondary);
+	padding: var(--size-4-2);
+	border-radius: var(--radius-s);
+}
+.lva-options-modal .lva-modal-input {
+	width: 100%;
+}
+.lva-options-modal .lva-tune-headline {
+	font-weight: var(--font-semibold);
+	margin: var(--size-4-2) 0;
+}
+.lva-options-modal .lva-tune-lines {
+	font-size: var(--font-ui-small);
+	padding-left: var(--size-4-4);
+}
+.lva-options-modal .lva-tune-lines li {
+	margin-bottom: var(--size-4-1);
+}

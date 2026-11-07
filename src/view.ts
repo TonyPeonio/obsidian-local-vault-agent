@@ -286,6 +286,15 @@ export class AgentView extends ItemView {
 			case "summarize":
 				await this.plugin.summarizeCurrentNote(this);
 				break;
+			case "edit":
+				await this.plugin.editSelection(this);
+				break;
+			case "daily":
+				await this.plugin.processDailyNotes(this);
+				break;
+			case "garden":
+				await this.plugin.suggestImprovements();
+				break;
 			case "undo":
 				await this.plugin.undoLast();
 				break;

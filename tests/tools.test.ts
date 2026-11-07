@@ -27,6 +27,7 @@ import {
 	readSection,
 	replaceLine,
 	replaceNote,
+	replaceSection,
 	searchNotes,
 	searchPassages,
 	vaultOverview,
@@ -512,7 +513,44 @@ describe("grep_vault", () => {
 		expect(await grepVault.execute({ pattern: "^zebra|yak$" }, ctx)).toMatch(/^\(Searched both as literal text and as a regular expression\.\)\nNo note contains/);
 		expect(looksLikeRegex("plain words")).toBe(false);
 		expect(looksLikeRegex("[[Embed")).toBe(false);
+		// A model that escapes the brackets of an embed meant a regex.
+		vault.seed("Daily/d2.md", "![[Recording 1.m4a]]\n");
+		expect(await grepVault.execute({ pattern: "!\\[\\[Recording" }, ctx)).toMatch(/searched as one.*\n1 matching line/s);
 		expect(tidyAlternation("a|b")).toBe("a|b");
+	});
+});
+
+describe("replace_section", () => {
+	const note = "# 2026-09-21\n\nMood: ok.\n\n## Done\n\n- HW\n\n## Capture\n\nFellowships:\n- NDSEG due Oct 30\n> quote\n\n## Tomorrow\n\n- [ ] Read\n";
+
+	it("replaces the body under a heading, keeps the heading and the rest, asks for approval and records undo", async () => {
+		const vault = new FakeVault({ "Daily/2026-09-21.md": note });
+		const { ctx, approvals } = makeCtx(vault);
+		const changes: { tool: string }[] = [];
+		ctx.recordChange = (c) => changes.push(c);
+		const out = await replaceSection.execute({ path: "Daily/2026-09-21.md", heading: "Capture", new_text: "- Moved to [[Topics/Fellowships]]" }, ctx);
+		expect(out).toMatch(/^Replaced the "Capture" section/);
+		expect(await vault.read("Daily/2026-09-21.md")).toBe("# 2026-09-21\n\nMood: ok.\n\n## Done\n\n- HW\n\n## Capture\n\n- Moved to [[Topics/Fellowships]]\n\n## Tomorrow\n\n- [ ] Read\n");
+		expect(approvals[0].summary).toBe('Replace section "Capture" in Daily/2026-09-21.md');
+		expect(changes[0].tool).toBe("replace_section");
+	});
+
+	it("empties a section, handles the last section, and reports a missing heading", async () => {
+		const vault = new FakeVault({ "N.md": note });
+		const { ctx } = makeCtx(vault);
+		await replaceSection.execute({ path: "N.md", heading: "capture", new_text: "" }, ctx);
+		expect(await vault.read("N.md")).toContain("## Capture\n\n## Tomorrow");
+		await replaceSection.execute({ path: "N.md", heading: "Tomorrow", new_text: "- [ ] Sleep\n\n" }, ctx);
+		expect(await vault.read("N.md")).toMatch(/## Tomorrow\n\n- \[ \] Sleep\n$/);
+		await expect(replaceSection.execute({ path: "N.md", heading: "Nope", new_text: "x" }, ctx)).rejects.toThrow(/No heading matching "Nope".*## Capture/s);
+		expect(await replaceSection.execute({ path: "N.md", heading: "Tomorrow", new_text: "- [ ] Sleep" }, ctx)).toMatch(/already has that content/);
+	});
+
+	it("does not write when rejected", async () => {
+		const vault = new FakeVault({ "N.md": note });
+		const { ctx } = makeCtx(vault, "reject");
+		await expect(replaceSection.execute({ path: "N.md", heading: "Capture", new_text: "gone" }, ctx)).rejects.toThrow(/rejected/);
+		expect(await vault.read("N.md")).toBe(note);
 	});
 });
 
@@ -605,7 +643,27 @@ describe("list_sections", () => {
 		const all = await listSections.execute({ containing: ["zzz"], path: "S/L", only_matching: false }, ctx);
 		expect(all).toMatch(/^5 sections/);
 		expect(await listSections.execute({ containing: ["zzz"] }, ctx)).toMatch(/^No section contains/);
-		await expect(listSections.execute({ containing: [] }, ctx)).rejects.toThrow(/1–4 texts/);
+		await expect(listSections.execute({ containing: [] }, ctx)).rejects.toThrow(/heading.*containing/);
+	});
+
+	it("surveys one heading across notes with size and first line", async () => {
+		const vault = new FakeVault({
+			"Daily/a.md": "# a\n\n## Done\n\n- x\n\n## Capture\n\nFellowships from the talk:\n- NDSEG\n- GEM\n\n## Tomorrow\n",
+			"Daily/b.md": "# b\n\n## Capture\n\n## Tomorrow\n\n- [ ] y\n",
+			"Daily/c.md": "# c\n\n## Captured thoughts\n\n> one quote\n",
+			"Other/d.md": "## Capture\n\nnot in the folder\n",
+		});
+		const { ctx } = makeCtx(vault);
+		const out = await listSections.execute({ heading: "capture", folder: "Daily" }, ctx);
+		expect(out).toMatch(/^3 sections \(non-empty lines, characters, first line\):/);
+		expect(out).toContain("Daily/a.md\n  ## Capture (3 lines, 40 chars): Fellowships from the talk:");
+		expect(out).toContain("Daily/b.md\n  ## Capture (empty)");
+		expect(out).toContain("Daily/c.md\n  ## Captured thoughts (1 line, 11 chars): > one quote");
+		expect(out).not.toContain("Other/d.md");
+		const both = await listSections.execute({ heading: "Capture", containing: ["NDSEG"], folder: "Daily" }, ctx);
+		expect(both).toContain("## Capture (3 lines, 40 chars): Fellowships from the talk: | NDSEG yes");
+		expect(both).not.toContain("Daily/b.md");
+		expect(await listSections.execute({ heading: "Nope" }, ctx)).toBe('No section headed "nope".');
 	});
 });
 

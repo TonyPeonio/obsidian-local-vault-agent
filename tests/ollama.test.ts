@@ -150,4 +150,23 @@ describe("OllamaClient.embed / listModels", () => {
 		expect(await client.embed("e", [])).toEqual([]);
 		expect(await client.listModels()).toEqual([{ name: "a:1", size: 5, parameterSize: "7B", capabilities: ["tools"] }]);
 	});
+
+	it("lists running models and reports timing from the final chunk", async () => {
+		const client = new OllamaClient(
+			() => "http://x",
+			fakeFetch((url) => {
+				if (url.endsWith("/api/ps")) return new Response(JSON.stringify({ models: [{ name: "a:1", size: 100, size_vram: 80, context_length: 4096 }, { model: "b" }] }));
+				if (url.endsWith("/api/chat")) {
+					return new Response(streamOf([{ message: { role: "assistant", content: "x" }, done: false }, { message: { role: "assistant", content: "" }, done: true, eval_count: 5, eval_duration: 5e8, prompt_eval_count: 9, prompt_eval_duration: 1e8, load_duration: 3e7 }]));
+				}
+				return new Response("{}", { status: 404 });
+			}),
+		);
+		expect(await client.ps()).toEqual([
+			{ name: "a:1", size: 100, sizeVram: 80, contextLength: 4096 },
+			{ name: "b", size: 0, sizeVram: 0, contextLength: undefined },
+		]);
+		const res = await client.chat({ model: "a:1", messages: [{ role: "user", content: "hi" }] });
+		expect(res).toMatchObject({ completionTokens: 5, evalDuration: 5e8, promptTokens: 9, promptEvalDuration: 1e8, loadDuration: 3e7 });
+	});
 });

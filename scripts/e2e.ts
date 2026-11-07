@@ -12,6 +12,7 @@ import { SemanticIndex, type IndexData } from "../src/index";
 import { OllamaClient } from "../src/ollama";
 import { fuseRankings, keywordSearch } from "../src/search";
 import { reformatPrompt } from "../src/prompts";
+import { DEFAULT_SETTINGS, SAMPLING } from "../src/settings";
 import { ALL_TOOLS } from "../src/tools";
 import { FakeVault } from "../tests/fakes";
 
@@ -54,7 +55,8 @@ async function main() {
 	const cfg: AgentConfig = {
 		model: MODEL,
 		numCtx: 32768,
-		temperature: 0.3,
+		temperature: DEFAULT_SETTINGS.temperature,
+		sampling: SAMPLING,
 		think: THINK === "on" ? true : THINK === "off" ? false : undefined,
 		keepAlive: "10m",
 		maxIterations: 12,

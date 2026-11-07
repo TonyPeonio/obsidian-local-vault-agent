@@ -16,6 +16,11 @@ export interface ChatRequest {
 	options?: {
 		num_ctx?: number;
 		temperature?: number;
+		top_p?: number;
+		top_k?: number;
+		presence_penalty?: number;
+		repeat_penalty?: number;
+		num_predict?: number;
 	};
 	keep_alive?: string;
 	signal?: AbortSignal;
@@ -27,6 +32,20 @@ export interface ChatResponse {
 	doneReason?: string;
 	promptTokens?: number;
 	completionTokens?: number;
+	/** Nanoseconds, as Ollama reports them; present on the final chunk. */
+	loadDuration?: number;
+	promptEvalDuration?: number;
+	evalDuration?: number;
+}
+
+/** A model currently loaded by Ollama (`/api/ps`). */
+export interface RunningModel {
+	name: string;
+	/** Total memory the model plus its context take, in bytes. */
+	size: number;
+	/** The part of `size` that is on the GPU; the rest is in system RAM. */
+	sizeVram: number;
+	contextLength?: number;
 }
 
 export class OllamaError extends Error {
@@ -84,6 +103,18 @@ export class OllamaClient {
 		});
 	}
 
+	/** Models Ollama currently has loaded, with how much of each sits on the GPU. */
+	async ps(): Promise<RunningModel[]> {
+		const res = await this.get("/api/ps");
+		const models = Array.isArray(res.models) ? res.models : [];
+		return models.map((m: Record<string, unknown>) => ({
+			name: typeof m.name === "string" ? m.name : typeof m.model === "string" ? m.model : "",
+			size: Number(m.size ?? 0),
+			sizeVram: Number(m.size_vram ?? 0),
+			contextLength: typeof m.context_length === "number" ? m.context_length : undefined,
+		}));
+	}
+
 	/** Returns capability tags for a model ("tools", "thinking", "embedding", ...). */
 	async showCapabilities(model: string): Promise<string[]> {
 		const res = await this.post("/api/show", { model });
@@ -136,6 +167,7 @@ export class OllamaClient {
 					doneReason: typeof json.done_reason === "string" ? json.done_reason : undefined,
 					promptTokens: typeof json.prompt_eval_count === "number" ? json.prompt_eval_count : undefined,
 					completionTokens: typeof json.eval_count === "number" ? json.eval_count : undefined,
+					...durations(json),
 				};
 			}
 			throw new OllamaError(
@@ -155,6 +187,7 @@ export class OllamaClient {
 		let doneReason: string | undefined;
 		let promptTokens: number | undefined;
 		let completionTokens: number | undefined;
+		let timing: ReturnType<typeof durations> = {};
 
 		for await (const chunk of ndjson(response.body, req.signal)) {
 			if (chunk.error) {
@@ -179,12 +212,13 @@ export class OllamaClient {
 				doneReason = chunk.done_reason as string | undefined;
 				promptTokens = chunk.prompt_eval_count as number | undefined;
 				completionTokens = chunk.eval_count as number | undefined;
+				timing = durations(chunk);
 			}
 		}
 
 		if (thinking) message.thinking = thinking;
 		if (toolCalls.length) message.tool_calls = toolCalls;
-		return { message, doneReason, promptTokens, completionTokens };
+		return { message, doneReason, promptTokens, completionTokens, ...timing };
 	}
 
 	private async get(path: string): Promise<Record<string, unknown>> {
@@ -237,6 +271,21 @@ export class OllamaClient {
 			);
 		}
 	}
+}
+
+function durations(chunk: Record<string, unknown>): Pick<ChatResponse, "loadDuration" | "promptEvalDuration" | "evalDuration"> {
+	const num = (k: string) => {
+		const v = chunk[k];
+		return typeof v === "number" ? v : undefined;
+	};
+	const out: Pick<ChatResponse, "loadDuration" | "promptEvalDuration" | "evalDuration"> = {};
+	const load = num("load_duration");
+	const prompt = num("prompt_eval_duration");
+	const evalD = num("eval_duration");
+	if (load !== undefined) out.loadDuration = load;
+	if (prompt !== undefined) out.promptEvalDuration = prompt;
+	if (evalD !== undefined) out.evalDuration = evalD;
+	return out;
 }
 
 function toWireMessage(m: ChatMessage): Record<string, unknown> {

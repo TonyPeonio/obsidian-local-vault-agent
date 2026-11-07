@@ -369,7 +369,8 @@ function tryRegexError(pattern: string): string {
 
 /** True when a pattern sent as literal text is almost certainly meant as a regular expression. */
 export function looksLikeRegex(pattern: string): boolean {
-	return /^\^|\$$|\\[sdwbSDWB]|\[[^\]]+\]|\.[*+?]|\(\?|\||\{\d+(,\d*)?\}/.test(pattern);
+	// Anchors, classes, escapes of regex metacharacters (`!\[\[Recording`), quantifiers, groups, alternation.
+	return /^\^|\$$|\\[sdwbSDWB]|\\[[\]().|+*?{}]|\[[^\]]+\]|\.[*+?]|\(\?|\||\{\d+(,\d*)?\}/.test(pattern);
 }
 
 /** `scp | salloc | module load` → `scp|salloc|module load`: a model's spaces around `|` are
@@ -384,28 +385,29 @@ export function tidyAlternation(pattern: string): string {
 export const listSections: ToolDefinition = {
 	name: "list_sections",
 	description:
-		"List the heading sections of notes and, for each, which of the given texts it contains. The direct way to answer 'which sections have X but not Y' (e.g. a recording embed but no Summary) across many notes without reading them: pass containing: ['![[Recording', '### Summary'] and read the yes/no flags. Then edit with edit_notes using heading + line_contains.",
+		"Survey sections across many notes without reading them, in ONE call for the whole vault or folder. containing: ['![[Recording', '### Summary'] flags for every section which of those texts it has, so 'sections with X but not Y' is answered at once (pass all the texts you care about together; never one call per section or per note; then edit with edit_notes using heading + line_contains). heading: 'Capture' with a folder lists that section of every note with its size and first line — which daily notes have a full inbox and which are empty. Give containing, heading, or both.",
 	parameters: {
 		type: "object",
 		properties: {
-			containing: { type: "array", description: "1–4 texts to test each section for (case-insensitive, literal).", items: { type: "string" } },
+			heading: { type: "string", description: "Only sections whose heading starts with this text (case-insensitive), e.g. 'Capture'." },
+			containing: { type: "array", description: "Up to 4 texts to test each section for (case-insensitive, literal).", items: { type: "string" } },
 			folder: { type: "string", description: "Only notes inside this folder (recursive)." },
 			path: { type: "string", description: "Only this note." },
 			level: { type: "integer", description: "Only headings of this level (2 = '##'). Default: all levels." },
-			only_matching: { type: "boolean", description: "Only list sections that contain at least one of the texts (default true)." },
+			only_matching: { type: "boolean", description: "With containing: only list sections that contain at least one of the texts (default true)." },
 			limit: { type: "integer", description: "Maximum sections to return (default 150, max 400)." },
 		},
-		required: ["containing"],
 	},
 	mutates: false,
 	async execute(args, ctx) {
 		const raw = args.containing;
 		const needles = (Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 4);
-		if (needles.length === 0) throw new ToolError("containing must list 1–4 texts.");
+		const wantHeading = str(args, "heading", false).replace(/^#+\s*/, "").trim().toLowerCase();
+		if (needles.length === 0 && !wantHeading) throw new ToolError("Give heading (a section to survey) and/or containing (1–4 texts to test for).");
 		const folder = str(args, "folder", false).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
 		const only = str(args, "path", false);
 		const level = int(args, "level", 0, 0, 6);
-		const onlyMatching = bool(args, "only_matching", true);
+		const onlyMatching = needles.length > 0 && bool(args, "only_matching", true);
 		const limit = int(args, "limit", 150, 1, 400);
 		let notes = ctx.vault.listNotes();
 		if (only) {
@@ -433,6 +435,7 @@ export const listSections: ToolDefinition = {
 			for (let k = 0; k < heads.length; k++) {
 				const s = heads[k];
 				if (level && s.lvl !== level) continue;
+				if (wantHeading && !s.heading.toLowerCase().startsWith(wantHeading)) continue;
 				let end = lines.length;
 				for (let j = k + 1; j < heads.length; j++) {
 					if (heads[j].lvl <= s.lvl) {
@@ -440,19 +443,32 @@ export const listSections: ToolDefinition = {
 						break;
 					}
 				}
-				const body = lines.slice(s.line + 1, end).join("\n").toLowerCase();
-				const flags = lowers.map((l) => body.includes(l));
+				const bodyLines = lines.slice(s.line + 1, end);
+				const body = bodyLines.join("\n");
+				const flags = lowers.map((l) => body.toLowerCase().includes(l));
 				if (onlyMatching && !flags.some(Boolean)) continue;
 				total++;
 				if (shown >= limit) continue;
 				shown++;
-				rows.push(`  ${"#".repeat(s.lvl)} ${s.heading}: ${needles.map((t, i) => `${t} ${flags[i] ? "yes" : "no"}`).join(", ")}`);
+				let row = `  ${"#".repeat(s.lvl)} ${s.heading}`;
+				if (wantHeading) {
+					// Survey mode: how much is under the heading and what it starts with.
+					const nonEmpty = bodyLines.filter((l) => l.trim());
+					const first = (nonEmpty[0] ?? "").trim();
+					row += nonEmpty.length === 0 ? " (empty)" : ` (${nonEmpty.length} line${nonEmpty.length === 1 ? "" : "s"}, ${body.trim().length} chars): ${first.length > 100 ? first.slice(0, 99) + "…" : first}`;
+				}
+				if (needles.length) row += `${wantHeading ? " |" : ":"} ${needles.map((t, i) => `${t} ${flags[i] ? "yes" : "no"}`).join(", ")}`;
+				rows.push(row);
 			}
 			if (rows.length) blocks.push(`${n.path}\n${rows.join("\n")}`);
 		}
-		if (total === 0) return `No section${onlyMatching ? " contains any of " + needles.map((t) => `"${t}"`).join(", ") : "s found"}${folder ? ` under ${folder}/` : ""}.`;
+		if (total === 0) {
+			const what = wantHeading ? `No section headed "${wantHeading}"` : "No section";
+			return `${what}${onlyMatching ? " contains any of " + needles.map((t) => `"${t}"`).join(", ") : wantHeading ? "" : "s found"}${folder ? ` under ${folder}/` : ""}.`;
+		}
 		const more = total > shown ? `\n…${total - shown} more sections not shown; narrow with folder/path or raise the limit.` : "";
-		return `${total} section${total === 1 ? "" : "s"} (flags per text, in order):\n${blocks.join("\n")}${more}`;
+		const legend = wantHeading ? "(non-empty lines, characters, first line)" : "(flags per text, in order)";
+		return `${total} section${total === 1 ? "" : "s"} ${legend}:\n${blocks.join("\n")}${more}`;
 	},
 };
 
@@ -873,6 +889,53 @@ export const appendToNote: ToolDefinition = {
 	},
 };
 
+/** `content` with the body under `heading` replaced by `body` (the heading line stays). */
+export function replaceSectionBody(content: string, heading: string, body: string): string | null {
+	const section = extractSection(content, heading);
+	if (!section) return null;
+	const lines = content.split("\n");
+	const start = section.startLine - 1;
+	const headingLine = lines[start];
+	const rest = lines.slice(section.endLine).join("\n");
+	const trimmed = body.replace(/^\s*\n|\s+$/g, "");
+	let text = trimmed ? `${headingLine}\n\n${trimmed}\n` : `${headingLine}\n`;
+	if (rest.trim()) text += "\n";
+	const head = start > 0 ? lines.slice(0, start).join("\n") + "\n" : "";
+	return head + text + rest;
+}
+
+export const replaceSection: ToolDefinition = {
+	name: "replace_section",
+	description:
+		"Replace everything under one heading of a note (up to the next heading of the same or a higher level) with new markdown; the heading line itself stays. The way to rewrite, empty or shorten a section without copying its old text: e.g. after compiling a daily note's inbox elsewhere, replace_section(path, 'Capture', '- Moved to [[Topics/X]]'). Heading matched case-insensitively, prefix is enough. The user must approve.",
+	parameters: {
+		type: "object",
+		properties: {
+			path: { type: "string", description: "Path of the note." },
+			heading: { type: "string", description: "Heading text without the '#', e.g. 'Capture'." },
+			new_text: { type: "string", description: "New body for the section; empty string empties it." },
+		},
+		required: ["path", "heading", "new_text"],
+	},
+	mutates: true,
+	async execute(args, ctx) {
+		const path = resolveExisting(ctx.vault, str(args, "path"));
+		const heading = str(args, "heading");
+		const body = str(args, "new_text", false);
+		const before = await ctx.vault.read(path);
+		const after = replaceSectionBody(before, heading, body);
+		if (after === null) {
+			const available = ctx.vault.getMetadata(path).headings;
+			throw new ToolError(`No heading matching "${heading}" in ${path}.${available.length ? ` Headings in this note:\n${available.join("\n")}` : " The note has no headings; use edit_note or replace_note."}`);
+		}
+		if (after === before) return `The section "${heading}" in ${path} already has that content; nothing written.`;
+		await requestApproval(ctx, { tool: "replace_section", path, before, after, summary: `Replace section "${heading}" in ${path}` });
+		await ctx.vault.modify(path, after);
+		ctx.recordChange?.({ tool: "replace_section", path, before, after });
+		return `Replaced the "${heading}" section of ${path} (${body.length} characters).`;
+	},
+};
+
 export const replaceNote: ToolDefinition = {
 	name: "replace_note",
 	description:
@@ -1163,6 +1226,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
 	editNote,
 	editNotes,
 	appendToNote,
+	replaceSection,
 	replaceNote,
 	moveNote,
 	deleteFile,

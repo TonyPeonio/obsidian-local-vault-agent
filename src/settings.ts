@@ -21,7 +21,27 @@ export interface LocalVaultAgentSettings {
 	conventionsNote: string;
 	/** Generate one-line gists of every note with the chat model (background) for the outline. */
 	gists: boolean;
+	/** Bumped when a default changes in a way existing settings should pick up. */
+	settingsVersion: number;
+	/** "Process my daily notes": the inbox heading inside each daily note (without '#'). */
+	dailyInboxHeading: string;
+	/** "Process my daily notes": folder for the compiled topic notes ("" = vault root). */
+	dailyTopicsFolder: string;
+	/** "Process my daily notes": replace a compiled inbox with a link to its topic note. */
+	dailyMoveItems: boolean;
 }
+
+/** The current settings schema; `migrateSettings` brings older saved data up to it. */
+export const SETTINGS_VERSION = 2;
+
+/**
+ * Sampling sent with every chat request besides temperature. The Qwen3 model card warns that
+ * greedy or near-greedy decoding "can lead to performance degradation and endless repetitions"
+ * and recommends top_p 0.8–0.95, top_k 20 and a presence penalty of 0–2 against repetition;
+ * a repeated tool call forty times over is exactly that failure. The penalty is kept low
+ * because tool-call JSON legitimately repeats keys.
+ */
+export const SAMPLING = { top_p: 0.9, top_k: 20, presence_penalty: 0.5 } as const;
 
 export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	ollamaUrl: "http://localhost:11434",
@@ -29,7 +49,7 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	embeddingModel: "nomic-embed-text",
 	semanticSearch: true,
 	numCtx: 32768,
-	temperature: 0.3,
+	temperature: 0.6,
 	thinking: "auto",
 	showThinking: true,
 	maxIterations: 60,
@@ -41,7 +61,25 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	extraSystemPrompt: "",
 	conventionsNote: "AGENT.md",
 	gists: true,
+	settingsVersion: SETTINGS_VERSION,
+	dailyInboxHeading: "Capture",
+	dailyTopicsFolder: "Topics",
+	dailyMoveItems: true,
 };
+
+/**
+ * Saved settings from an older version, filled in with current defaults. Version 1 (no
+ * `settingsVersion`) defaulted temperature to 0.3, which is close enough to greedy to make
+ * small models loop; a user still on that default moves to the new one, a changed value stays.
+ */
+export function migrateSettings(data: Partial<LocalVaultAgentSettings> | null): LocalVaultAgentSettings {
+	const saved = data ?? {};
+	const version = typeof saved.settingsVersion === "number" ? saved.settingsVersion : 1;
+	const settings: LocalVaultAgentSettings = { ...DEFAULT_SETTINGS, ...saved };
+	if (version < 2 && saved.temperature === 0.3) settings.temperature = DEFAULT_SETTINGS.temperature;
+	settings.settingsVersion = SETTINGS_VERSION;
+	return settings;
+}
 
 export function isExcluded(path: string, excluded: string[]): boolean {
 	const lower = path.toLowerCase();

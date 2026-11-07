@@ -37,7 +37,12 @@ Things to try:
 - *"Summarize my notes on X from the last month."*
 - *"Compile everything I know about X into a new note called 'X Summary' and cite the sources."*
 - Open a messy note and run **Reformat the current note**.
-- Select some text and run **Ask about the selected text**.
+- Select some text and run **Ask about the selected text**, or **Edit the selected text with an
+  instruction** ("make this a table") and approve the diff.
+- Run **Process my daily notes**: the loose captures in your daily notes become topic notes,
+  the daily notes stay timelines.
+- Run **Suggest vault improvements** for a checklist of broken links, unlinked mentions,
+  duplicates, orphans and full inboxes, then ask the agent to work through a section.
 
 ### Commands
 
@@ -45,8 +50,11 @@ Things to try:
 |---|---|
 | Open chat | Opens the sidebar chat |
 | Ask about the selected text | Opens the chat with your selection quoted, ready for a question |
+| Edit the selected text with an instruction | One-line instruction, then a diff of exactly the passage you selected (`/edit`) |
 | Reformat the current note | Asks the agent to tidy the open note into clean markdown (diff-approved) |
 | Summarize the current note | Bullet-point summary of the open note |
+| Process my daily notes | Compiles the inbox sections of your daily notes into topic notes with source links and leaves a link behind (`/daily`) |
+| Suggest vault improvements | Writes the *Vault Suggestions* checklist note: broken links, full inboxes, unlinked mentions, duplicates, orphans, stubs (`/garden`) |
 | Rebuild semantic index | Re-embeds every note from scratch |
 | Rebuild note gists | Regenerates the one-sentence gist of every note |
 | Undo the agent's last change | Reverts the most recent approved write (diff-approved) |
@@ -54,13 +62,14 @@ Things to try:
 
 ### How it works
 
-The model gets nineteen tools. Reading: `search_passages` (matching note *sections*, verbatim),
+The model gets twenty tools. Reading: `search_passages` (matching note *sections*, verbatim),
 `search_notes`, `grep_vault` (grep every note for a string or regex, each match tagged with its
-heading), `list_sections` (which sections contain which texts),
-`read_note`, `read_section`, `find_in_note`, `list_notes` (folder, tag, name, modified dates),
-`list_files`, `read_file` (text of PDFs and text attachments), `vault_overview`,
-`get_active_note`. Writing: `create_note`, `edit_note`, `edit_notes` (many edits across notes in one call, one
-approval per note), `append_to_note`, `replace_note`, `move_note` (links are updated) and
+heading), `list_sections` (one heading surveyed across notes with size and first line, or which
+sections contain which texts), `read_note`, `read_section`, `find_in_note`, `list_notes` (folder,
+tag, name, size, modified dates), `list_files`, `read_file` (text of PDFs and text attachments),
+`vault_overview`, `get_active_note`. Writing: `create_note`, `edit_note`, `edit_notes` (many edits
+across notes in one call, one approval per note), `append_to_note`, `replace_section` (rewrite or
+empty everything under a heading), `replace_note`, `move_note` (links are updated) and
 `delete_file` (notes *or* attachments, to the trash). It calls
 them in a loop until the task is done, then reports. Every write opens an approval dialog with a
 line diff before touching the vault (Enter approves, A approves all in this chat, Esc rejects).
@@ -78,6 +87,29 @@ each step to ask "shall I proceed?". If a model asks anyway, the agent answers y
 three times per message (a small note appears in the chat) — see *Keep going when the model asks
 for permission* in settings. It never does this for a question that offers you a choice, nor after
 you have rejected a change in that message, and a question always gets an answer rather than edits.
+
+**Process my daily notes.** Daily notes collect loose captures: a list of fellowships, a lecture
+brain-dump, a shell command, names of people to email. The command surveys the inbox section
+(`## Capture` by default; the dialog lets you change it) of every daily note in one call, compiles
+the substantial ones into topic notes under `Topics/` with a *Sources* section linking each source
+day, gathers code blocks into a *Code snippets* note, and replaces each compiled inbox with
+`- Moved to [[Topics/…]]` so the daily notes keep their timelines. Empty inboxes and one-liners
+are left alone. Limit it to the last 30/90/365 days, or turn moving off to keep the daily notes
+untouched. Every write is a diff you approve.
+
+**Edit the selected text.** Select a passage, run the command (or `/edit`), type what should
+change. The agent edits exactly that passage; you see a diff of it and nothing else.
+
+**Vault Suggestions.** *Suggest vault improvements* (`/garden`) needs no model: it reads the whole
+vault and writes a checklist note with broken links, daily inboxes that filled up, notes whose
+names appear in other notes without a wikilink, near-duplicate notes (by meaning, from the
+semantic index), orphans and stubs. Each section says what to ask the agent to fix it ("Turn the
+unlinked mentions in [[Vault Suggestions]] into wikilinks"). Run it again to refresh.
+
+**Test connection and speed.** The settings button runs a short generation at your context size
+and asks Ollama how much of the model is on the GPU. You get a verdict in plain words and a
+button for what to do: a larger context when there is room, a smaller one or a smaller installed
+model when it is spilling into RAM, and a warning if the chosen model cannot call tools.
 
 **Not getting stuck.** Small models loop: they grep the same pattern again and again, or read
 `Daily/<every date>` hoping one exists. The agent refuses a read-only call it has already run with
@@ -111,6 +143,10 @@ incrementally when you change notes. Search results merge semantic and keyword r
   76 tok/s — all on the GPU. Everything the agent does scales with the window (vault outline,
   gists, tool-result budgets), so on a card like that 65536–98304 is the sweet spot. `qwen3:14b`
   needs ~9.3 GB for weights alone and tops out around 32k.
+- **Temperature** — default 0.6, with top_p 0.9, top_k 20 and a small presence penalty always
+  sent. That follows the Qwen3 model card, which warns that near-greedy decoding "can lead to
+  performance degradation and endless repetitions": at 0.3 we watched a 9B model repeat the same
+  search sixty times. Lower is not more precise for an agent.
 - **Note gists** — on by default. The first pass over a large vault takes a few minutes of GPU
   time in the background; turn it off on a laptop that shares the GPU with other work.
 - **Conventions note** — `AGENT.md` by default; *Create / open* writes a starter you can edit.
@@ -156,8 +192,15 @@ npm install
 npm run dev     # watch build → main.js
 npm test        # unit tests (vitest), no Ollama needed
 npm run e2e     # runs the real agent loop against a live Ollama over ./test-vault
+npm run make-vault && npm run e2e:large   # the scored benchmark (see Benchmarks)
 npm run build   # type-check + Obsidian review lint + production bundle
 ```
+
+The benchmark (`scripts/e2e-large.ts`) runs 14 scenarios on a generated 339-note vault
+(`scripts/make-vault.mjs`, with `scripts/large-facts.json` recording the facts the checks look
+for) and saves per-scenario seconds, tool calls, errors, guessed paths, repeated calls and
+pass/fail to `bench/<version>.json`. `MODEL=`, `NUM_CTX=`, `THINK=on|off`, `GISTS=1` and
+`ONLY=id,id` select what runs. Add a scenario whenever a real-vault failure is reproduced.
 
 To release: bump `version` in `manifest.json` and `package.json`, add the version to
 `versions.json`, write `release-notes/<version>.md`, commit, then push a tag named exactly

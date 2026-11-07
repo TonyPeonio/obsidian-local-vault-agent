@@ -69,7 +69,7 @@ const courses = [
 	},
 ];
 
-const facts = { lectures: [], decisions: [], people: [], recordings: { withSummary: [], withoutSummary: [] }, counts: {} };
+const facts = { lectures: [], decisions: [], people: [], recordings: { withSummary: [], withoutSummary: [] }, counts: {}, garden: { brokenNote: "Projects/Chess Robot.md", brokenTarget: "Projects/Gantry Spec" } };
 
 for (const c of courses) {
 	const sections = [];
@@ -153,7 +153,7 @@ Playing full games at 24V since mid-October. Knight routing through gaps works; 
 
 - The magnet sometimes drags a neighbouring piece when it passes within ~8 mm. Tried lowering current near occupied squares and routing through square centres; a mu-metal shield is the next idea ([[Ideas/Magnet shielding]]).
 - Knight moves need a path through the gaps between squares; corner cases near the board edge still fail.
-- Pawn promotion needs a piece from storage; storage slot mapping is manual.
+- Pawn promotion needs a piece from storage; storage slot mapping is manual. The mechanical limits are in [[Projects/Gantry Spec]] (never written up).
 
 ## Log
 
@@ -295,11 +295,54 @@ const dailyEvents = [
 	"Debugged the knight routing.", "Read two chapters of [[Reading/Designing Data-Intensive Applications]].", "Chess club; [[People/Tomás Herrera]] beat the robot twice.",
 	"Cleaned the makerspace.", "Wrote the ADR for the 24V change.", "Quantum society meeting.", "Did nothing useful; tired.",
 ];
+// Every daily note has a "## Capture" section: an inbox that is usually empty or holds a
+// one-liner, but on a few days got a brain-dump that belongs in its own note (the "messy
+// daily notes" a user later asks the agent to find and compile), and twice a code block.
+const messyCaptures = {
+	"2026-07-14": {
+		topic: "workshop and hackathon planning",
+		phrase: "participation certificate",
+		lines: ["- Extend the Thursday workshops to two sessions", "- Scaffold the hackathon prompt so first-years can enter", "- IBM will issue a participation certificate; use it to market Thursday night", "- Keep Friday night accessible, no prerequisite"],
+	},
+	"2026-07-21": {
+		topic: "small language model research",
+		phrase: "cross-entropy",
+		lines: ["Interacting small language models with synchronisation as a dialect (active matter, birds/bees).", "> Cross-entropy is the measurement of what actually happens in the system.", "- Small-world topologies are robust to random node removal", "- Need: node count, tokens per word, CPU/RAM/disk/latency for 100 models", "- Max-entropy argument: constrain energy and the flat distribution becomes exponential"],
+	},
+	"2026-08-25": {
+		topic: "possible quantum advisors",
+		phrase: "Rahul Nandkishore",
+		lines: ["Professors for quantum algorithms:", "- Andreas Becker: simulation of atoms, molecules and clusters", "- Josh Combes: electrical engineering, computation", "- Michael Hermele: quantum phases", "- Rahul Nandkishore: quantum many-body systems, tough grader", "- Ivan Smalyukh: materials, look up macroscopic time crystals", "NIST people can co-advise if there is someone on the bio side."],
+	},
+	"2026-09-01": {
+		topic: "oil and gas companies",
+		phrase: "Bison Oil and Gas",
+		lines: ["Companies from the career fair:", "- Diamondback: pays the best, ask Clarita Hernandez", "- Bison Oil and Gas: private, Colorado and Wyoming", "- BP: Gulf of Mexico, offshore is very different", "- SM Energy: Denver basin, maybe private", "- Murphy: almost 100% retention, odd bonus structure"],
+	},
+	"2026-09-14": {
+		topic: "immunology lecture",
+		phrase: "pattern recognition receptors",
+		lines: ["B-cell receptors: CD21 co-receptor strengthens signalling but high antigen concentration can bypass it.", "T-cell receptors are alpha-beta heterodimers; CDR3 spans the V-D-J junction and gives most of the variability.", "> The spleen is where peripheral B-cells finish maturing; asplenia means weaker memory B-cells.", "Pattern recognition receptors (TLRs) use leucine-rich repeats to spot PAMPs; surface ones for extracellular pathogens, internal ones for viral genetic material.", "Cytokines: pleiotropy, redundancy (IL-2, IL-4, IL-5 all drive T-cell proliferation), synergy, antagonism. Chemokines direct leukocyte migration."],
+	},
+	"2026-09-21": {
+		topic: "fellowship applications",
+		phrase: "NDSEG",
+		lines: ["Fellowships from the grad-funding talk:", "- DoD SMART: due December 1, service commitment after", "- NDSEG: due October 30, align with a Broad Agency Announcement", "- GEM: due November 13, industry internships through the PhD", "- Hertz: private, wants societal impact", "> Submit essays to the Writing Center 48 business hours before the deadline.", "Use PivotRP (Mines has a subscription) and filter for first-generation opportunities."],
+	},
+};
+const codeCaptures = {
+	"2026-06-12": { lang: "bash", key: "salloc -N 1 -t 02:00:00", lines: ["Cluster commands I keep forgetting:", "```bash", "salloc -N 1 -t 02:00:00 --gres=gpu:1", "module load cuda/12.4", "scp results.tar.gz tony@login.hpc.edu:~/runs/", "```"] },
+	"2026-07-09": { lang: "python", key: "def rolling_mean(xs, k):", lines: ["Snippet from the ML homework:", "```python", "def rolling_mean(xs, k):", "    return [sum(xs[i:i + k]) / k for i in range(len(xs) - k + 1)]", "```"] },
+};
+const captureOneLiners = ["IC50 = half-maximal inhibitory concentration", "Ask about the thioether bond in the P_near metric", "Gilead has a summer internship, deadline in January", "Resolvin: look up allosteric proteins", "> A note is a question you have not asked yet"];
+facts.daily = { messy: [], snippets: [], quoted: [], captureCount: 0 };
+// Days the scenarios depend on are always generated; the rest are skipped at random.
+const forcedDays = new Set(["2026-10-03", "2026-10-14", "2026-10-21", ...Object.keys(messyCaptures), ...Object.keys(codeCaptures)]);
 let n = 0;
 for (let m = 6; m <= 10; m++) {
 	for (let d = 1; d <= ([6, 9].includes(m) ? 30 : 31); d++) {
-		if (chance(0.25)) continue;
 		const ds = date(2026, m, d);
+		if (chance(0.25) && !forcedDays.has(ds)) continue;
 		const lines = [`# ${ds}`, "", `Mood: ${pick(["good", "ok", "tired", "focused", "scattered"])}. Sleep: ${5 + Math.floor(rand() * 4)}h.`, "", "## Done", ""];
 		const k = 2 + Math.floor(rand() * 4);
 		for (let i = 0; i < k; i++) lines.push(`- ${pick(dailyEvents)} ${chance(0.5) ? pick(["Took longer than planned.", "Went well.", "Blocked on parts.", "Need to follow up.", "Learned something."]) : ""}`.trim());
@@ -307,6 +350,22 @@ for (let m = 6; m <= 10; m++) {
 		if (ds === "2026-10-03") lines.push("- Brownout during e2e4, the queen fell over. Logged on [[Projects/Chess Robot]]. Need a bigger supply.");
 		if (ds === "2026-10-14") lines.push("- **Decided: the gantry moves to 24V.** Ordered the Mean Well LRS-350-24. [[Projects/Chess Robot]].", "", "![[" + (() => { const r = recName(ds, "13", "28"); attachments.push({ path: r, size: 9_000_000 }); facts.recordings.withoutSummary.push({ note: `Daily/${ds}.md`, rec: r }); return r; })() + "]]", "", "Meeting with [[People/Dr. Beeler]] about the supply change.");
 		if (ds === "2026-10-21") lines.push("- Implemented re-homing every 50 moves; drift gone after 300-move test.");
+		lines.push("", "## Capture", "");
+		const messy = messyCaptures[ds];
+		const code = codeCaptures[ds];
+		if (messy) {
+			lines.push(...messy.lines);
+			facts.daily.messy.push({ note: `Daily/${ds}.md`, date: ds, topic: messy.topic, phrase: messy.phrase });
+			if (messy.lines.some((l) => l.startsWith("> "))) facts.daily.quoted.push(`Daily/${ds}.md`);
+		} else if (code) {
+			lines.push(...code.lines);
+			facts.daily.snippets.push({ note: `Daily/${ds}.md`, date: ds, lang: code.lang, key: code.key });
+		} else if (chance(0.15)) {
+			const one = pick(captureOneLiners);
+			lines.push(one.startsWith(">") ? one : `- ${one}`);
+			if (one.startsWith(">")) facts.daily.quoted.push(`Daily/${ds}.md`);
+		}
+		facts.daily.captureCount++;
 		lines.push("", "## Tomorrow", "", `- [ ] ${pick(["HW", "Read", "Email Lena", "Robot test", "Gym", "Laundry"])}`);
 		if (chance(0.3)) lines.push(`- [ ] ${pick(["Call home", "Return library book", "Fix bike", "Meal prep"])}`);
 		put(`Daily/${ds}.md`, lines.join("\n"));

@@ -78,6 +78,9 @@ export interface SlashCommand {
 export const SLASH_COMMANDS: SlashCommand[] = [
 	{ id: "reformat", name: "/reformat", description: "Reformat the current note into clean markdown (diff-approved)" },
 	{ id: "summarize", name: "/summarize", description: "Summarize the current note in the chat" },
+	{ id: "edit", name: "/edit", description: "Rewrite the text selected in the open note from a one-line instruction (diff-approved)" },
+	{ id: "daily", name: "/daily", description: "Process my daily notes: compile inbox sections into topic notes, leave the timelines" },
+	{ id: "garden", name: "/garden", description: "Write a Vault Suggestions note: broken links, full inboxes, unlinked mentions, duplicates, orphans, stubs" },
 	{ id: "undo", name: "/undo", description: "Undo the agent's last change" },
 	{ id: "undo-all", name: "/undo-all", description: "Undo every change from the agent's last message" },
 	{ id: "new", name: "/new", description: "Start a new chat" },

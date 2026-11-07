@@ -7,6 +7,7 @@ import {
 	REPEATED_CALLS_WRAP_UP,
 	buildSystemPrompt,
 	callKey,
+	invalidateCache,
 	linkifyNotePaths,
 	looksLikeChoiceQuestion,
 	looksLikePermissionQuestion,
@@ -581,20 +582,62 @@ describe("repeated-call guard", () => {
 		expect(ollama.requests).toHaveLength(4);
 	});
 
-	it("forgets cached reads after a write, so a re-read sees the new content", async () => {
+	it("forgets reads of a written note and vault-wide results, but not reads of other notes", async () => {
 		const { agent } = setup(
 			[
 				{ tool: "read_note", args: { path: "Ideas/Sensors.md" } },
+				{ tool: "read_note", args: { path: "Chess Robot" } },
+				{ tool: "grep_vault", args: { pattern: "switches" } },
 				{ tool: "append_to_note", args: { path: "Ideas/Sensors.md", content: "Reed switches too." } },
 				{ tool: "read_note", args: { path: "Ideas/Sensors.md" } },
+				{ tool: "read_note", args: { path: "Chess Robot" } },
+				{ tool: "grep_vault", args: { pattern: "switches" } },
 				{ content: "done" },
 			],
-			{ cfg: { maxIterations: 10, autoApprove: true } },
+			{ cfg: { maxIterations: 12, autoApprove: true } },
 		);
 		const results: string[] = [];
 		await agent.run(newConversation(), "x", { onToolDone: (_c, r) => results.push(r) });
-		expect(results[2]).not.toMatch(/already called/);
-		expect(results[2]).toContain("Reed switches too.");
+		expect(results[4]).not.toMatch(/already called/);
+		expect(results[4]).toContain("Reed switches too.");
+		expect(results[5]).toMatch(/already called read_note/);
+		expect(results[2]).toMatch(/^No note contains/);
+		expect(results[6]).toMatch(/^1 matching line/);
+	});
+
+	it("invalidates by note name however the path was spelled", () => {
+		const cache = new Map<string, string>([
+			['read_note {"path":"Chess Robot"}', "a"],
+			['read_section {"heading":"Status","path":"Projects/Chess Robot.md"}', "b"],
+			['read_note {"path":"Ideas/Sensors.md"}', "c"],
+			['list_sections {"containing":["x"]}', "d"],
+		]);
+		invalidateCache(cache, ["Projects/Chess Robot.md"]);
+		expect(Array.from(cache.keys())).toEqual(['read_note {"path":"Ideas/Sensors.md"}']);
+	});
+
+	it("lets the model call again for a result that trimHistory shortened", async () => {
+		// A tiny window: the first read's result is shortened once two newer results exist, and
+		// the model is told to call again; that call must run, not be refused as a repeat.
+		// Three 1.5k results each pass the per-step batch cap (25% of a 2k window) but together
+		// exceed the history budget (60%), so the oldest is shortened before the fourth request.
+		const big = "x".repeat(1500);
+		const { agent, ollama, vault } = setup(
+			[
+				{ tool: "read_note", args: { path: "Big/A.md" } },
+				{ tool: "read_note", args: { path: "Big/B.md" } },
+				{ tool: "read_note", args: { path: "Big/C.md" } },
+				{ tool: "read_note", args: { path: "Big/A.md" } },
+				{ content: "done" },
+			],
+			{ cfg: { numCtx: 2048, maxIterations: 10 } },
+		);
+		for (const n of ["A", "B", "C"]) vault.seed(`Big/${n}.md`, `# ${n}\n\n${big}`);
+		const results: string[] = [];
+		await agent.run(newConversation(), "x", { onToolDone: (_c, r) => results.push(r) });
+		expect(ollama.requests[3].messages.some((m) => /shortened to save context/.test(m.content))).toBe(true);
+		expect(results[3]).not.toMatch(/already called/);
+		expect(results[3]).toContain(big);
 	});
 
 	it("canonicalises keys", () => {
@@ -602,6 +645,31 @@ describe("repeated-call guard", () => {
 		const b = callKey({ function: { name: "t", arguments: { a: "s", b: [1, { x: 1, y: 2 }] } } });
 		expect(a).toBe(b);
 		expect(callKey({ function: { name: "t", arguments: { a: "s" } } })).not.toBe(a);
+	});
+});
+
+describe("sampling and prompt reuse", () => {
+	it("sends the configured sampling options with every request", async () => {
+		const { agent, ollama } = setup([{ tool: "list_notes", args: {} }, { content: "ok" }], {
+			cfg: { sampling: { top_p: 0.9, top_k: 20, presence_penalty: 0.5 } },
+		});
+		await agent.run(newConversation(), "x", {});
+		for (const req of ollama.requests) {
+			expect(req.options).toEqual({ num_ctx: 8192, temperature: 0, top_p: 0.9, top_k: 20, presence_penalty: 0.5 });
+		}
+	});
+
+	it("builds the system prompt once per turn so a write does not change it mid-turn", async () => {
+		const { agent, ollama } = setup(
+			[{ tool: "create_note", args: { path: "Ideas/New.md", content: "# New\n\nhi" } }, { tool: "list_notes", args: {} }, { content: "done" }],
+			{ cfg: { autoApprove: true, maxIterations: 10 } },
+		);
+		await agent.run(newConversation(), "x", {});
+		const systems = ollama.requests.map((r) => r.messages[0].content);
+		expect(systems).toHaveLength(3);
+		expect(systems[1]).toBe(systems[0]);
+		expect(systems[2]).toBe(systems[0]);
+		expect(systems[0]).not.toContain("New.md");
 	});
 });
 

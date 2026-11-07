@@ -6,15 +6,18 @@
  *   node scripts/make-vault.mjs && npm run e2e:large
  *   GISTS=1 → also generate note gists first (slow) and use them in the outline.
  */
-import { readFileSync, readdirSync, statSync } from "fs";
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { join, relative } from "path";
 import { Agent, buildSystemPrompt, looksLikePermissionQuestion, newConversation, type AgentConfig } from "../src/agent";
+import { DEFAULT_SETTINGS, SAMPLING } from "../src/settings";
 import { GistCache, type GistData } from "../src/gists";
 import { SemanticIndex, type IndexData } from "../src/index";
 import { attachMentions } from "../src/mentions";
 import { OllamaClient } from "../src/ollama";
 import { fuseRankings, keywordSearch } from "../src/search";
-import { ALL_TOOLS } from "../src/tools";
+import { SUGGESTIONS_NOTE, gardenVault, renderGardenReport } from "../src/gardener";
+import { editSelectionPrompt, processDailyNotesPrompt } from "../src/prompts";
+import { ALL_TOOLS, extractSection } from "../src/tools";
 import { UndoStack, planRevert } from "../src/undo";
 import { FakeVault } from "../tests/fakes";
 
@@ -24,12 +27,23 @@ const EMBED = process.env.EMBED ?? "nomic-embed-text";
 const GISTS = process.env.GISTS === "1";
 const NUM_CTX = Number(process.env.NUM_CTX ?? 32768);
 const ONLY = process.env.ONLY; // comma-separated scenario ids
+/** Sampling overrides and a tag for the results file, for `npm run bench-matrix`. */
+const TEMPERATURE = process.env.TEMPERATURE !== undefined ? Number(process.env.TEMPERATURE) : DEFAULT_SETTINGS.temperature;
+const PRESENCE = process.env.PRESENCE !== undefined ? Number(process.env.PRESENCE) : SAMPLING.presence_penalty;
+const TAG = process.env.TAG ?? "";
 
 interface Facts {
 	lectures: { course: string; date: string; topic: string; term: string; note: string }[];
 	recordings: { withSummary: { note: string; rec: string }[]; withoutSummary: { note: string; rec: string }[] };
 	attachments: { path: string; size: number }[];
 	counts: { notes: number; chars: number; daily: number };
+	daily: {
+		messy: { note: string; date: string; topic: string; phrase: string }[];
+		snippets: { note: string; date: string; lang: string; key: string }[];
+		quoted: string[];
+		captureCount: number;
+	};
+	garden: { brokenNote: string; brokenTarget: string };
 }
 
 function loadVault(dir: string): FakeVault {
@@ -50,6 +64,8 @@ async function main() {
 	const facts = JSON.parse(readFileSync(join(process.cwd(), "scripts/large-facts.json"), "utf8")) as Facts;
 	const vault = loadVault(root);
 	for (const a of facts.attachments) vault.seedFile(a.path, a.size);
+	// The gardener's note, as the plugin's command would write it, so a scenario can act on it.
+	vault.seed(SUGGESTIONS_NOTE, renderGardenReport(await gardenVault(vault, { dailyFolder: "Daily", exclude: (p) => p.startsWith("Templates/") })));
 	const original = new Map<string, string>();
 	for (const n of vault.listNotes()) original.set(n.path, await vault.read(n.path));
 	const client = new OllamaClient(() => OLLAMA_URL);
@@ -83,7 +99,8 @@ async function main() {
 	const cfg: AgentConfig = {
 		model: MODEL,
 		numCtx: NUM_CTX,
-		temperature: 0.3,
+		temperature: TEMPERATURE,
+		sampling: { ...SAMPLING, presence_penalty: PRESENCE },
 		think: process.env.THINK === "on" ? true : process.env.THINK === "off" ? false : undefined,
 		keepAlive: "10m",
 		maxIterations: 60,
@@ -114,6 +131,12 @@ async function main() {
 		ms: number;
 		calls: number;
 		prompt: number;
+		/** Tool calls that returned an error. */
+		errors: number;
+		/** "No note found" errors: the model guessed a path. */
+		misses: number;
+		/** Identical calls refused by the agent's repeated-call guard. */
+		repeats: number;
 		pass: number;
 		fail: number;
 	}
@@ -127,6 +150,9 @@ async function main() {
 		const tools: string[] = [];
 		let answer = "";
 		let maxPrompt = 0;
+		let errors = 0;
+		let misses = 0;
+		let repeats = 0;
 		let message = prompt;
 		if (opts.attach) message = (await attachMentions(prompt, vault, 24000)).message;
 		try {
@@ -134,7 +160,12 @@ async function main() {
 				onToolStart: (c) => console.log(`  [tool] ${c.function.name} ${JSON.stringify(c.function.arguments).slice(0, 110)}`),
 				onToolDone: (c, r, ok) => {
 					tools.push(c.function.name);
-					if (!ok) console.log(`  [tool error] ${r.slice(0, 160)}`);
+					if (!ok) {
+						errors++;
+						if (/^Error: No note found/.test(r)) misses++;
+						if (/^Not executed: you already called/.test(r)) repeats++;
+						console.log(`  [tool error] ${r.slice(0, 160)}`);
+					}
 				},
 				onAssistantDone: (m) => {
 					answer = m.content || answer;
@@ -150,7 +181,12 @@ async function main() {
 		console.log(`--- ${(ms / 1000).toFixed(1)} s, ${tools.length} calls, max prompt ${maxPrompt} tok:\n${answer.trim().slice(0, 900)}\n`);
 		let pass = 0;
 		let fail = 0;
-		for (const [label, ok] of [...checks(answer, tools), ["did not end on a permission question", !looksLikePermissionQuestion(answer)] as [string, boolean]]) {
+		const generic: [string, boolean][] = [
+			["did not end on a permission question", !looksLikePermissionQuestion(answer)],
+			[`no repeated tool calls (${repeats})`, repeats === 0],
+			[`at most 2 guessed paths (${misses})`, misses <= 2],
+		];
+		for (const [label, ok] of [...checks(answer, tools), ...generic]) {
 			console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
 			if (ok) pass++;
 			else {
@@ -158,7 +194,7 @@ async function main() {
 				failures++;
 			}
 		}
-		rows.push({ id, ms, calls: tools.length, prompt: maxPrompt, pass, fail });
+		rows.push({ id, ms, calls: tools.length, prompt: maxPrompt, errors, misses, repeats, pass, fail });
 	}
 
 	const iso = facts.lectures.find((l) => l.term.includes("isolation forest"))!;
@@ -182,6 +218,136 @@ async function main() {
 	await scenario("qa-daily", "Daily note recall", "What did I get done on 2026-10-21?", (a) => [
 		["mentions re-homing", /re-?hom/i.test(a)],
 	]);
+
+	// The failure modes seen in a real vault: surveying 127 daily notes by guessing dates one
+	// by one, a regex sent as literal text, a path that does not exist, a repeated grep.
+	const messy = facts.daily.messy;
+	await scenario("survey-daily", "Find the messy daily notes", "Which of my daily notes have a Capture section with real content that should be compiled into its own note? List each note and say what it contains in a few words. Most Capture sections are empty or a one-liner; I only want the substantial ones.", (a, tools) => {
+		const hit = messy.filter((m) => a.includes(m.date));
+		// Empty inboxes and one-liners must not be listed; the code-block days legitimately may be.
+		const oneLiners = ["2026-10-08", "2026-10-19", "2026-09-04", "2026-09-11"].filter((d) => a.includes(d));
+		return [
+			[`names ≥ 5 of the ${messy.length} messy notes (${hit.length})`, hit.length >= 5],
+			[`lists at most one one-liner day as substantial (${oneLiners.length})`, oneLiners.length <= 1],
+			["used ≤ 12 tool calls", tools.length <= 12],
+		];
+	});
+
+	await scenario("code-snippets", "Collect code blocks", "Find every code block in my daily notes and collect them into a new note Code Snippets.md, grouped by language, each snippet followed by a wikilink to the daily note it came from.", (a, tools) => [["used ≤ 10 tool calls", tools.length <= 10]]);
+	{
+		const row = rows[rows.length - 1];
+		const exists = vault.exists("Code Snippets.md");
+		const body = exists ? await vault.read("Code Snippets.md") : "";
+		for (const [label, ok] of [
+			["Code Snippets.md was created", exists],
+			...facts.daily.snippets.map((s): [string, boolean] => [`contains the ${s.lang} snippet from ${s.date}`, body.includes(s.key)]),
+			["cites both daily notes", facts.daily.snippets.every((s) => body.includes(s.date))],
+		] as [string, boolean][]) {
+			console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
+			if (ok) row.pass++;
+			else {
+				row.fail++;
+				failures++;
+			}
+		}
+	}
+
+	await scenario("quotes-regex", "Pattern search across notes", "Which daily notes contain a blockquote (a line starting with '>')? Just list the notes.", (a, tools) => {
+		const hit = facts.daily.quoted.filter((p) => a.includes(p.replace(/\.md$/, "").split("/").pop()!));
+		return [
+			[`lists ≥ 80% of the ${facts.daily.quoted.length} quoted notes (${hit.length})`, hit.length >= Math.ceil(facts.daily.quoted.length * 0.8)],
+			["used ≤ 4 tool calls", tools.length <= 4],
+		];
+	});
+
+	await scenario("missing-path", "A note that does not exist", "What did I write in my daily note for 2026-09-31?", (a, tools) => [
+		["says the note does not exist", /(no|not|isn't|is not|doesn't|does not|never)\b[^.]{0,80}\b(exist|found|note|entry|such|have|written)/i.test(a) || /september (only )?has 30 days|not a valid date|invalid date/i.test(a)],
+		["used ≤ 3 tool calls", tools.length <= 3],
+	]);
+
+	// The "Process my daily notes" command: the same prompt the plugin sends.
+	await scenario("distill", "Process my daily notes", processDailyNotesPrompt({ folder: "Daily", heading: "Capture", destination: "Topics", move: true }), (_a, tools) => [["used ≤ 30 tool calls", tools.length <= 30]]);
+	{
+		const row = rows[rows.length - 1];
+		const topics = vault.listNotes().filter((n) => n.path.startsWith("Topics/"));
+		const bodies = new Map<string, string>();
+		for (const t of topics) bodies.set(t.path, await vault.read(t.path));
+		// "Compiled" = some topic note cites the daily note; the prompt allows rewording, so the
+		// landmark phrase surviving verbatim is a softer, separate check.
+		const compiled = messy.filter((m) => Array.from(bodies.values()).some((b) => b.includes(m.date)));
+		const phrased = messy.filter((m) => Array.from(bodies.values()).some((b) => b.toLowerCase().includes(m.phrase.toLowerCase())));
+		const snippetNote = Array.from(bodies.values()).find((b) => facts.daily.snippets.every((s) => b.includes(s.key)));
+		let moved = 0;
+		let doneIntact = 0;
+		for (const m of messy) {
+			const now = await vault.read(m.note);
+			const was = original.get(m.note) ?? "";
+			if (/## Capture\n+- Moved to \[\[Topics\//.test(now)) moved++;
+			const done = (s: string) => extractSection(s, "Done")?.text ?? "";
+			if (done(now) === done(was)) doneIntact++;
+		}
+		let untouched = 0;
+		const others = vault.listNotes().filter((n) => n.path.startsWith("Daily/") && !messy.some((m) => m.note === n.path) && !facts.daily.snippets.some((s) => s.note === n.path));
+		for (const n of others) if ((await vault.read(n.path)) === original.get(n.path)) untouched++;
+		for (const [label, ok] of [
+			[`created topic notes in Topics/ (${topics.length})`, topics.length >= 4],
+			[`compiled and cited ≥ 5 of the ${messy.length} messy inboxes (${compiled.length})`, compiled.length >= 5],
+			[`kept the landmark fact of ≥ 4 inboxes word for word (${phrased.length})`, phrased.length >= 4],
+			["collected both code snippets", snippetNote !== undefined],
+			[`replaced ≥ 5 compiled inboxes with a link (${moved})`, moved >= 5],
+			[`kept the Done timeline of all ${messy.length} daily notes (${doneIntact})`, doneIntact === messy.length],
+			[`left all ${others.length} other daily notes untouched (${untouched})`, untouched === others.length],
+		] as [string, boolean][]) {
+			console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
+			if (ok) row.pass++;
+			else {
+				row.fail++;
+				failures++;
+			}
+		}
+	}
+
+	// Acting on the Vault Suggestions note the gardener wrote (seeded at start-up).
+	await scenario("garden-act", "Fix the broken links from Vault Suggestions", "Work through the 'Broken links' section of [[Vault Suggestions]]: in each note listed there, replace the broken wikilink with its plain text (the name without the brackets). Do not create any notes. Then say what you changed.", (_a, tools) => [["used ≤ 6 tool calls", tools.length <= 6]]);
+	{
+		const row = rows[rows.length - 1];
+		const body = await vault.read(facts.garden.brokenNote);
+		for (const [label, ok] of [
+			[`removed the broken link to ${facts.garden.brokenTarget}`, !body.includes(`[[${facts.garden.brokenTarget}]]`)],
+			["kept the link text", body.includes(facts.garden.brokenTarget.split("/").pop()!)],
+			["kept the note's other links", body.includes("[[Kirin Engine]]") && body.includes("[[People/Marcus Vale]]")],
+		] as [string, boolean][]) {
+			console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
+			if (ok) row.pass++;
+			else {
+				row.fail++;
+				failures++;
+			}
+		}
+	}
+
+	// "Edit the selected text" with the exact prompt the command sends.
+	{
+		const target = "Projects/Chess Robot.md";
+		const before = await vault.read(target);
+		const line = before.split("\n").find((l) => l.startsWith("- The magnet sometimes drags"))!;
+		await scenario("edit-selection", "Edit the selected text", editSelectionPrompt(target, line, "ends with the tag #open-problem"), (_a, tools) => [["used ≤ 3 tool calls", tools.length <= 3]]);
+		const row = rows[rows.length - 1];
+		const after = await vault.read(target);
+		const changed = after.split("\n").find((l) => l.startsWith("- The magnet sometimes drags")) ?? "";
+		for (const [label, ok] of [
+			["the selected line now ends with the tag", /#open-problem\s*$/.test(changed)],
+			["the line's text is otherwise intact", changed.replace(/\s*#open-problem\s*$/, "") === line],
+			["nothing else in the note changed", after.replace(changed, line) === before],
+		] as [string, boolean][]) {
+			console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
+			if (ok) row.pass++;
+			else {
+				row.fail++;
+				failures++;
+			}
+		}
+	}
 
 	const noSummary = facts.recordings.withoutSummary;
 	await scenario("list-nosummary", "Enumerate across notes", "List every note section that embeds a recording but has no Summary under it. Give the note and the section heading for each.", (a) => {
@@ -281,10 +447,38 @@ async function main() {
 	}
 
 	console.log("\n=== metrics");
-	console.log("scenario        seconds  calls  maxPromptTok  pass/fail");
-	for (const r of rows) console.log(`${r.id.padEnd(15)} ${(r.ms / 1000).toFixed(1).padStart(7)}  ${String(r.calls).padStart(5)}  ${String(r.prompt).padStart(12)}  ${r.pass}/${r.fail}`);
+	console.log("scenario        seconds  calls  errors  misses  repeats  maxPromptTok  pass/fail");
+	for (const r of rows) {
+		console.log(`${r.id.padEnd(15)} ${(r.ms / 1000).toFixed(1).padStart(7)}  ${String(r.calls).padStart(5)}  ${String(r.errors).padStart(6)}  ${String(r.misses).padStart(6)}  ${String(r.repeats).padStart(7)}  ${String(r.prompt).padStart(12)}  ${r.pass}/${r.fail}`);
+	}
 	const total = rows.reduce((n, r) => n + r.ms, 0);
-	console.log(`total ${(total / 1000).toFixed(0)} s, ${rows.reduce((n, r) => n + r.calls, 0)} tool calls`);
+	const checks = rows.reduce((n, r) => n + r.pass + r.fail, 0);
+	const passed = rows.reduce((n, r) => n + r.pass, 0);
+	console.log(`total ${(total / 1000).toFixed(0)} s, ${rows.reduce((n, r) => n + r.calls, 0)} tool calls, ${passed}/${checks} checks passed`);
+
+	// Persist the run so versions can be compared (bench/<version>.json, newest run wins).
+	const version = (JSON.parse(readFileSync(join(process.cwd(), "manifest.json"), "utf8")) as { version: string }).version;
+	const result = {
+		version,
+		date: new Date().toISOString(),
+		model: MODEL,
+		numCtx: NUM_CTX,
+		gists: GISTS,
+		think: process.env.THINK ?? "auto",
+		temperature: TEMPERATURE,
+		presencePenalty: PRESENCE,
+		tag: TAG,
+		notes: vault.listNotes().length,
+		systemPromptChars: sys.length,
+		totals: { seconds: Math.round(total / 1000), calls: rows.reduce((n, r) => n + r.calls, 0), errors: rows.reduce((n, r) => n + r.errors, 0), misses: rows.reduce((n, r) => n + r.misses, 0), repeats: rows.reduce((n, r) => n + r.repeats, 0), passed, checks, failures },
+		scenarios: rows.map((r) => ({ ...r, seconds: Math.round(r.ms / 10) / 100 })),
+	};
+	if (!ONLY) {
+		mkdirSync(join(process.cwd(), "bench"), { recursive: true });
+		const file = join(process.cwd(), "bench", `${version}${TAG ? `-${TAG}` : ""}.json`);
+		writeFileSync(file, JSON.stringify(result, null, 2) + "\n");
+		console.log(`saved ${relative(process.cwd(), file)}`);
+	}
 	console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 	process.exit(failures === 0 ? 0 : 1);
 }

@@ -1,7 +1,9 @@
 import { App, Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
+import { TuneModal } from "./prompt-modals";
 import { conventionsTemplate } from "./prompts";
 import { DEFAULT_SETTINGS } from "./settings";
+import { measure, recommend } from "./tune";
 
 export class LocalVaultAgentSettingTab extends PluginSettingTab {
 	constructor(
@@ -28,20 +30,44 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 				}),
 			)
 			.addButton((b) =>
-				b.setButtonText("Test connection").onClick(async () => {
+				b.setButtonText("Test connection and speed").onClick(async () => {
+					let models;
+					let connection = "";
 					try {
 						const version = await this.plugin.client.version();
-						const models = await this.plugin.client.listModels();
+						models = await this.plugin.client.listModels();
 						const hasChat = models.some((m) => m.name === s.model);
 						const hasEmbed = models.some((m) => m.name === s.embeddingModel);
-						new Notice(
+						connection =
 							`Connected to Ollama ${version} (${models.length} models).` +
-								(hasChat ? "" : `\nChat model "${s.model}" is not installed: run \`ollama pull ${s.model}\`.`) +
-								(s.semanticSearch && !hasEmbed ? `\nEmbedding model "${s.embeddingModel}" is not installed: run \`ollama pull ${s.embeddingModel}\`.` : ""),
-							10000,
-						);
+							(hasChat ? "" : ` Chat model "${s.model}" is not installed: run \`ollama pull ${s.model}\`.`) +
+							(s.semanticSearch && !hasEmbed ? ` Embedding model "${s.embeddingModel}" is not installed: run \`ollama pull ${s.embeddingModel}\`.` : "");
+						if (!hasChat) {
+							new Notice(connection, 10000);
+							return;
+						}
 					} catch (err) {
 						new Notice(`Connection failed: ${(err as Error).message}`, 10000);
+						return;
+					}
+					// A short generation at the configured context: speed, memory split, advice.
+					const working = new Notice(`Measuring ${s.model} at a ${Math.round(s.numCtx / 1024)}k context… (loads the model if needed)`, 0);
+					try {
+						const measured = await measure(this.plugin.client, s.model, s.numCtx, s.keepAlive);
+						working.hide();
+						const advice = recommend(measured, models);
+						const modal = new TuneModal(this.app, advice, connection);
+						modal.open();
+						const choice = await modal.result;
+						if (!choice) return;
+						if (choice.numCtx) s.numCtx = choice.numCtx;
+						if (choice.model) s.model = choice.model;
+						await this.plugin.saveSettings();
+						this.display();
+						new Notice(choice.numCtx ? `Context set to ${choice.numCtx}. Test again to confirm it still fits.` : `Chat model set to ${choice.model}.`);
+					} catch (err) {
+						working.hide();
+						new Notice(`${connection}\nSpeed test failed: ${(err as Error).message}`, 10000);
 					}
 				}),
 			);
@@ -90,7 +116,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Temperature")
-			.setDesc("Lower is more precise and better for tool use. 0.3 is a sensible default.")
+			.setDesc("0.6 is the default. Lower looks more precise but near-greedy decoding makes small models repeat themselves; Qwen's own guidance is 0.6–0.7.")
 			.addSlider((sl) =>
 				sl.setLimits(0, 1, 0.05).setValue(s.temperature).onChange(async (v) => {
 					s.temperature = v;
@@ -273,6 +299,26 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 						new Notice(`Created ${path}. Edit it like any note.`);
 					}
 					await this.app.workspace.openLinkText(path, "", true);
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Daily notes inbox heading")
+			.setDesc("For 'Process my daily notes': the section of each daily note where loose captures land, without the #. The command's dialog lets you change it per run.")
+			.addText((t) =>
+				t.setPlaceholder(DEFAULT_SETTINGS.dailyInboxHeading).setValue(s.dailyInboxHeading).onChange(async (v) => {
+					s.dailyInboxHeading = v.trim() || DEFAULT_SETTINGS.dailyInboxHeading;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Topic notes folder")
+			.setDesc("For 'Process my daily notes': where compiled topic notes are created. Empty means the vault root.")
+			.addText((t) =>
+				t.setPlaceholder(DEFAULT_SETTINGS.dailyTopicsFolder).setValue(s.dailyTopicsFolder).onChange(async (v) => {
+					s.dailyTopicsFolder = v.trim();
+					await this.plugin.saveSettings();
 				}),
 			);
 

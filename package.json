@@ -1,6 +1,6 @@
 {
   "name": "local-vault-agent",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Search, compile and edit your notes with a fully local AI agent powered by Ollama. Every change is shown as a diff for approval before it is written.",
   "main": "main.js",
   "private": true,
@@ -12,7 +12,9 @@
     "e2e": "esbuild scripts/e2e.ts --bundle --platform=node --format=cjs --outfile=.e2e/e2e.cjs --log-level=warning && node .e2e/e2e.cjs",
     "e2e:large": "esbuild scripts/e2e-large.ts --bundle --platform=node --format=cjs --outfile=.e2e/e2e-large.cjs --log-level=warning && node .e2e/e2e-large.cjs",
     "make-vault": "node scripts/make-vault.mjs",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "bench-table": "node scripts/bench-table.mjs",
+    "bench-matrix": "node scripts/bench-matrix.mjs"
   },
   "keywords": [
     "obsidian",

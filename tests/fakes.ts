@@ -138,7 +138,8 @@ export class FakeVault implements VaultAccess {
 		const backlinks: string[] = [];
 		const me = (path.split("/").pop() ?? "").replace(/\.md$/, "");
 		for (const [other, f] of this.files) {
-			if (other !== path && new RegExp(`\\[\\[${me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\||\\]|#)`).test(f.content)) {
+			// A link may name the note bare ([[Sensors]]) or by path ([[Ideas/Sensors]]).
+			if (other !== path && new RegExp(`\\[\\[(?:[^\\]|#]*/)?${me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\||\\]|#)`).test(f.content)) {
 				backlinks.push(other);
 			}
 		}
