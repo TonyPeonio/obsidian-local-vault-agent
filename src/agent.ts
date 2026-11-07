@@ -36,6 +36,41 @@ export const MAX_AUTO_CONTINUES = 3;
  * asks for 45 notes at once is about to overflow its window and learn nothing from it. */
 export const MAX_CALLS_PER_STEP = 8;
 
+/** Identical read-only tool calls in one turn after which the turn is ended with a wrap-up. A
+ * small model that greps the same pattern a third time is stuck, and every further repeat
+ * only anchors it harder. */
+export const MAX_REPEATED_CALLS = 3;
+
+/** Key for "the same tool with the same arguments" (argument order does not matter). */
+export function callKey(call: ToolCall): string {
+	return `${call.function.name} ${canonicalJson(call.function.arguments ?? {})}`;
+}
+
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value && typeof value === "object") {
+		const entries = Object.entries(value as Record<string, unknown>)
+			.filter(([, v]) => v !== undefined)
+			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+	}
+	return JSON.stringify(value) ?? "null";
+}
+
+export function repeatedCallNotice(name: string, priorResult: string, repeat: number): string {
+	const head = priorResult.length > 300 ? priorResult.slice(0, 300) + "…" : priorResult;
+	const left = MAX_REPEATED_CALLS - repeat;
+	return (
+		`Not executed: you already called ${name} with exactly these arguments earlier in this turn (repeat ${repeat} of ${MAX_REPEATED_CALLS}); calling it again returns the same result, which was:\n${head}\n` +
+		(left > 0
+			? `Do something different: change the arguments (if a search found nothing, the pattern or folder was wrong), use another tool, or answer with what you have. After ${left} more repeat${left === 1 ? "" : "s"} this turn ends.`
+			: "The turn now ends; answer with what you have.")
+	);
+}
+
+export const REPEATED_CALLS_WRAP_UP =
+	"You repeated the same tool call with the same arguments several times, so the turn has been stopped. Answer now with what you have found so far, say what is still missing, and if you were searching for something, say which searches found nothing.";
+
 export const AUTO_CONTINUE_TEXT =
 	"Yes. Continue without asking again: carry out everything you proposed, for every note involved, in this turn. Reading needs no permission and each change goes through the approval dialog. Report when you are done.";
 
@@ -178,6 +213,10 @@ export function buildSystemPrompt(
 		"- A question gets an answer, not edits. When the user asks something, answer it from the notes and stop; do not propose, offer or make changes to notes they did not ask for.",
 		"- Search snippets are not the note. Before concluding that a note lacks or contains something, read it with read_note, or use find_in_note for one specific passage.",
 		"- Never read every note to find something. To find all occurrences of a pattern across the vault (an embed, a tag, a phrase, a heading), use grep_vault; then read_section or find_in_note only where needed. Call at most about 6 tools per step; big batches overflow the context window.",
+		"- Never guess a path. The outline below lists every note; to enumerate a folder (which daily notes exist, say) call list_notes with that folder — it returns every path with its size — and read only paths it returned. A note that does not exist is not a note to try the next date for.",
+		"- To survey one section across many notes (what each daily note's '## Capture' holds, which lecture sections are empty), ONE grep_vault call with the heading as the pattern and context: 8 shows the first lines of every such section; list_notes' sizes show which notes are too small to hold anything. Do not read the notes one by one.",
+		"- A tool call with the same arguments returns the same result; never repeat one. When a search finds nothing, that is the answer for that pattern: change the pattern, the folder or the tool, or report it.",
+		"- search_passages and search_notes find notes by topic (meaning and keywords). They cannot find notes that are 'messy', 'long', 'empty' or 'unstructured': such structural questions are answered by list_notes (sizes), list_sections (which sections contain what), grep_vault (headings, patterns) and the outline.",
 		"- Clean-ups across many notes: do not survey everything first and act later — you will run out of steps. Find the candidates with grep_vault (it shows each match's heading), decide per match, then apply all the edits with ONE edit_notes call (a list of {path, old_text, new_text}). old_text is the smallest unique passage — normally the single matching line, never a whole section. Example: list_sections({containing: ['![[Recording', '### Summary']}) tells you per section which it has; every section with both becomes one edit_notes item {path, heading, line_contains: '![[Recording', new_text: ''}. That is the whole job in two steps; never read the sections one by one.",
 		"- Tool results are authoritative: a successful edit result means the note is written, so do not read it again to verify, and do not re-check notes that were already handled.",
 		"",
@@ -275,7 +314,13 @@ export class Agent {
 		let writes = 0;
 		/** Notes the model read this turn, in order, for the sources footer. */
 		const readPaths: string[] = [];
-		for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
+		/** Results of read-only calls this turn by callKey, so an identical call is not run again.
+		 * Cleared after every write, since the vault may then differ. */
+		const callCache = new Map<string, string>();
+		let repeats = 0;
+		/** Set when the loop stops for a reason other than running out of iterations. */
+		let wrapUpText: string | null = null;
+		iterations: for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
 			const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, daily) };
 			const history = trimHistory(conversation.messages, cfg.numCtx, (m) => {
@@ -380,10 +425,30 @@ export class Agent {
 					continue;
 				}
 				callbacks.onToolStart?.(call);
+				const tool = toolByName.get(call.function.name);
+				const key = callKey(call);
+				const prior = tool && !tool.mutates ? callCache.get(key) : undefined;
+				if (prior !== undefined) {
+					// The same read-only call again: do not run it, tell the model why, and stop the
+					// turn once it has done this MAX_REPEATED_CALLS times.
+					repeats++;
+					const notice = repeatedCallNotice(call.function.name, prior, repeats);
+					callbacks.onToolDone?.(call, notice, false);
+					conversation.messages.push({ role: "tool", content: notice, tool_name: call.function.name });
+					if (repeats >= MAX_REPEATED_CALLS) {
+						wrapUpText = REPEATED_CALLS_WRAP_UP;
+						break iterations;
+					}
+					continue;
+				}
 				toolsUsed++;
 				currentCall = call;
 				let { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
 				currentCall = null;
+				if (tool && ok) {
+					if (tool.mutates) callCache.clear();
+					else callCache.set(key, result);
+				}
 				// A batch of forty read_note calls would overflow the window on its own; keep the
 				// batch within budget and tell the model to work in smaller steps.
 				batchChars += result.length;
@@ -393,7 +458,6 @@ export class Agent {
 				callbacks.onToolDone?.(call, result, ok);
 				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name });
 				if (ok) {
-					const tool = toolByName.get(call.function.name);
 					if (tool?.mutates) writes++;
 					if (READ_TOOLS.has(call.function.name)) {
 						const header = /^# (.+?)(?: \(lines [^)]*\))?$/m.exec(result);
@@ -403,7 +467,8 @@ export class Agent {
 			}
 		}
 
-		// Ran out of iterations: ask the model to wrap up without tools.
+		// Ran out of iterations (or was stopped for repeating itself): ask the model to wrap up without tools.
+		if (signal?.aborted) return;
 		callbacks.onAssistantStart?.();
 		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, daily) };
 		const response = await this.deps.client.chat({
@@ -411,7 +476,12 @@ export class Agent {
 			messages: [
 				system,
 				...trimHistory(conversation.messages, cfg.numCtx),
-				{ role: "user", content: "You have used the maximum number of tool calls for this turn. Answer now with what you have found so far, and say what is still missing." },
+				{
+					role: "user",
+					content:
+						wrapUpText ??
+						"You have used the maximum number of tool calls for this turn. Answer now with what you have found so far, and say what is still missing.",
+				},
 			],
 			think,
 			options: { num_ctx: cfg.numCtx, temperature: cfg.temperature },

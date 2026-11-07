@@ -4,7 +4,9 @@ import {
 	Agent,
 	MAX_AUTO_CONTINUES,
 	MAX_CALLS_PER_STEP,
+	REPEATED_CALLS_WRAP_UP,
 	buildSystemPrompt,
+	callKey,
 	linkifyNotePaths,
 	looksLikeChoiceQuestion,
 	looksLikePermissionQuestion,
@@ -136,7 +138,7 @@ describe("Agent.run", () => {
 	});
 
 	it("stops after maxIterations and asks the model to wrap up", async () => {
-		const loop: Scripted[] = Array.from({ length: 4 }, () => ({ tool: "list_notes", args: {} }));
+		const loop: Scripted[] = Array.from({ length: 4 }, (_, i) => ({ tool: "list_notes", args: { limit: i + 1 } }));
 		const { agent, ollama } = setup([...loop, { content: "partial answer" }], { cfg: { maxIterations: 4 } });
 		const conv = newConversation();
 		await agent.run(conv, "x", {});
@@ -532,6 +534,74 @@ describe("per-step call cap", () => {
 		expect(done.filter(Boolean)).toHaveLength(MAX_CALLS_PER_STEP);
 		expect(done.filter((ok) => !ok)).toHaveLength(4);
 		expect(conv.messages.filter((m) => m.role === "tool" && /Not executed/.test(m.content))).toHaveLength(4);
+	});
+});
+
+describe("repeated-call guard", () => {
+	const grep = { tool: "grep_vault", args: { pattern: "^\\s*>\\s+[A-Z]", regex: false, folder: "/", limit: 100 } };
+
+	it("refuses an identical read-only call, counts repeats, and ends the turn at the cap", async () => {
+		// Four identical calls are scripted; the turn ends at the third repeat (fourth call), so
+		// the wrap-up request gets the final scripted turn.
+		const same: Scripted[] = Array.from({ length: 4 }, () => grep);
+		const { agent, ollama } = setup([...same, { content: "gave up" }], { cfg: { maxIterations: 20 } });
+		const conv = newConversation();
+		const done: { name: string; result: string; ok: boolean }[] = [];
+		await agent.run(conv, "find quotes", { onToolDone: (c, r, ok) => done.push({ name: c.function.name, result: r, ok }) });
+		// First call runs; repeats 1–3 are refused; the turn ends at the third repeat, so the
+		// fifth scripted call is never requested.
+		expect(done).toHaveLength(4);
+		expect(done[0].ok).toBe(true);
+		expect(done[1].result).toMatch(/already called grep_vault with exactly these arguments.*repeat 1 of 3/s);
+		expect(done[1].result).toContain(done[0].result.slice(0, 50));
+		expect(done[3].result).toMatch(/repeat 3 of 3/);
+		expect(done[3].result).toMatch(/turn now ends/);
+		expect(ollama.requests).toHaveLength(5);
+		const wrap = ollama.requests[4];
+		expect(wrap.tools).toBeUndefined();
+		expect(wrap.messages.at(-1)?.content).toBe(REPEATED_CALLS_WRAP_UP);
+		expect(conv.messages.at(-1)?.content).toBe("gave up");
+	});
+
+	it("treats argument order as irrelevant and a changed argument as a new call", async () => {
+		const { agent, ollama } = setup(
+			[
+				{ tool: "grep_vault", args: { pattern: "gantry", folder: "Projects" } },
+				{ tool: "grep_vault", args: { folder: "Projects", pattern: "gantry" } },
+				{ tool: "grep_vault", args: { pattern: "gantry", folder: "Ideas" } },
+				{ content: "done" },
+			],
+			{ cfg: { maxIterations: 10 } },
+		);
+		const results: string[] = [];
+		await agent.run(newConversation(), "x", { onToolDone: (_c, r) => results.push(r) });
+		expect(results[0]).toMatch(/^1 matching line/);
+		expect(results[1]).toMatch(/already called/);
+		expect(results[2]).toMatch(/^No note contains/);
+		expect(ollama.requests).toHaveLength(4);
+	});
+
+	it("forgets cached reads after a write, so a re-read sees the new content", async () => {
+		const { agent } = setup(
+			[
+				{ tool: "read_note", args: { path: "Ideas/Sensors.md" } },
+				{ tool: "append_to_note", args: { path: "Ideas/Sensors.md", content: "Reed switches too." } },
+				{ tool: "read_note", args: { path: "Ideas/Sensors.md" } },
+				{ content: "done" },
+			],
+			{ cfg: { maxIterations: 10, autoApprove: true } },
+		);
+		const results: string[] = [];
+		await agent.run(newConversation(), "x", { onToolDone: (_c, r) => results.push(r) });
+		expect(results[2]).not.toMatch(/already called/);
+		expect(results[2]).toContain("Reed switches too.");
+	});
+
+	it("canonicalises keys", () => {
+		const a = callKey({ function: { name: "t", arguments: { b: [1, { y: 2, x: 1 }], a: "s", c: undefined } } });
+		const b = callKey({ function: { name: "t", arguments: { a: "s", b: [1, { x: 1, y: 2 }] } } });
+		expect(a).toBe(b);
+		expect(callKey({ function: { name: "t", arguments: { a: "s" } } })).not.toBe(a);
 	});
 });
 

@@ -91,12 +91,58 @@ function resolveExisting(vault: VaultAccess, input: string): string {
 		const stripped = stripOutlineDecoration(input);
 		if (stripped && stripped !== input) resolved = vault.resolve(stripped);
 	}
-	if (!resolved) {
-		throw new ToolError(
-			`No note found for "${input}". Use search_notes or list_notes to find the exact path.`,
-		);
-	}
+	if (!resolved) throw new ToolError(`No note found for "${input}". ${missingNoteHint(vault, input)}`);
 	return resolved;
+}
+
+/** Folders with at most this many notes are listed in full when a path in them misses. */
+const MISS_LIST_ALL = 80;
+const MISS_NEAREST = 10;
+
+/**
+ * What a model should see after guessing a path that does not exist: the notes that *do*
+ * exist in that folder (all of them when the folder is small, else the nearest by name), so
+ * one miss teaches it the folder instead of inviting the next guess. Without a folder, or
+ * with one that has no notes, the folders that exist and any note with a similar name.
+ */
+export function missingNoteHint(vault: VaultAccess, input: string): string {
+	const cleaned = stripOutlineDecoration(input)
+		.replace(/\\/g, "/")
+		.replace(/^!?\[\[|\]\]$/g, "")
+		.replace(/^\/+|\/+$/g, "");
+	const slash = cleaned.lastIndexOf("/");
+	const folder = slash >= 0 ? cleaned.slice(0, slash) : "";
+	const base = cleaned.slice(slash + 1).replace(/\.md$/i, "");
+	const notes = vault.listNotes();
+	const inFolder = notes
+		.filter((n) => n.folder.toLowerCase() === folder.toLowerCase())
+		.map((n) => n.basename)
+		.sort((a, b) => a.localeCompare(b));
+	const label = folder ? `"${folder}/"` : "the vault root";
+	if (inFolder.length > 0) {
+		if (inFolder.length <= MISS_LIST_ALL) {
+			return `${label} has ${inFolder.length} note${inFolder.length === 1 ? "" : "s"}: ${inFolder.map((b) => `${b}.md`).join(", ")}. Use one of these exact paths; do not guess others.`;
+		}
+		// Too many to list: the names around where the guess would sort.
+		let at = inFolder.findIndex((b) => b.localeCompare(base) >= 0);
+		if (at < 0) at = inFolder.length;
+		const start = Math.max(0, Math.min(at - MISS_NEAREST / 2, inFolder.length - MISS_NEAREST));
+		const near = inFolder.slice(start, start + MISS_NEAREST);
+		return `${label} has ${inFolder.length} notes; the nearest by name are ${near.map((b) => `${b}.md`).join(", ")}. Call list_notes({folder: ${JSON.stringify(folder)}}) for all of them; do not guess paths.`;
+	}
+	const folders = Array.from(new Set(notes.map((n) => n.folder).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+	const similar = base
+		? notes
+				.filter((n) => n.basename.toLowerCase().includes(base.toLowerCase()) || base.toLowerCase().includes(n.basename.toLowerCase()))
+				.slice(0, 5)
+				.map((n) => n.path)
+		: [];
+	const parts: string[] = [];
+	parts.push(folder ? `There is no folder ${label} with notes.` : `No note is named "${base}" in the vault root.`);
+	if (similar.length) parts.push(`Similar names: ${similar.join(", ")}.`);
+	if (folders.length) parts.push(`Folders with notes: ${folders.slice(0, 40).map((f) => `${f}/`).join(", ")}${folders.length > 40 ? ", …" : ""}.`);
+	parts.push("Use list_notes or search_notes to find the exact path; do not guess.");
+	return parts.join(" ");
 }
 
 function hashText(text: string): string {
@@ -207,7 +253,7 @@ export function extractSection(content: string, heading: string): { text: string
 export const grepVault: ToolDefinition = {
 	name: "grep_vault",
 	description:
-		"Search the text of every note for a literal string (case-insensitive) or a regular expression, like grep. Returns matching lines as `path:line [enclosing heading]: text` grouped by note, optionally with context lines. The right tool for 'every note that contains X', embeds, tags, headings or exact phrases; much cheaper than reading notes. Two greps (e.g. for an embed and for '### Summary') with their headings tell you which sections have both.",
+		"Search the text of every note for a literal string (case-insensitive) or a regular expression (set regex: true for ^, \\s, [A-Z], a|b and the like), like grep. Returns matching lines as `path:line [enclosing heading]: text` grouped by note, optionally with context lines. The right tool for 'every note that contains X', embeds, tags, headings or exact phrases; much cheaper than reading notes. With a heading as the pattern and context: 8 it shows the start of that section in every note at once.",
 	parameters: {
 		type: "object",
 		properties: {
@@ -221,28 +267,11 @@ export const grepVault: ToolDefinition = {
 	},
 	mutates: false,
 	async execute(args, ctx) {
-		const pattern = str(args, "pattern");
+		const rawPattern = str(args, "pattern");
 		const useRegex = bool(args, "regex");
 		const folder = str(args, "folder", false).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
 		const context = int(args, "context", 0, 0, 8);
 		const limit = int(args, "limit", 60, 1, 200);
-		let test: (line: string) => boolean;
-		let note = "";
-		let re: RegExp | null = null;
-		if (useRegex) {
-			try {
-				re = new RegExp(pattern, "i");
-			} catch (err) {
-				note = `(The pattern is not a valid regular expression: ${(err as Error).message}. Searched for it as literal text instead.)\n`;
-			}
-		}
-		if (re) {
-			const compiled = re;
-			test = (line) => compiled.test(line);
-		} else {
-			const lower = pattern.toLowerCase();
-			test = (line) => line.toLowerCase().includes(lower);
-		}
 		let notes = ctx.vault.listNotes();
 		if (folder) {
 			// A note path given as "folder" means: just that note.
@@ -250,36 +279,107 @@ export const grepVault: ToolDefinition = {
 			notes = single ? notes.filter((n) => n.path === single) : notes.filter((n) => n.path.toLowerCase().startsWith(folder + "/"));
 		}
 		notes.sort((a, b) => a.path.localeCompare(b.path));
-		const blocks: string[] = [];
-		let shown = 0;
-		let total = 0;
-		let notesHit = 0;
-		for (const n of notes) {
-			const lines = (await ctx.vault.read(n.path)).split("\n");
-			const rows: string[] = [];
-			let heading = "";
-			let inFence = false;
-			for (let i = 0; i < lines.length; i++) {
-				if (/^\s*(```|~~~)/.test(lines[i])) inFence = !inFence;
-				const h = !inFence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
-				if (h) heading = `${h[1]} ${h[2].trim()}`;
-				if (!test(lines[i])) continue;
-				total++;
-				if (shown >= limit) continue;
-				shown++;
-				rows.push(`${n.path}:${i + 1}${heading && !h ? ` [${heading}]` : ""}: ${lines[i]}`);
-				for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) rows.push(`${n.path}:${j + 1}- ${lines[j]}`);
+		const texts = await Promise.all(notes.map((n) => ctx.vault.read(n.path)));
+
+		const scan = (test: (line: string) => boolean) => {
+			const blocks: string[] = [];
+			let shown = 0;
+			let total = 0;
+			let notesHit = 0;
+			notes.forEach((n, k) => {
+				const lines = texts[k].split("\n");
+				const rows: string[] = [];
+				let heading = "";
+				let inFence = false;
+				for (let i = 0; i < lines.length; i++) {
+					if (/^\s*(```|~~~)/.test(lines[i])) inFence = !inFence;
+					const h = !inFence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+					if (h) heading = `${h[1]} ${h[2].trim()}`;
+					if (!test(lines[i])) continue;
+					total++;
+					if (shown >= limit) continue;
+					shown++;
+					rows.push(`${n.path}:${i + 1}${heading && !h ? ` [${heading}]` : ""}: ${lines[i]}`);
+					for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) rows.push(`${n.path}:${j + 1}- ${lines[j]}`);
+				}
+				if (rows.length) {
+					notesHit++;
+					blocks.push(rows.join("\n"));
+				}
+			});
+			return { blocks, shown, total, notesHit };
+		};
+		const literal = (p: string) => {
+			const lower = p.toLowerCase();
+			return (line: string) => line.toLowerCase().includes(lower);
+		};
+		const compile = (p: string): RegExp | null => {
+			try {
+				return new RegExp(p, "i");
+			} catch {
+				return null;
 			}
-			if (rows.length) {
-				notesHit++;
-				blocks.push(rows.join("\n"));
+		};
+
+		let note = "";
+		let pattern = rawPattern;
+		let result;
+		if (useRegex) {
+			pattern = tidyAlternation(rawPattern);
+			const re = compile(pattern);
+			if (re) {
+				result = scan((line) => re.test(line));
+			} else {
+				note = `(The pattern is not a valid regular expression: ${tryRegexError(pattern)}. Searched for it as literal text instead.)\n`;
+				result = scan(literal(rawPattern));
+			}
+		} else {
+			result = scan(literal(rawPattern));
+			if (result.total === 0 && looksLikeRegex(rawPattern)) {
+				// Models send `^\s*>` or `a|b` with regex:false. Nothing contains that literally, so
+				// try it as the regex it clearly is before reporting "no note contains".
+				pattern = tidyAlternation(rawPattern);
+				const re = compile(pattern);
+				if (re) {
+					const asRegex = scan((line) => re.test(line));
+					if (asRegex.total > 0) {
+						note = `(No line contains that text literally; it looks like a regular expression, so it was searched as one${pattern !== rawPattern ? `, as ${JSON.stringify(pattern)}` : ""}.)\n`;
+						result = asRegex;
+					} else {
+						note = "(Searched both as literal text and as a regular expression.)\n";
+					}
+				}
 			}
 		}
-		if (total === 0) return `${note}No note contains "${pattern}"${folder ? ` under ${folder}/` : ""}.`;
+		if (result.total === 0) return `${note}No note contains "${rawPattern}"${folder ? ` under ${folder}/` : ""}.`;
+		const { blocks, shown, total, notesHit } = result;
 		const more = total > shown ? `\n…${total - shown} more matching lines not shown; narrow with folder or raise the limit.` : "";
 		return `${note}${total} matching line${total === 1 ? "" : "s"} in ${notesHit} note${notesHit === 1 ? "" : "s"}:\n${blocks.join("\n--\n")}${more}`;
 	},
 };
+
+function tryRegexError(pattern: string): string {
+	try {
+		new RegExp(pattern, "i");
+		return "";
+	} catch (err) {
+		return (err as Error).message;
+	}
+}
+
+/** True when a pattern sent as literal text is almost certainly meant as a regular expression. */
+export function looksLikeRegex(pattern: string): boolean {
+	return /^\^|\$$|\\[sdwbSDWB]|\[[^\]]+\]|\.[*+?]|\(\?|\||\{\d+(,\d*)?\}/.test(pattern);
+}
+
+/** `scp | salloc | module load` → `scp|salloc|module load`: a model's spaces around `|` are
+ * never meant to be part of the alternatives. */
+export function tidyAlternation(pattern: string): string {
+	if (!pattern.includes("|")) return pattern;
+	const parts = pattern.split("|");
+	if (!parts.some((p) => p !== p.trim())) return pattern;
+	return parts.map((p) => p.trim()).join("|");
+}
 
 export const listSections: ToolDefinition = {
 	name: "list_sections",
@@ -434,7 +534,7 @@ export const readNote: ToolDefinition = {
 export const listNotes: ToolDefinition = {
 	name: "list_notes",
 	description:
-		"List notes in the vault, optionally filtered by folder, tag or a substring of the name. Returns paths and last-modified dates, newest first. Use it to browse or when search is not finding a note you expect.",
+		"List notes in the vault, optionally filtered by folder, tag or a substring of the name. Returns every matching path with its size and last-modified date, newest first. The way to learn which notes a folder contains (never guess paths), and the size tells you which notes are nearly empty before you read any.",
 	parameters: {
 		type: "object",
 		properties: {
@@ -487,7 +587,7 @@ export const listNotes: ToolDefinition = {
 				notes.sort((a, b) => b.mtime - a.mtime);
 		}
 		const total = notes.length;
-		const rows = notes.slice(0, limit).map((n) => `${n.path}  (modified ${isoDate(n.mtime)})`);
+		const rows = notes.slice(0, limit).map((n) => `${n.path}  (${formatSize(n.size)}, modified ${isoDate(n.mtime)})`);
 		if (rows.length === 0) return "No notes matched those filters.";
 		const more = total > limit ? `\n…and ${total - limit} more. Narrow the filter or raise the limit.` : "";
 		return `${total} note${total === 1 ? "" : "s"}:\n${rows.join("\n")}${more}`;

@@ -13,7 +13,10 @@ import {
 	listFiles,
 	listNotes,
 	listSections,
+	looksLikeRegex,
+	missingNoteHint,
 	moveNote,
+	tidyAlternation,
 	nearestLines,
 	parseDate,
 	readFile,
@@ -105,6 +108,33 @@ describe("read_note", () => {
 	it("fails helpfully for a missing note", async () => {
 		const { ctx } = makeCtx(freshVault());
 		await expect(readNote.execute({ path: "Nope" }, ctx)).rejects.toThrow(/No note found/);
+	});
+});
+
+describe("missing-note hints", () => {
+	it("lists the notes a small folder actually has when a guessed path misses", async () => {
+		const vault = freshVault();
+		vault.seed("Daily Notes/2026-10-21.md", "a");
+		vault.seed("Daily Notes/2026-10-31.md", "b");
+		const { ctx } = makeCtx(vault);
+		const err = await readNote.execute({ path: "Daily Notes/2026-10-28.md" }, ctx).catch((e: Error) => e.message);
+		expect(err).toMatch(/^No note found for "Daily Notes\/2026-10-28.md"\. "Daily Notes\/" has 2 notes: 2026-10-21.md, 2026-10-31.md\. Use one of these exact paths/);
+	});
+	it("shows the nearest names and points at list_notes when the folder is large", () => {
+		const vault = new FakeVault();
+		for (let i = 1; i <= 120; i++) vault.seed(`Daily/2026-01-${String(i).padStart(3, "0")}.md`, "x");
+		const hint = missingNoteHint(vault, "Daily/2026-01-050.md");
+		expect(hint).toMatch(/"Daily\/" has 120 notes; the nearest by name are/);
+		expect(hint).toContain("2026-01-050.md");
+		expect(hint).toContain("2026-01-045.md");
+		expect(hint).toContain("2026-01-054.md");
+		expect(hint).not.toContain("2026-01-001.md");
+		expect(hint).toContain('list_notes({folder: "Daily"})');
+	});
+	it("names the folders that exist and similar notes when the folder has none", () => {
+		const vault = freshVault();
+		expect(missingNoteHint(vault, "Journal/Chess.md")).toMatch(/no folder "Journal\/".*Similar names: Projects\/Chess Robot.md.*Folders with notes: Ideas\/, Projects\//);
+		expect(missingNoteHint(vault, "Zzz")).toMatch(/No note is named "Zzz" in the vault root/);
 	});
 });
 
@@ -463,6 +493,38 @@ describe("grep_vault", () => {
 		expect(await grepVault.execute({ pattern: "^## 2026", regex: true }, ctx)).toMatch(/^2 matching lines/);
 		expect(await grepVault.execute({ pattern: "zebra" }, ctx)).toMatch(/^No note contains/);
 		expect(await grepVault.execute({ pattern: "Recording", limit: 1 }, ctx)).toContain("2 more matching lines");
+	});
+
+	it("searches a regex-looking pattern as a regex when the literal search finds nothing", async () => {
+		const vault = freshVault();
+		vault.seed("Daily/d1.md", "## Capture\n\n> Quoted thought\n\n```bash\nscp a b\n```\n");
+		const { ctx } = makeCtx(vault);
+		const quotes = await grepVault.execute({ pattern: "^\\s*>\\s+[A-Z]", regex: false }, ctx);
+		expect(quotes).toMatch(/^\(No line contains that text literally; it looks like a regular expression, so it was searched as one\.\)\n1 matching line/);
+		expect(quotes).toContain("Daily/d1.md:3 [## Capture]: > Quoted thought");
+		const fences = await grepVault.execute({ pattern: "```bash|```python" }, ctx);
+		expect(fences).toMatch(/1 matching line/);
+		const spaced = await grepVault.execute({ pattern: "scp | salloc | module load" }, ctx);
+		expect(spaced).toContain('as "scp|salloc|module load"');
+		expect(spaced).toContain("Daily/d1.md:6");
+		// A literal hit still wins, and a genuine miss says both were tried.
+		expect(await grepVault.execute({ pattern: "a b" }, ctx)).toMatch(/^1 matching line/);
+		expect(await grepVault.execute({ pattern: "^zebra|yak$" }, ctx)).toMatch(/^\(Searched both as literal text and as a regular expression\.\)\nNo note contains/);
+		expect(looksLikeRegex("plain words")).toBe(false);
+		expect(looksLikeRegex("[[Embed")).toBe(false);
+		expect(tidyAlternation("a|b")).toBe("a|b");
+	});
+});
+
+describe("list_notes sizes", () => {
+	it("shows each note's size so empty notes can be skipped", async () => {
+		const vault = freshVault();
+		vault.seed("Daily/empty.md", "# Day\n\n## Capture\n");
+		vault.seed("Daily/full.md", "# Day\n\n## Capture\n\n" + "words ".repeat(400));
+		const { ctx } = makeCtx(vault);
+		const out = await listNotes.execute({ folder: "Daily" }, ctx);
+		expect(out).toMatch(/Daily\/empty\.md  \(18 B, modified/);
+		expect(out).toMatch(/Daily\/full\.md  \(2 kB, modified/);
 	});
 });
 

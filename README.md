@@ -79,6 +79,13 @@ three times per message (a small note appears in the chat) — see *Keep going w
 for permission* in settings. It never does this for a question that offers you a choice, nor after
 you have rejected a change in that message, and a question always gets an answer rather than edits.
 
+**Not getting stuck.** Small models loop: they grep the same pattern again and again, or read
+`Daily/<every date>` hoping one exists. The agent refuses a read-only call it has already run with
+the same arguments in the turn (it shows the model the earlier result instead), and ends the turn
+with a wrap-up answer at the third repeat. A path that does not exist comes back with the notes
+that do exist in that folder, `list_notes` shows every note's size, and a regex sent as literal
+text is recognised and searched as a regex.
+
 **Undo.** Every approved write is recorded with what it replaced. *Undo the agent's last change* and
 *Undo every change from the agent's last message* are commands (also `/undo`, `/undo-all`), and each
 tool card has an **Undo** button. A revert is shown as a diff and applied only when approved.
