@@ -371,3 +371,14 @@ export async function* ndjson(
 		reader.releaseLock();
 	}
 }
+
+/** Ollama's canonical spelling: lower-case, without an explicit ":latest" tag. */
+export function canonicalModelName(name: string): string {
+	const n = name.trim().toLowerCase();
+	return n.endsWith(":latest") ? n.slice(0, -":latest".length) : n;
+}
+
+/** Same model under either spelling: "nomic-embed-text" is "nomic-embed-text:latest", which is how `ollama list` reports it. */
+export function sameModel(a: string, b: string): boolean {
+	return canonicalModelName(a) === canonicalModelName(b);
+}

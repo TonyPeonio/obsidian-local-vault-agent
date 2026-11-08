@@ -1,4 +1,5 @@
 import type { ModelInfo, OllamaClient } from "./ollama";
+import { sameModel } from "./ollama";
 
 /**
  * Hardware auto-tune: one short generation measures how fast the chosen model reads a
@@ -83,7 +84,7 @@ export function recommend(m: TuneMeasurement, installed: ModelInfo[] = []): Tune
 	const turnSeconds = gen > 0 ? 4000 / gen : 0;
 	if (coldSeconds > 0) lines.push(`A full ${fmtK(m.numCtx)} prompt takes about ${coldSeconds.toFixed(0)} s to read cold; a 40-call clean-up writes roughly 4k tokens, about ${turnSeconds.toFixed(0)} s of generation.`);
 
-	const current = installed.find((i) => i.name === m.model);
+	const current = installed.find((i) => sameModel(i.name, m.model));
 	if (current?.capabilities && !current.capabilities.includes("tools")) {
 		advice.noTools = true;
 		advice.headline = `${m.model} does not support tool calling; the agent cannot work with it.`;
@@ -130,7 +131,7 @@ export function recommend(m: TuneMeasurement, installed: ModelInfo[] = []): Tune
 		lines.push(`Installed models that can call tools: ${toolModels
 			.slice()
 			.sort((a, b) => a.size - b.size)
-			.map((i) => `${i.name} (${gb(i.size)})${i.name === m.model ? " ← current" : ""}`)
+			.map((i) => `${i.name} (${gb(i.size)})${sameModel(i.name, m.model) ? " ← current" : ""}`)
 			.join(", ")}.`);
 	}
 	return advice;
@@ -171,7 +172,7 @@ export async function measure(client: OllamaClient, model: string, numCtx: numbe
 		loadSeconds: (res.loadDuration ?? 0) / 1e9,
 	};
 	try {
-		const running = (await client.ps()).find((r) => r.name === model || r.name === `${model}:latest`);
+		const running = (await client.ps()).find((r) => sameModel(r.name, model));
 		if (running) {
 			m.sizeBytes = running.size;
 			m.vramBytes = running.sizeVram;

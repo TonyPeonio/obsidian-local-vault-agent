@@ -5,7 +5,7 @@ import { SUGGESTIONS_NOTE, gardenVault, renderGardenReport } from "./gardener";
 import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, type IndexData, type IndexStatus } from "./index";
 import { ObsidianVault } from "./obsidian-vault";
-import { OllamaClient } from "./ollama";
+import { OllamaClient, sameModel } from "./ollama";
 import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
 import { editSelectionPrompt, processDailyNotesPrompt, reformatPrompt, summarizePrompt } from "./prompts";
 import { fuseRankings, keywordSearch } from "./search";
@@ -348,8 +348,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		try {
 			const models = await this.client.listModels();
 			const missing: string[] = [];
-			if (!models.some((m) => m.name === this.settings.model)) missing.push(this.settings.model);
-			if (this.settings.semanticSearch && !models.some((m) => m.name === this.settings.embeddingModel)) missing.push(this.settings.embeddingModel);
+			if (!models.some((m) => sameModel(m.name, this.settings.model))) missing.push(this.settings.model);
+			if (this.settings.semanticSearch && !models.some((m) => sameModel(m.name, this.settings.embeddingModel))) missing.push(this.settings.embeddingModel);
 			if (missing.length) {
 				new Notice(`Local Vault Agent: model${missing.length === 1 ? "" : "s"} not installed: ${missing.join(", ")}. Run \`ollama pull ${missing[0]}\` or pick another model in settings.`, 12000);
 			}

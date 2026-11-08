@@ -1,3 +1,4 @@
+import { sameModel } from "./ollama";
 import { App, Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
 import { TuneModal } from "./prompt-modals";
@@ -36,8 +37,8 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 					try {
 						const version = await this.plugin.client.version();
 						models = await this.plugin.client.listModels();
-						const hasChat = models.some((m) => m.name === s.model);
-						const hasEmbed = models.some((m) => m.name === s.embeddingModel);
+						const hasChat = models.some((m) => sameModel(m.name, s.model));
+						const hasEmbed = models.some((m) => sameModel(m.name, s.embeddingModel));
 						connection =
 							`Connected to Ollama ${version} (${models.length} models).` +
 							(hasChat ? "" : ` Chat model "${s.model}" is not installed: run \`ollama pull ${s.model}\`.`) +
@@ -82,7 +83,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 				const models = await this.plugin.client.listModels();
 				d.selectEl.empty();
 				const names = models.filter((m) => !/embed/i.test(m.name)).map((m) => m.name);
-				if (!names.includes(s.model)) names.unshift(s.model);
+				if (!names.some((n) => sameModel(n, s.model))) names.unshift(s.model);
 				for (const n of names) d.addOption(n, n);
 				d.setValue(s.model);
 			} catch {

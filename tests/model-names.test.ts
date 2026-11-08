@@ -1,0 +1,30 @@
+import { describe, expect, it } from "vitest";
+import { canonicalModelName, sameModel } from "../src/ollama";
+
+describe("model names", () => {
+	it("treats an untagged name and its :latest form as the same model, case-insensitively", () => {
+		expect(sameModel("nomic-embed-text", "nomic-embed-text:latest")).toBe(true);
+		expect(sameModel("nomic-embed-text:latest", "nomic-embed-text")).toBe(true);
+		expect(sameModel("Qwen3.5:9b", "qwen3.5:9b")).toBe(true);
+		expect(sameModel(" qwen3.5:9b ", "qwen3.5:9b")).toBe(true);
+	});
+
+	it("keeps different tags and different names apart", () => {
+		expect(sameModel("qwen3.5:9b", "qwen3.5:4b")).toBe(false);
+		expect(sameModel("qwen3.5:9b", "qwen3.5")).toBe(false);
+		expect(sameModel("nomic-embed-text", "mxbai-embed-large")).toBe(false);
+		expect(sameModel("hf.co/OBLITERATUS/gemma-4-E4B-it-OBLITERATED:Q4_K_M", "hf.co/obliteratus/gemma-4-e4b-it-obliterated:q4_k_m")).toBe(true);
+	});
+
+	it("canonicalises the way ollama list reports names", () => {
+		expect(canonicalModelName("nomic-embed-text:latest")).toBe("nomic-embed-text");
+		expect(canonicalModelName("qwen3.5:9b")).toBe("qwen3.5:9b");
+		expect(canonicalModelName("")).toBe("");
+	});
+
+	it("finds an installed model in a listing the way the startup check and the settings test do", () => {
+		const listed = [{ name: "nomic-embed-text:latest" }, { name: "qwen3.5:9b" }];
+		const missing = ["qwen3.5:9b", "nomic-embed-text", "phi4:14b"].filter((want) => !listed.some((m) => sameModel(m.name, want)));
+		expect(missing).toEqual(["phi4:14b"]);
+	});
+});

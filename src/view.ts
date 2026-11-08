@@ -1,3 +1,4 @@
+import { sameModel } from "./ollama";
 import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
 import { AUTO_CONTINUE_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
@@ -155,7 +156,7 @@ export class AgentView extends ItemView {
 			for (const m of chatModels) {
 				this.modelSelect.createEl("option", { value: m.name, text: m.name });
 			}
-			if (!chatModels.some((m) => m.name === current)) {
+			if (!chatModels.some((m) => sameModel(m.name, current))) {
 				this.modelSelect.createEl("option", { value: current, text: `${current} (not installed)` });
 			}
 			if (notify) new Notice(`Found ${chatModels.length} chat model${chatModels.length === 1 ? "" : "s"}.`);
