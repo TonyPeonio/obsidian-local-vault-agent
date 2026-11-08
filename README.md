@@ -7,6 +7,20 @@ Ask it questions and it **searches your notes** to answer them. Ask it to **comp
 and it reads the relevant notes and writes a new one with citations. Ask it to **reformat or
 edit a note** and it shows you a diff that you approve before anything is written.
 
+Local Vault Agent is part of the Companion suite of local-first Obsidian plugins by Tony Peonio for
+students and researchers: your machine does the work, every change is a diff you approve, and the
+numbers are published. The others are Lecture Companion (live local lecture transcription, Canvas
+slides, Ollama summaries), Canvas Companion (Canvas LMS assignments, grades and announcements as
+notes), Exam Companion (day-by-day study plan, daily quizzes and flashcards), Paper Companion
+(Zotero search by meaning, page-cited reading notes), Research Log Companion (append-only lab
+notebook with git, parameters, data hashes), Meeting Companion (local meeting transcription,
+decisions, action items, weekly digest), Job Hunt Companion (job applications as notes, resume
+tailoring, interview questions), Fellowship Companion (grants and fellowships: deadlines, materials,
+letters, eligibility), Code Companion (commits in the daily note, weekly report, TODOs), Teaching
+Companion (local-model rubric grading with verbatim evidence) and Branching Table of Contents
+(parent/child properties as a rooted family tree). All at
+[github.com/TonyPeonio](https://github.com/TonyPeonio).
+
 - **Agentic.** The model decides which notes to search, read and edit using a small set of
   tools, and keeps going until it has an answer. It is not a one-shot "chat with a prompt".
 - **Grounded.** Answers cite the notes they came from as wikilinks you can click.
