@@ -183,11 +183,12 @@ paths, invented links and repeated calls, and checked against facts the generato
 115 checks in all; the vault is restored after every run.
 
 Version 0.5.1, 2026-11-07/08, RTX 5070 12 GB, Ollama 0.40, 32k context unless noted. Identical
-runs differ by up to 2× in wall time, so the default was run four times.
+runs differ by up to 2× in wall time, so the defaults were run many times over the night.
 
 | Configuration | Checks | Seconds | Model s | Tool calls | Repeats |
 |---|---:|---:|---:|---:|---:|
-| **qwen3.5:9b, defaults (thinking off, temp 0.6)** | **114, 110, 109, 108** | **202, 260, 181, 212** | 195, 208, 176, 207 | 76, 83, 80, 87 | 0 |
+| **qwen3.5:9b, defaults (thinking off, temp 0.6), final build** | **113, 113, 112** | **151, 243, 155** | 147, 237, 138 | 65, 186, 66 | 0, 0, 3 |
+| qwen3.5:9b, defaults, earlier 0.5.1 builds the same night (10 runs) | 108–114 | 157–262 | | 61–99 | 0–3 |
 | qwen3.5:9b, note gists on | 113 | 231 (+230 to gist 334 notes once) | 206 | 110 | 0 |
 | qwen3.5:9b, 64k context | 112 | 308 | 294 | 208 | 0 |
 | qwen3.5:9b, thinking on | 112 | 444 | 436 | 126 | 1 |
@@ -211,7 +212,7 @@ What the numbers say:
   a survey whose per-section flags the model re-checked by reading every section (the result now
   marks the sections that have every text and says to act on them), and a rejected diff after
   which the model said "Done" (every further write in that turn is now refused and the reply
-  ends by asking the user). The clean-up scenario went from passing 0 of 3 runs to 4 of 4.
+  ends by asking the user). The clean-up scenario went from passing 0 of 3 runs to most runs; when the model takes the survey path it finishes in two calls and about 20 s.
 - **qwen3.5:4b is a real option on an 8 GB card:** 108 of 115 in under two minutes. It loses on
   the long multi-note jobs (the clean-up, listing unsummarised recordings) and repeats itself
   more.
@@ -221,8 +222,9 @@ What the numbers say:
 - **A bigger model does not help on a 12 GB card:** the 35B spilled into RAM and scored lower;
   the older `qwen3:14b` sent 45 tool calls in one step.
 - Remaining misses are single checks that move between runs: a daily survey that lists one
-  one-liner day too many, a code snippet left uncollected, a conventions note written under the
-  wrong heading.
+  one-liner day too many, a conventions note written under the wrong heading, and about one
+  clean-up run in four where the model greps and reads instead of surveying and runs out of
+  steps without editing.
 
 Run it yourself with `npm run make-vault && npm run e2e:large` (see Development); results land
 in `bench/`.
