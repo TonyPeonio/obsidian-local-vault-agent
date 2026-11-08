@@ -22,7 +22,7 @@ edit a note** and it shows you a diff that you approve before anything is writte
 2. A chat model that supports **tool calling**. Recommended, by GPU size:
    - 12 GB VRAM (e.g. RTX 3060/4070/5070): `ollama pull qwen3.5:9b` (default; the model the
      [benchmark](#benchmarks) is measured on). The older `qwen3:14b` scored much lower.
-   - 8 GB VRAM: `ollama pull qwen3.5:4b` or `qwen3:8b`
+   - 8 GB VRAM: `ollama pull qwen3.5:4b` (108 of 115 benchmark checks in under two minutes; see Benchmarks)
    - 24 GB VRAM: `ollama pull qwen3.5:35b-a3b`. On a 12 GB card it spills into system RAM and
      was both slower and less accurate than the 9B; stay with the 9B there.
 3. An embedding model for semantic search: `ollama pull nomic-embed-text` (274 MB).
@@ -173,41 +173,56 @@ see a CORS/network error, set `OLLAMA_ORIGINS=app://obsidian.md*` on the Ollama 
 
 ## Benchmarks
 
-Every release is run through a scored benchmark: 16 scenarios on a generated 339-note vault
-(questions across notes, enumeration, a clean-up over 40 lecture sections, moving finished
-projects, processing 127 daily notes, acting on the Vault Suggestions note, editing a selection,
-a note that does not exist, and the loop failures reported from real vaults). Each scenario is
-timed and counted for tool calls, tool errors, guessed paths and repeated calls, and checked
-against facts the generator recorded. 96 checks in all; the vault is restored after every run.
+Every release is run through a scored benchmark: 19 scenarios on a generated 339-note vault
+(questions across notes, a follow-up turn that must use the conversation, a question with no
+answer in the vault, enumeration, a clean-up over 40 lecture sections, moving finished projects,
+processing 127 daily notes, acting on the Vault Suggestions note, editing a selection, a note
+that does not exist, a change the user rejects, and the loop failures reported from real vaults).
+Each scenario is timed and counted for tool calls, model calls, model time, tool errors, guessed
+paths, invented links and repeated calls, and checked against facts the generator recorded.
+115 checks in all; the vault is restored after every run.
 
-Version 0.5.0, 2026-11-07, RTX 5070 12 GB, Ollama 0.40, 32k context unless noted. Identical
-runs differ by up to 2× in wall time, so each configuration was run twice where it mattered.
+Version 0.5.1, 2026-11-07/08, RTX 5070 12 GB, Ollama 0.40, 32k context unless noted. Identical
+runs differ by up to 2× in wall time, so the default was run four times.
 
-| Configuration | Checks | Seconds | Tool calls | Repeated calls |
-|---|---:|---:|---:|---:|
-| **qwen3.5:9b, defaults (thinking off, temp 0.6)** | **94, 92** | **232, 160** | 103, 61 | 0, 0 |
-| qwen3.5:9b, 16k context | 93 | 170 | 67 | 0 |
-| qwen3.5:9b, temperature 0.3, presence 0 | 93, 90 | 146, 263 | 61, 207 | 3, 3 |
-| qwen3.5:9b, thinking on | 89 | 588 | 274 | 7 |
-| qwen3.5:9b, thinking on, before the 0.5.0 fixes | 91, 90 | 801, 451 | 262, 108 | 1, 4 |
-| qwen3:14b, thinking off | 82 | 521 | 66 | 0 |
-| qwen3.5:35b-a3b, thinking on (56% in system RAM) | 84, 87 | 934, 1192 | 114, 260 | 0, 3 |
-| 0.4.1 (71 checks, 9 scenarios then) | 66/71 | 397 | 198 | 4 |
+| Configuration | Checks | Seconds | Model s | Tool calls | Repeats |
+|---|---:|---:|---:|---:|---:|
+| **qwen3.5:9b, defaults (thinking off, temp 0.6)** | **114, 110, 109, 108** | **202, 260, 181, 212** | 195, 208, 176, 207 | 76, 83, 80, 87 | 0 |
+| qwen3.5:9b, note gists on | 113 | 231 (+230 to gist 334 notes once) | 206 | 110 | 0 |
+| qwen3.5:9b, 64k context | 112 | 308 | 294 | 208 | 0 |
+| qwen3.5:9b, thinking on | 112 | 444 | 436 | 126 | 1 |
+| qwen3.5:4b, thinking off (8 GB cards) | 108 | 112 | 88 | 80 | 5 |
+| 0.5.0 code, same model and settings | 92, 89, 87 of 96 | 395, 246, 486 | | 97, 149, 111 | 0, 3, 2 |
+| 0.5.0: temperature 0.3, presence 0 | 93, 90 of 96 | 146, 263 | | 61, 207 | 3, 3 |
+| 0.5.0: qwen3:14b, thinking off | 82 of 96 | 521 | | 66 | 0 |
+| 0.5.0: qwen3.5:35b-a3b, thinking on (56% in system RAM) | 84, 87 of 96 | 934, 1192 | | 114, 260 | 0, 3 |
+| 0.4.1 (71 checks, 9 scenarios then) | 66 of 71 | 397 | | 198 | 4 |
 
 What the numbers say:
 
-- **Thinking off is the default** because it was as accurate and two to three times faster;
-  with thinking on the model also repeated searches it had already run. The agent loop gives
-  the model one step at a time, which is most of what thinking buys.
-- **Temperature 0.6** stays: 0.3 was not more precise and looped more often.
-- **16k context** loses almost nothing on this vault; 32k is the default because larger vaults
-  need the room for outlines and results.
-- **A bigger model does not help on a 12 GB card.** The 35B spilled into RAM, took twice as
-  long and passed fewer checks. `qwen3:14b` (previous generation) sent 45 tool calls in one step
-  and failed the daily-notes job entirely.
-- The failures that remain are concentrated in one scenario, the clean-up across 40 lecture
-  sections, where the model sometimes announces the batch edit and then emits nothing; the
-  follow-through nudge added in 0.5.0 recovers one of the two cases.
+- **Model time is 90–97% of wall time**, so the loop itself costs little; the way to be faster
+  is fewer or shorter model calls, which is what every fix below did.
+- **Thinking off is the default.** With thinking on the same build passed 112 in 444 s against
+  114 in 202 s; the loop already gives the model one step at a time to reason over.
+- **The 0.5.1 fixes came from reading the transcripts of failed runs**, not from prompt
+  tinkering: a survey call that returned an empty result the model read as "that section does
+  not exist" (the tool now says the sections exist and lack the text), a prompt that demanded
+  one giant `edit_notes` call (an 18-edit call made the 9B emit nothing; now at most 8 per call),
+  a survey whose per-section flags the model re-checked by reading every section (the result now
+  marks the sections that have every text and says to act on them), and a rejected diff after
+  which the model said "Done" (every further write in that turn is now refused and the reply
+  ends by asking the user). The clean-up scenario went from passing 0 of 3 runs to 4 of 4.
+- **qwen3.5:4b is a real option on an 8 GB card:** 108 of 115 in under two minutes. It loses on
+  the long multi-note jobs (the clean-up, listing unsummarised recordings) and repeats itself
+  more.
+- **64k context did not help** on this vault (112, slower, far more tool calls); gists bought one
+  check for a one-time 230 s of GPU work. 32k and gists on stay the defaults, because larger
+  vaults need the room and the gists make the outline useful.
+- **A bigger model does not help on a 12 GB card:** the 35B spilled into RAM and scored lower;
+  the older `qwen3:14b` sent 45 tool calls in one step.
+- Remaining misses are single checks that move between runs: a daily survey that lists one
+  one-liner day too many, a code snippet left uncollected, a conventions note written under the
+  wrong heading.
 
 Run it yourself with `npm run make-vault && npm run e2e:large` (see Development); results land
 in `bench/`.
