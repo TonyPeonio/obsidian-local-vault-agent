@@ -204,11 +204,13 @@ Each scenario is timed and counted for tool calls, model calls, model time, tool
 paths, invented links and repeated calls, and checked against facts the generator recorded.
 122 checks in all; the vault is restored after every run.
 
-Version 0.5.1, 2026-11-07/08, RTX 5070 12 GB, Ollama 0.40, 32k context unless noted. Identical
+Versions 0.5.1 and 0.5.3, 2026-11-07/08, RTX 5070 12 GB, Ollama 0.40, 32k context unless noted. Identical
 runs differ by up to 2× in wall time, so the defaults were run many times over the night.
 
 | Configuration | Checks | Seconds | Model s | Tool calls | Repeats |
 |---|---:|---:|---:|---:|---:|
+| **0.5.3, qwen3.5:9b, defaults (history capped at 32k, gists off)** | **120** | **307** | 292 | 113 | 1 |
+| 0.5.3, same, 96k context (history still capped at 32k) | 119 | 263 | 251 | 74 | 0 |
 | **qwen3.5:9b, defaults (thinking off, temp 0.6), final build, 20 scenarios / 122 checks** | **121, 120, 120** | **167, 184, 197** | 162, 178, 192 | 64, 79, 64 | 0, 1, 0 |
 | same build on the 19-scenario / 115-check set earlier the same night | 113, 113, 112 | 151, 243, 155 | 147, 237, 138 | 65, 186, 66 | 0, 0, 3 |
 | qwen3.5:9b, defaults, with the Lecture Companion scenario (20 scenarios, 122 checks) | 119, 118 of 122 | 173, 265 | 165, 238 | 59, 94 | 0, 3 |
@@ -240,6 +242,12 @@ What the numbers say:
 - **qwen3.5:4b is a real option on an 8 GB card:** 108 of 115 in under two minutes. It loses on
   the long multi-note jobs (the clean-up, listing unsummarised recordings) and repeats itself
   more.
+- **0.5.3's history cap holds at a large window:** the same build at 96k passed 119 in 263 s with
+  74 tool calls, where 0.5.1 at 64k took 308 s and 208 calls. Ollama still swapped the chat and
+  embedding models in and out 15 times during that run on the 12 GB card (once at 32k), which is
+  why the plugin brings a window above 32k back down. The 32k run's 307 s is the known clean-up
+  variance: that scenario took 157 s and 47 calls on the grep-and-read path; the other 19
+  scenarios took 150 s, the same as 0.5.1.
 - **64k context did not help** on this vault (112, slower, far more tool calls); gists bought one
   check for a one-time 230 s of GPU work on this card, which is an hour on a laptop GPU with a
   large vault. 32k stays the default and gists are off by default since 0.5.3 (one toggle to turn
