@@ -240,8 +240,11 @@ bare file names and fell back to an alphabetical prefix, so `School/`, `Projects
 dates used the budget. Folders that do not fit now collapse to one line with their note count
 and name range, and every folder stays on the map; with that fix the 3× run scored 114 of 115
 with 79 calls and a ~5.1k-token system prompt, in 316 s of which 171 s was the clean-up taking
-its known grep-and-read path (every other scenario finished in 3–41 s, as at 339 notes). Reproduce with `SCALE=3 OUT=test-vault-x3 node scripts/make-vault.mjs` and
-`VAULT_DIR=test-vault-x3 TAG=scale3 npm run e2e:large`; results are in `bench/0.5.1-scale3*.json`.
+its known grep-and-read path (every other scenario finished in 3–41 s, as at 339 notes). Three
+more runs of the final build on the 3× vault scored 110, 114 and 115 of 115 in 162–307 s, so
+the size itself costs little once the outline keeps every folder. Reproduce with
+`SCALE=3 OUT=test-vault-x3 node scripts/make-vault.mjs` and
+`VAULT_DIR=test-vault-x3 TAG=scale3 npm run e2e:large`; results are in `bench/0.5.1-scale3*`.
 
 Run it yourself with `npm run make-vault && npm run e2e:large` (see Development); results land
 in `bench/`.
