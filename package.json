@@ -1,6 +1,6 @@
 {
   "name": "local-vault-agent",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Search, compile and edit your notes with a fully local AI agent powered by Ollama. Every change is shown as a diff for approval before it is written.",
   "main": "main.js",
   "private": true,

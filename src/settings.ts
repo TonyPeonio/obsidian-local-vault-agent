@@ -32,7 +32,7 @@ export interface LocalVaultAgentSettings {
 }
 
 /** The current settings schema; `migrateSettings` brings older saved data up to it. */
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
 
 /**
  * Sampling sent with every chat request besides temperature. The Qwen3 model card warns that
@@ -62,7 +62,9 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	excludedFolders: ["templates", "Templates"],
 	extraSystemPrompt: "",
 	conventionsNote: "AGENT.md",
-	gists: true,
+	// Off by default since 0.5.3: the benchmark scored the same with gists off (114 vs 113), and the
+	// pass runs the chat model once per note, which is an hour's work for a large vault on a modest GPU.
+	gists: false,
 	settingsVersion: SETTINGS_VERSION,
 	dailyInboxHeading: "Capture",
 	dailyTopicsFolder: "Topics",
@@ -75,6 +77,10 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
  * small models loop; a user still on that default moves to the new one, a changed value stays.
  * Versions 1 and 2 defaulted thinking to "auto" (on, for Qwen3); a user still on that default
  * moves to "off", which benchmarked as fast and as accurate. "On" chosen explicitly stays.
+ * Version 4 turns gists off (same benchmark score, an hour of GPU work on a large vault) and
+ * brings a context window above 32k back to 32k once: the benchmark scored the same at 64k, the
+ * history sent to the model is capped at the 32k budget anyway, and the extra KV cache is what
+ * forces Ollama to evict the embedding model on a 12 GB card. Both can be set again.
  */
 export function migrateSettings(data: Partial<LocalVaultAgentSettings> | null): LocalVaultAgentSettings {
 	const saved = data ?? {};
@@ -82,6 +88,10 @@ export function migrateSettings(data: Partial<LocalVaultAgentSettings> | null): 
 	const settings: LocalVaultAgentSettings = { ...DEFAULT_SETTINGS, ...saved };
 	if (version < 2 && saved.temperature === 0.3) settings.temperature = DEFAULT_SETTINGS.temperature;
 	if (version < 3 && saved.thinking === "auto") settings.thinking = "off";
+	if (version < 4) {
+		if (saved.gists === true) settings.gists = false;
+		if (typeof saved.numCtx === "number" && saved.numCtx > 32768) settings.numCtx = 32768;
+	}
 	settings.settingsVersion = SETTINGS_VERSION;
 	return settings;
 }

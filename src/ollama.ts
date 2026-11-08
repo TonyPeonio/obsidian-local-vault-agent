@@ -382,3 +382,16 @@ export function canonicalModelName(name: string): string {
 export function sameModel(a: string, b: string): boolean {
 	return canonicalModelName(a) === canonicalModelName(b);
 }
+
+/**
+ * A one-line warning when the chat model is not fully on the GPU (Ollama's /api/ps reports how much
+ * of it is in VRAM), or undefined when it is. A model that spills into system RAM runs several
+ * times slower, and the usual cause is a context window too large for the card.
+ */
+export function placementWarning(running: RunningModel[], model: string): string | undefined {
+	const m = running.find((r) => sameModel(r.name, model));
+	if (!m || m.size <= 0 || m.sizeVram >= m.size * 0.98) return undefined;
+	const gb = (n: number) => (n / 1e9).toFixed(1);
+	const ctx = m.contextLength ? ` at a ${Math.round(m.contextLength / 1024)}k context` : "";
+	return `${model} is only partly on the GPU (${gb(m.sizeVram)} of ${gb(m.size)} GB${ctx}); the rest runs from system RAM, several times slower. Lower the context window in settings (32768, or 16384 on an 8 GB card) or pick a smaller model such as qwen3.5:4b.`;
+}

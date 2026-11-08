@@ -18,6 +18,9 @@ import {
 	newConversation,
 	pickSources,
 	trimHistory,
+	compactHistory,
+	historyBudget,
+	HISTORY_CTX_CAP,
 	type AgentConfig,
 } from "../src/agent";
 import { OllamaError } from "../src/ollama";
@@ -491,6 +494,51 @@ describe("trimHistory", () => {
 		const out = trimHistory(m, 1024);
 		expect(out[0].role).toBe("user");
 		expect(out[0].content).toBe("q3");
+	});
+
+	it("caps the budget at the 32k window however large num_ctx is", () => {
+		expect(historyBudget(16384)).toBe(Math.floor(16384 * 3.2 * 0.6));
+		expect(historyBudget(32768)).toBe(Math.floor(HISTORY_CTX_CAP * 3.2 * 0.6));
+		expect(historyBudget(98304)).toBe(historyBudget(32768));
+		const m = [msg("user", "q1"), msg("assistant", "a".repeat(70000)), msg("user", "q2")];
+		expect(trimHistory(m, 98304).map((x) => x.content)).toEqual(["q2"]);
+	});
+});
+
+describe("compactHistory", () => {
+	const msg = (role: ChatMessage["role"], content: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({ role, content, ...extra });
+
+	it("permanently drops reasoning and shortens tool results of finished turns", () => {
+		const m = [
+			msg("user", "q1"),
+			msg("assistant", "", { tool_calls: [{ function: { name: "t", arguments: {} } }], thinking: "hmm" }),
+			msg("tool", "x".repeat(5000), { tool_name: "t" }),
+			msg("assistant", "a1"),
+		];
+		compactHistory(m, 32768);
+		expect(m).toHaveLength(4);
+		expect(m[1].thinking).toBeUndefined();
+		expect(m[2].content.length).toBeLessThan(500);
+		expect(m[2].content).toContain("[earlier tool result shortened]");
+		// Already compact: a second pass changes nothing, so the prefix stays stable.
+		const snapshot = JSON.stringify(m);
+		compactHistory(m, 32768);
+		expect(JSON.stringify(m)).toBe(snapshot);
+	});
+
+	it("drops the oldest turns while over budget and never leaves a tool message first", () => {
+		const m = [msg("user", "q1"), msg("assistant", "a".repeat(3000)), msg("user", "q2"), msg("assistant", "b".repeat(3000))];
+		compactHistory(m, 1024);
+		expect(m.map((x) => x.content)).toEqual(["q2", "b".repeat(3000)]);
+		const t = [msg("tool", "orphan", { tool_name: "t" }), msg("user", "q")];
+		compactHistory(t, 32768);
+		expect(t[0].role).toBe("user");
+	});
+
+	it("leaves a short history alone", () => {
+		const m = [msg("user", "q1"), msg("assistant", "short")];
+		compactHistory(m, 32768);
+		expect(m).toEqual([msg("user", "q1"), msg("assistant", "short")]);
 	});
 });
 

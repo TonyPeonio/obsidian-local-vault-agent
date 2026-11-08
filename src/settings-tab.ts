@@ -104,7 +104,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Context window (num_ctx)")
-			.setDesc("Tokens the model can see at once. Ollama's default of 4096 is too small for note search; 16384 is a good start, 32768 if you have VRAM to spare.")
+			.setDesc("Tokens the model can see at once. 32768 is the default and the benchmark's setting; 16384 on an 8 GB card. Larger is not faster or more accurate: the conversation the agent carries is capped at the 32k budget regardless, and the KV cache grows with the window (a 96k window for a 9B model is several GB that the embedding model then has to be evicted for, which reloads the chat model on every search).")
 			.addText((t) =>
 				t.setValue(String(s.numCtx)).onChange(async (v) => {
 					const n = parseInt(v, 10);
@@ -220,7 +220,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Note gists")
-			.setDesc("Write a one-sentence gist of every note with the chat model (in the background, paused while you chat) and show it in the vault outline the agent sees on every message, so it knows what each note is about without reading it.")
+			.setDesc("Write a one-sentence gist of every note with the chat model (in the background, paused while you chat) and show it in the vault outline the agent sees on every message. Off by default: the benchmark scored the same without it, and the pass runs the chat model once per note, which on a modest GPU is an hour for a large vault. The embedding index is separate and stays on.")
 			.addToggle((t) =>
 				t.setValue(s.gists).onChange(async (v) => {
 					s.gists = v;

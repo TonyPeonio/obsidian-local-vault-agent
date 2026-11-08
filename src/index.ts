@@ -284,7 +284,7 @@ export class SemanticIndex {
 		this.processing = true;
 		this.abort = new AbortController();
 		const signal = this.abort.signal;
-		const batchSize = this.opts.batchSize ?? 16;
+		const batchSize = this.opts.batchSize ?? 64;
 		try {
 			while (this.queue.size > 0 && !signal.aborted) {
 				const path = this.queue.values().next().value as string;

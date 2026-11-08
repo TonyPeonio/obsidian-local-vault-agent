@@ -22,6 +22,16 @@ describe("migrateSettings", () => {
 		expect(migrateSettings({ thinking: "auto", settingsVersion: 3 }).thinking).toBe("auto");
 	});
 
+	it("version 4: gists go off and a context window above 32k comes back to 32k, once", () => {
+		expect(DEFAULT_SETTINGS.gists).toBe(false);
+		expect(migrateSettings({ gists: true, settingsVersion: 3 }).gists).toBe(false);
+		expect(migrateSettings({ gists: true, settingsVersion: 4 }).gists).toBe(true);
+		expect(migrateSettings({ numCtx: 98304, settingsVersion: 3 }).numCtx).toBe(32768);
+		expect(migrateSettings({ numCtx: 98304 }).numCtx).toBe(32768);
+		expect(migrateSettings({ numCtx: 16384, settingsVersion: 3 }).numCtx).toBe(16384);
+		expect(migrateSettings({ numCtx: 98304, settingsVersion: 4 }).numCtx).toBe(98304);
+	});
+
 	it("keeps a temperature the user chose", () => {
 		expect(migrateSettings({ temperature: 0.1 }).temperature).toBe(0.1);
 		expect(migrateSettings({ temperature: 0.3, settingsVersion: 2 }).temperature).toBe(0.3);

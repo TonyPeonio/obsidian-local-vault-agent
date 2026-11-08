@@ -419,6 +419,7 @@ export class AgentView extends ItemView {
 			this.setSendState(false);
 			this.plugin.agentBusy = false;
 			this.plugin.saveChat(this.conversation.messages);
+			void this.plugin.checkPlacementOnce();
 			this.updateStatus();
 			this.scrollToBottom();
 		}

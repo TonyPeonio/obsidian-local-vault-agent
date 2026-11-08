@@ -364,6 +364,7 @@ export class Agent {
 		const now = this.deps.now ? this.deps.now() : new Date();
 		const toolByName = new Map(tools.map((t) => [t.name, t]));
 
+		compactHistory(conversation.messages, cfg.numCtx);
 		const turn = conversation.messages.length;
 		conversation.messages.push({ role: "user", content: userText });
 		let conventions: string | null = null;
@@ -685,10 +686,49 @@ export class Agent {
  * system prompt, tool schemas and the reply. Old tool results are shortened first;
  * whole early turns are dropped after that.
  */
+/**
+ * The context size the history budget is derived from, whatever `num_ctx` is set to. The 20-scenario
+ * benchmark scored the same at 32k and 64k; a larger window only let conversations grow to 60k
+ * tokens, which costs seconds of prefill on every cache miss and gigabytes of KV cache that the
+ * embedding model then has to be evicted for. Above this, extra context is left for Ollama's own
+ * headroom and for big tool results inside one turn.
+ */
+export const HISTORY_CTX_CAP = 32768;
+
+/** Characters of conversation sent to the model per step (about 0.6 of the capped window). */
+export function historyBudget(numCtx: number): number {
+	return Math.floor(Math.min(numCtx, HISTORY_CTX_CAP) * 3.2 * 0.6);
+}
+
+function messageSize(m: ChatMessage): number {
+	return m.content.length + (m.thinking?.length ?? 0) + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0);
+}
+
+/**
+ * Compacts finished turns in place before a new one starts: reasoning is dropped, tool results are
+ * cut to 400 characters, and the oldest turns go when the rest is still over budget. Doing this once
+ * per turn, rather than on every step, keeps the messages sent to Ollama append-only within a turn,
+ * so its prefix cache stays valid and each step prefills only what is new.
+ */
+export function compactHistory(messages: ChatMessage[], numCtx: number): void {
+	const budget = historyBudget(numCtx);
+	for (const m of messages) {
+		if (m.role === "assistant" && m.thinking) delete m.thinking;
+		if (m.role === "tool" && m.content.length > 400) m.content = m.content.slice(0, 400) + "\n[earlier tool result shortened]";
+	}
+	let total = messages.reduce((n, m) => n + messageSize(m), 0);
+	while (total > budget) {
+		const firstUser = messages.findIndex((m) => m.role === "user");
+		const nextUser = messages.findIndex((m, i) => i > firstUser && m.role === "user");
+		if (nextUser < 0) break;
+		total -= messages.splice(0, nextUser).reduce((n, m) => n + messageSize(m), 0);
+	}
+	while (messages.length && messages[0].role !== "user") messages.shift();
+}
+
 export function trimHistory(messages: ChatMessage[], numCtx: number, onShortened?: (m: ChatMessage) => void): ChatMessage[] {
-	const budget = Math.floor(numCtx * 3.2 * 0.6);
-	const size = (m: ChatMessage) =>
-		m.content.length + (m.thinking?.length ?? 0) + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0);
+	const budget = historyBudget(numCtx);
+	const size = messageSize;
 
 	let out = messages.map((m) => ({ ...m }));
 	// Reasoning from earlier turns is never useful to the model again; drop it unconditionally.

@@ -5,7 +5,7 @@ import { SUGGESTIONS_NOTE, gardenVault, renderGardenReport } from "./gardener";
 import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, type IndexData, type IndexStatus } from "./index";
 import { ObsidianVault } from "./obsidian-vault";
-import { OllamaClient, sameModel } from "./ollama";
+import { OllamaClient, placementWarning, sameModel } from "./ollama";
 import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
 import { editSelectionPrompt, processDailyNotesPrompt, reformatPrompt, summarizePrompt } from "./prompts";
 import { fuseRankings, keywordSearch } from "./search";
@@ -355,6 +355,24 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			}
 		} catch (err) {
 			new Notice(`Local Vault Agent cannot reach Ollama at ${this.settings.ollamaUrl} (${(err as Error).message}). Start Ollama or fix the URL in settings.`, 12000);
+		}
+	}
+
+	private placementChecked = false;
+
+	/**
+	 * One Notice per session, after a turn, when the chat model is only partly on the GPU: the usual
+	 * reason the agent feels slow, and one the user cannot see from inside Obsidian.
+	 */
+	async checkPlacementOnce(): Promise<void> {
+		if (this.placementChecked) return;
+		try {
+			const warning = placementWarning(await this.client.ps(), this.settings.model);
+			if (!warning) return;
+			this.placementChecked = true;
+			new Notice(`Local Vault Agent: ${warning}`, 15000);
+		} catch {
+			// Ollama unreachable or an older server without /api/ps: nothing to say.
 		}
 	}
 

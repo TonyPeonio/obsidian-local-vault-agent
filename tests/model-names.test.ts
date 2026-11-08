@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { canonicalModelName, sameModel } from "../src/ollama";
+import { canonicalModelName, placementWarning, sameModel } from "../src/ollama";
+
+describe("placementWarning", () => {
+	it("warns when the chat model is partly in system RAM and names the fix", () => {
+		const running = [
+			{ name: "qwen3.5:9b", size: 12.6e9, sizeVram: 9.1e9, contextLength: 98304 },
+			{ name: "nomic-embed-text:latest", size: 0.3e9, sizeVram: 0.3e9 },
+		];
+		expect(placementWarning(running, "qwen3.5:9b")).toMatch(/only partly on the GPU \(9\.1 of 12\.6 GB at a 96k context\).*Lower the context window/);
+		expect(placementWarning(running, "nomic-embed-text")).toBeUndefined();
+		expect(placementWarning([{ name: "qwen3.5:9b", size: 8e9, sizeVram: 8e9 }], "qwen3.5:9b")).toBeUndefined();
+		expect(placementWarning([], "qwen3.5:9b")).toBeUndefined();
+	});
+});
 
 describe("model names", () => {
 	it("treats an untagged name and its :latest form as the same model, case-insensitively", () => {

@@ -150,14 +150,22 @@ incrementally when you change notes. Search results merge semantic and keyword r
 
 ## Settings worth knowing
 
-- **Context window (`num_ctx`)** — default 32768. Ollama's own default of 4096 is far too small
-  for reading notes; if answers seem to ignore what the tools returned, this is usually why. Set
-  `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` on the Ollama server: the KV cache
-  halves with no visible quality loss. Measured on a 12 GB RTX 5070 with `qwen3.5:9b` (Q4_K_M)
-  and those two settings: 32k → 8.1 GB used, 85 tok/s; 64k → 8.9 GB, 81 tok/s; 128k → ~9.6 GB,
-  76 tok/s — all on the GPU. Everything the agent does scales with the window (vault outline,
-  gists, tool-result budgets), so on a card like that 65536–98304 is the sweet spot. `qwen3:14b`
-  needs ~9.3 GB for weights alone and tops out around 32k.
+- **Context window (`num_ctx`)** — default 32768, and leave it there. Ollama's own default of
+  4096 is far too small for reading notes; if answers seem to ignore what the tools returned, this
+  is usually why. Larger is not better: the benchmark scored the same at 64k, and since 0.5.3 the
+  conversation the agent carries is capped at the 32k budget whatever the window is, so a bigger
+  window only buys KV cache. That cache is what hurts on a 12 GB card: `qwen3.5:9b` at 96k needs
+  several GB more than at 32k, Ollama then evicts the embedding model to make room, and every
+  search step reloads the chat model and re-reads the whole conversation. 0.5.3 brings a window
+  above 32k back to 32k once; set it again if you have the VRAM. `OLLAMA_FLASH_ATTENTION=1` and
+  `OLLAMA_KV_CACHE_TYPE=q8_0` on the Ollama server halve the KV cache with no visible quality
+  loss. `qwen3:14b` needs ~9.3 GB for weights alone and tops out around 32k.
+- **If it feels slow** — in order of likelihood: the model is partly in system RAM (the plugin
+  now says so after a turn, with the fix: a smaller window or `qwen3.5:4b`); thinking is on (off
+  by default since 0.5.0, as fast and as accurate on the benchmark); the gist pass is running
+  (off by default since 0.5.3; it is the chat model once per note); or Ollama was started with
+  another app's model still loaded. On a 12 GB RTX 5070 a 20-scenario benchmark run takes about
+  three minutes with the defaults, roughly nine seconds per question with tool calls.
 - **Temperature** — default 0.6, with top_p 0.9, top_k 20 and a small presence penalty always
   sent. That follows the Qwen3 model card, which warns that near-greedy decoding "can lead to
   performance degradation and endless repetitions": at 0.3 we watched a 9B model repeat the same
@@ -233,8 +241,9 @@ What the numbers say:
   the long multi-note jobs (the clean-up, listing unsummarised recordings) and repeats itself
   more.
 - **64k context did not help** on this vault (112, slower, far more tool calls); gists bought one
-  check for a one-time 230 s of GPU work. 32k and gists on stay the defaults, because larger
-  vaults need the room and the gists make the outline useful.
+  check for a one-time 230 s of GPU work on this card, which is an hour on a laptop GPU with a
+  large vault. 32k stays the default and gists are off by default since 0.5.3 (one toggle to turn
+  on); the embedding index, which search depends on, is separate and stays on.
 - **A bigger model does not help on a 12 GB card:** the 35B spilled into RAM and scored lower;
   the older `qwen3:14b` sent 45 tool calls in one step.
 - Remaining misses are single checks that move between runs: a daily survey that lists one
