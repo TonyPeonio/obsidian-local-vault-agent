@@ -16,6 +16,9 @@ const MATRIX = {
 	think: { THINK: "on" },
 	temp03: { TEMPERATURE: "0.3", PRESENCE: "0" },
 	ctx16: { NUM_CTX: "16384" },
+	ctx64: { NUM_CTX: "65536" },
+	gists: { GISTS: "1" },
+	q4b: { MODEL: "qwen3.5:4b" },
 	q14: { MODEL: "qwen3:14b" },
 	big: { MODEL: "qwen3.5:35b-a3b" },
 };
@@ -56,10 +59,12 @@ function load(file) {
 }
 
 function printTable(results) {
-	console.log("\n| Config | Model | Think | Temp | Presence | Checks | Seconds | Calls | Errors | Guessed | Repeats |");
-	console.log("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+	console.log("\n| Config | Model | Think | Temp | Presence | Checks | Seconds | Model s | Steps | Calls | Errors | Guessed | Repeats |");
+	console.log("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
 	for (const r of results) {
 		const t = r.totals;
-		console.log(`| ${r.tag || r.file} | ${r.model} | ${r.think} | ${r.temperature ?? ""} | ${r.presencePenalty ?? ""} | ${t.passed}/${t.checks} | ${t.seconds} | ${t.calls} | ${t.errors} | ${t.misses} | ${t.repeats} |`);
+		console.log(
+			`| ${r.tag || r.file} | ${r.model} | ${r.think} | ${r.temperature ?? ""} | ${r.presencePenalty ?? ""} | ${t.passed}/${t.checks} | ${t.seconds} | ${t.modelSeconds ?? ""} | ${t.steps ?? ""} | ${t.calls} | ${t.errors} | ${t.misses} | ${t.repeats} |`,
+		);
 	}
 }

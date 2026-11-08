@@ -632,17 +632,47 @@ describe("edit_notes line_contains", () => {
 });
 
 describe("list_sections", () => {
+	it("marks sections that contain every text and says to act on them without reading", async () => {
+		const vault = freshVault();
+		vault.seed("S/L.md", "# L\n\n## a\n\n![[Recording 1.m4a]]\n\n### Summary\n\n- x\n\n## b\n\n![[Recording 2.m4a]]\n\n- no summary\n");
+		const { ctx } = makeCtx(vault);
+		const out = await listSections.execute({ containing: ["![[Recording", "### Summary"], folder: "S", level: 2 }, ctx);
+		expect(out).toContain("## a: ![[Recording yes, ### Summary yes → all");
+		expect(out).toContain("## b: ![[Recording yes, ### Summary no\n");
+		expect(out).toMatch(/1 section marked "→ all" has every text\. These flags are exact/);
+	});
+
+	it("treats a containing text that is just the heading as the heading, and surveys", async () => {
+		const vault = freshVault();
+		vault.seed("Daily/2026-11-01.md", "# D\n\n## Capture\n\n- one\n- two\n");
+		vault.seed("Daily/2026-11-02.md", "# D\n\n## Capture\n");
+		const { ctx } = makeCtx(vault);
+		const out = await listSections.execute({ containing: ["## Capture"], heading: "Capture", folder: "Daily/" }, ctx);
+		expect(out).toMatch(/^2 sections \(non-empty lines/);
+		expect(out).toContain("## Capture (2 lines");
+		expect(out).toContain("(empty)");
+	});
+
+	it("says the sections exist when none contains the texts, instead of 'no section'", async () => {
+		const vault = freshVault();
+		vault.seed("Daily/2026-11-01.md", "# D\n\n## Capture\n\n- one\n");
+		const { ctx } = makeCtx(vault);
+		const out = await listSections.execute({ containing: ["B-cell"], heading: "Capture", folder: "Daily" }, ctx);
+		expect(out).toMatch(/^1 section headed "capture" under daily\/ exists?, but none contains "B-cell"/);
+		expect(await listSections.execute({ containing: ["B-cell"], heading: "Nope", folder: "Daily" }, ctx)).toMatch(/^No section headed "nope"/);
+	});
+
 	it("flags which sections contain each text", async () => {
 		const vault = freshVault();
 		vault.seed("S/L.md", "# L\n\n## a\n\n![[Recording 1.m4a]]\n\n### Summary\n\n- x\n\n## b\n\n![[Recording 2.m4a]]\n\n## c\n\nnothing\n");
 		const { ctx } = makeCtx(vault);
 		const out = await listSections.execute({ containing: ["![[Recording", "### Summary"], folder: "S", level: 2 }, ctx);
 		expect(out).toMatch(/^2 sections/);
-		expect(out).toContain("S/L.md\n  ## a: ![[Recording yes, ### Summary yes\n  ## b: ![[Recording yes, ### Summary no");
+		expect(out).toContain("S/L.md\n  ## a: ![[Recording yes, ### Summary yes → all\n  ## b: ![[Recording yes, ### Summary no");
 		expect(out).not.toContain("## c");
 		const all = await listSections.execute({ containing: ["zzz"], path: "S/L", only_matching: false }, ctx);
 		expect(all).toMatch(/^5 sections/);
-		expect(await listSections.execute({ containing: ["zzz"] }, ctx)).toMatch(/^No section contains/);
+		expect(await listSections.execute({ containing: ["zzz"] }, ctx)).toMatch(/^\d+ sections exist, but none contains "zzz"/);
 		await expect(listSections.execute({ containing: [] }, ctx)).rejects.toThrow(/heading.*containing/);
 	});
 

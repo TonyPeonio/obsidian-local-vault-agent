@@ -89,6 +89,16 @@ export const AUTO_CONTINUE_TEXT =
 
 export const GROUNDING_PREFIX = "Grounding check:";
 
+export const REJECTED_WRITE_NOTICE =
+	"Not executed: the user rejected a change earlier in this turn, so no further changes are made until they answer. Tell them what was rejected and ask what they want instead.";
+
+export const REJECTION_QUESTION = "The change was not applied. What would you like me to do instead?";
+
+/** After a rejection the reply must hand the decision back; add the question when the model did not. */
+export function withRejectionQuestion(content: string): string {
+	return /\?\s*$/.test(content.trim()) || content.includes(REJECTION_QUESTION) ? content : `${content.trimEnd()}\n\n${REJECTION_QUESTION}`;
+}
+
 export const FOLLOW_THROUGH_TEXT =
 	"You described your next step instead of taking it. Do it now with the tools (reading needs no permission; each change goes through the approval dialog), then give the final answer. Never end a reply by announcing what you will do.";
 
@@ -114,6 +124,24 @@ export function announcesNextStep(text: string): boolean {
 }
 
 const READ_TOOLS = new Set(["read_note", "read_section", "get_active_note"]);
+
+/**
+ * Which search hits an uncited answer should name: the hits whose note name or a folder of
+ * theirs (4+ characters) is mentioned in the answer; failing that, all of them when there are
+ * at most three. Ten hits the model ignored are not sources.
+ */
+export function pickSources(answer: string, hits: string[]): string[] {
+	if (hits.length === 0) return [];
+	const lower = answer.toLowerCase();
+	const mentioned = hits.filter((p) =>
+		p
+			.replace(/\.md$/i, "")
+			.split("/")
+			.some((seg) => seg.trim().length >= 4 && lower.includes(seg.trim().toLowerCase())),
+	);
+	if (mentioned.length) return mentioned;
+	return hits.length <= 3 ? hits : [];
+}
 
 /** Appends "Sources: [[A]], [[B]]" (at most six) to an answer that cited nothing. */
 export function withSources(content: string, paths: string[]): string {
@@ -254,7 +282,7 @@ export function buildSystemPrompt(
 		"- To survey one section across many notes (which daily notes have a full '## Capture', which lecture sections are empty), ONE list_sections call with heading: 'Capture' and the folder lists that section of every note with its size and first line; grep_vault with the heading as the pattern and context: 8 shows more of each. Then read_section only the few that matter. Never read the notes one by one.",
 		"- A tool call with the same arguments returns the same result; never repeat one. When a search finds nothing, that is the answer for that pattern: change the pattern, the folder or the tool, or report it.",
 		"- search_passages and search_notes find notes by topic (meaning and keywords). They cannot find notes that are 'messy', 'long', 'empty' or 'unstructured': such structural questions are answered by list_notes (sizes), list_sections (which sections contain what), grep_vault (headings, patterns) and the outline.",
-		"- Clean-ups across many notes: do not survey everything first and act later — you will run out of steps. Find the candidates with grep_vault (it shows each match's heading), decide per match, then apply all the edits with ONE edit_notes call (a list of {path, old_text, new_text}). old_text is the smallest unique passage — normally the single matching line, never a whole section. Example: list_sections({containing: ['![[Recording', '### Summary']}) tells you per section which it has; every section with both becomes one edit_notes item {path, heading, line_contains: '![[Recording', new_text: ''}. That is the whole job in two steps; never read the sections one by one.",
+		"- Clean-ups across many notes: do not survey everything first and act later — you will run out of steps. Find the candidates with grep_vault (it shows each match's heading), decide per match, then apply the edits with edit_notes (a list of {path, old_text, new_text}), at most 8 edits per call — one call per note is a natural split — and the next call in the next step. old_text is the smallest unique passage — normally the single matching line, never a whole section. Example: list_sections({containing: ['![[Recording', '### Summary']}) tells you per section which it has; every section with both becomes one edit_notes item {path, heading, line_contains: '![[Recording', new_text: ''}. Survey once, then one edit_notes call per note; never read the sections one by one, and never describe an edit instead of making it.",
 		"- Tool results are authoritative: a successful edit result means the note is written, so do not read it again to verify, and do not re-check notes that were already handled.",
 		"",
 		"Grounding and style:",
@@ -414,16 +442,27 @@ export class Agent {
 			const assistant = response.message;
 			if (assistant.content) assistant.content = linkifyNotePaths(assistant.content, vault);
 			// An answer built from notes it read but citing none of them gets a sources footer.
-			// A grep that hit a few notes counts too: models answer "it was on 2026-11-06" straight
-			// from the matching lines without citing the note they came from.
-			const sources = readPaths.length ? readPaths : hitPaths.length <= 3 ? hitPaths : [];
+			// A grep or passage search that hit a few notes counts too: models answer "it was on
+			// 2026-11-06" straight from the matching lines without citing the note they came from.
+			const sources = readPaths.length ? readPaths : pickSources(assistant.content, hitPaths);
 			if (!assistant.tool_calls?.length && writes === 0 && sources.length > 0 && !/\[\[/.test(assistant.content) && assistant.content.trim()) {
 				assistant.content = withSources(assistant.content, sources);
 			}
+			// A rejected change ends with the user's decision, whatever the model wrote.
+			if (!assistant.tool_calls?.length && rejected && assistant.content.trim()) assistant.content = withRejectionQuestion(assistant.content);
 			conversation.messages.push(assistant);
 			callbacks.onAssistantDone?.(assistant);
 			if (response.promptTokens !== undefined) {
-				callbacks.onUsage?.({ promptTokens: response.promptTokens, completionTokens: response.completionTokens ?? 0, numCtx: cfg.numCtx });
+				// Ollama reports durations in nanoseconds.
+				const ms = (ns: number | undefined) => (ns === undefined ? undefined : Math.round(ns / 1e6));
+				callbacks.onUsage?.({
+					promptTokens: response.promptTokens,
+					completionTokens: response.completionTokens ?? 0,
+					numCtx: cfg.numCtx,
+					promptEvalMs: ms(response.promptEvalDuration),
+					evalMs: ms(response.evalDuration),
+					loadMs: ms(response.loadDuration),
+				});
 			}
 
 			const calls = assistant.tool_calls ?? [];
@@ -485,6 +524,12 @@ export class Agent {
 				}
 				callbacks.onToolStart?.(call);
 				const tool = toolByName.get(call.function.name);
+				if (rejected && tool?.mutates) {
+					// The user said no to a write this turn: every further write waits for their answer.
+					callbacks.onToolDone?.(call, REJECTED_WRITE_NOTICE, false);
+					conversation.messages.push({ role: "tool", content: REJECTED_WRITE_NOTICE, tool_name: call.function.name });
+					continue;
+				}
 				const key = callKey(call);
 				const prior = tool && !tool.mutates ? callCache.get(key) : undefined;
 				if (prior !== undefined) {
@@ -529,6 +574,8 @@ export class Agent {
 						if (header && !readPaths.includes(header[1].trim())) readPaths.push(header[1].trim());
 					} else if (call.function.name === "grep_vault") {
 						for (const m of result.matchAll(/^(.+?\.md):\d+[ :-]/gm)) if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
+					} else if (call.function.name === "search_passages") {
+						for (const m of result.matchAll(/^--- \[\d+\] (.+?)(?: › .*)? \(score /gm)) if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
 					}
 				}
 			}

@@ -6,6 +6,8 @@ import {
 	announcesNextStep,
 	MAX_AUTO_CONTINUES,
 	MAX_CALLS_PER_STEP,
+	REJECTED_WRITE_NOTICE,
+	REJECTION_QUESTION,
 	REPEATED_CALLS_WRAP_UP,
 	buildSystemPrompt,
 	callKey,
@@ -14,6 +16,7 @@ import {
 	looksLikeChoiceQuestion,
 	looksLikePermissionQuestion,
 	newConversation,
+	pickSources,
 	trimHistory,
 	type AgentConfig,
 } from "../src/agent";
@@ -111,7 +114,27 @@ describe("Agent.run", () => {
 		await agent.run(conv, "x", {});
 		expect(approvals).toEqual(["Edit Ideas/Sensors.md (1 replacement)"]);
 		expect(await vault.read("Ideas/Sensors.md")).toBe("Hall sensors are cheap.");
-		expect(conv.messages[2].content).toMatch(/rejected/);
+		expect(conv.messages[2].content).toMatch(/REJECTED/);
+		// "ok" is not a question: the decision is handed back to the user regardless.
+		expect(conv.messages.at(-1)?.content).toBe(`ok\n\n${REJECTION_QUESTION}`);
+	});
+
+	it("refuses every further write after a rejection without asking the user again", async () => {
+		const { agent, vault, approvals } = setup(
+			[
+				{ tool: "edit_note", args: { path: "Ideas/Sensors", old_text: "cheap", new_text: "pricey" } },
+				{ tool: "edit_note", args: { path: "Ideas/Sensors", old_text: "cheap", new_text: "costly" } },
+				{ content: "I could not apply it. Would you prefer a footnote instead?" },
+			],
+			{ decision: "reject" },
+		);
+		const conv = newConversation();
+		const results: string[] = [];
+		await agent.run(conv, "x", { onToolDone: (_c, r) => results.push(r) });
+		expect(approvals).toHaveLength(1);
+		expect(results[1]).toBe(REJECTED_WRITE_NOTICE);
+		expect(await vault.read("Ideas/Sensors.md")).toBe("Hall sensors are cheap.");
+		expect(conv.messages.at(-1)?.content).toBe("I could not apply it. Would you prefer a footnote instead?");
 	});
 
 	it("'approve all' skips later prompts in the same conversation", async () => {
@@ -538,6 +561,15 @@ describe("context guards", () => {
 });
 
 describe("sources footer", () => {
+	it("picks the search hits the answer mentions, or all of a few", () => {
+		const hits = ["School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md", "Projects/Chess Robot.md", "Daily/2026-10-14.md", "Recipes/Pasta.md"];
+		expect(pickSources("The lecture in CSCI 470 - Machine Learning was on 2026-11-06.", hits)).toEqual([hits[0]]);
+		expect(pickSources("It was decided on 2026-10-14.", hits)).toEqual([hits[2]]);
+		expect(pickSources("Nothing specific.", hits)).toEqual([]);
+		expect(pickSources("Nothing specific.", hits.slice(0, 3))).toEqual(hits.slice(0, 3));
+		expect(pickSources("x", [])).toEqual([]);
+	});
+
 	it("cites the notes a grep matched when the answer came straight from the matching lines", async () => {
 		const { agent } = setup([{ tool: "grep_vault", args: { pattern: "electromagnet" } }, { content: "It moves pieces with an electromagnet." }]);
 		const conv = newConversation();

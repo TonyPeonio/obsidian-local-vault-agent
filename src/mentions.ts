@@ -44,7 +44,7 @@ export async function attachMentions(text: string, vault: VaultAccess, maxTotalC
 		parts.push(`--- Attached note: ${m.path} ---\n${body}`);
 		attached.push(m.path);
 	}
-	const message = `${text}\n\n(The user attached the following note${attached.length === 1 ? "" : "s"} to this message. They are already read; do not read them again.)\n\n${parts.join("\n\n")}`;
+	const message = `${text}\n\n(The user attached the following note${attached.length === 1 ? "" : "s"} to this message. They are already read; do not read them again. If they do not fully answer the question, find the rest in the vault with search_passages or by following their wikilinks before saying it is not recorded.)\n\n${parts.join("\n\n")}`;
 	return { message, attached };
 }
 

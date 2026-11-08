@@ -121,6 +121,12 @@ export interface UsageInfo {
 	promptTokens: number;
 	completionTokens: number;
 	numCtx: number;
+	/** Milliseconds Ollama spent reading the prompt (small when the prefix cache was hit). */
+	promptEvalMs?: number;
+	/** Milliseconds Ollama spent generating. */
+	evalMs?: number;
+	/** Milliseconds spent loading the model, when it was not resident. */
+	loadMs?: number;
 }
 
 export interface ApprovalRequest {

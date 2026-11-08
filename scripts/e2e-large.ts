@@ -112,13 +112,15 @@ async function main() {
 		extraSystemPrompt: "",
 	};
 	const undo = new UndoStack();
+	/** What the approval dialog answers; the rejection scenario flips it to "reject". */
+	let approveMode: "approve" | "reject" = "approve";
 	const agent = new Agent({
 		client,
 		vault,
 		tools: ALL_TOOLS,
 		search: async (q, limit) => fuseRankings([await index.search(q, limit * 2), await keywordSearch(vault, q, limit * 2)], limit),
 		searchPassages: (q, limit) => index.searchPassages(q, limit),
-		approve: async () => "approve",
+		approve: async () => approveMode,
 		getConfig: () => cfg,
 		undo,
 		readConventions: async () => (vault.exists("AGENT.md") ? vault.read("AGENT.md") : null),
@@ -139,14 +141,35 @@ async function main() {
 		misses: number;
 		/** Identical calls refused by the agent's repeated-call guard. */
 		repeats: number;
+		/** Model calls (steps) in the scenario. */
+		steps: number;
+		/** Milliseconds Ollama spent reading prompts; small per step when the prefix cache hits. */
+		promptMs: number;
+		/** Milliseconds Ollama spent generating. */
+		evalMs: number;
 		pass: number;
 		fail: number;
+		/** Set when ONLY left this scenario out; the post-checks that follow it then act on a dummy row. */
+		skipped?: boolean;
 	}
 	const rows: Row[] = [];
 	let failures = 0;
 
-	async function scenario(id: string, title: string, prompt: string, checks: (answer: string, tools: string[]) => [string, boolean][], opts: { attach?: boolean } = {}) {
-		if (ONLY && !ONLY.split(",").includes(id)) return;
+	interface ScenarioOptions {
+		/** Resolve [[mentions]] in the prompt as the composer does. */
+		attach?: boolean;
+		/** Continue an earlier conversation (follow-up turns) instead of starting a new one. */
+		conversation?: ReturnType<typeof newConversation>;
+		/** Answer every approval dialog with this; default "approve". */
+		approve?: "approve" | "reject";
+		/** The scenario expects the agent to end by asking the user something. */
+		expectQuestion?: boolean;
+	}
+	async function scenario(id: string, title: string, prompt: string, checks: (answer: string, tools: string[]) => [string, boolean][], opts: ScenarioOptions = {}) {
+		if (ONLY && !ONLY.split(",").includes(id)) {
+			rows.push({ id, ms: 0, calls: 0, prompt: 0, errors: 0, misses: 0, repeats: 0, steps: 0, promptMs: 0, evalMs: 0, pass: 0, fail: 0, skipped: true });
+			return;
+		}
 		console.log(`\n=== [${id}] ${title}\n> ${prompt.slice(0, 160)}`);
 		const start = Date.now();
 		const tools: string[] = [];
@@ -156,10 +179,17 @@ async function main() {
 		let misses = 0;
 		let repeats = 0;
 		let message = prompt;
+		let steps = 0;
+		let promptMs = 0;
+		let evalMs = 0;
 		if (opts.attach) message = (await attachMentions(prompt, vault, 24000)).message;
+		approveMode = opts.approve ?? "approve";
+		// The benchmark auto-approves writes; a rejection scenario needs the dialog path instead.
+		cfg.autoApprove = approveMode !== "reject";
 		try {
-			await agent.run(newConversation(), message, {
-				onToolStart: (c) => console.log(`  [tool] ${c.function.name} ${JSON.stringify(c.function.arguments).slice(0, 110)}`),
+			await agent.run(opts.conversation ?? newConversation(), message, {
+				// Writes are logged in full (well, 600 chars) so a wrong edit can be diagnosed from the log.
+				onToolStart: (c) => console.log(`  [tool] ${c.function.name} ${JSON.stringify(c.function.arguments).slice(0, /^(edit_note|edit_notes|replace_section|replace_note|create_note|append_to_note)$/.test(c.function.name) ? 600 : 110)}`),
 				onToolDone: (c, r, ok) => {
 					tools.push(c.function.name);
 					if (!ok) {
@@ -174,7 +204,12 @@ async function main() {
 					if (m.content.trim() && m.tool_calls?.length) console.log(`  [said] ${m.content.trim().replace(/\s+/g, " ").slice(0, 160)}`);
 				},
 				onAutoContinue: (n) => console.log(`  [auto-continue] ${n.slice(0, 50)}…`),
-				onUsage: (u) => (maxPrompt = Math.max(maxPrompt, u.promptTokens)),
+				onUsage: (u) => {
+					maxPrompt = Math.max(maxPrompt, u.promptTokens);
+					steps++;
+					promptMs += u.promptEvalMs ?? 0;
+					evalMs += u.evalMs ?? 0;
+				},
 			});
 		} catch (err) {
 			console.log(`  [error] ${(err as Error).message}`);
@@ -184,7 +219,7 @@ async function main() {
 		let pass = 0;
 		let fail = 0;
 		const generic: [string, boolean][] = [
-			["did not end on a permission question", !looksLikePermissionQuestion(answer)],
+			opts.expectQuestion ? ["ended by asking the user", /\?\s*$/m.test(answer.trim())] : ["did not end on a permission question", !looksLikePermissionQuestion(answer)],
 			[`no repeated tool calls (${repeats})`, repeats === 0],
 			[`at most 2 guessed paths (${misses})`, misses <= 2],
 		];
@@ -196,7 +231,7 @@ async function main() {
 				failures++;
 			}
 		}
-		rows.push({ id, ms, calls: tools.length, prompt: maxPrompt, errors, misses, repeats, pass, fail });
+		rows.push({ id, ms, calls: tools.length, prompt: maxPrompt, errors, misses, repeats, steps, promptMs, evalMs, pass, fail });
 	}
 
 	const iso = facts.lectures.find((l) => l.term.includes("isolation forest"))!;
@@ -207,11 +242,42 @@ async function main() {
 		["used ≤ 4 tool calls", tools.length <= 4],
 	]);
 
-	await scenario("qa-decision", "Cross-note decision", "What did I decide about the chess robot's power supply, and when?", (a, tools) => [
-		["says 24V", /24 ?V/i.test(a)],
-		["gives 2026-10-14", a.includes("2026-10-14")],
-		["used ≤ 5 tool calls", tools.length <= 5],
-	]);
+	const decisionConversation = newConversation();
+	await scenario(
+		"qa-decision",
+		"Cross-note decision",
+		"What did I decide about the chess robot's power supply, and when?",
+		(a, tools) => [
+			["says 24V", /24 ?V/i.test(a)],
+			["gives 2026-10-14", a.includes("2026-10-14")],
+			["used ≤ 5 tool calls", tools.length <= 5],
+		],
+		{ conversation: decisionConversation },
+	);
+
+	// A follow-up turn: the answer is already in the conversation, so no new search is needed.
+	await scenario(
+		"follow-up",
+		"Follow-up turn uses the conversation",
+		"Why did I pick that voltage?",
+		(a, tools) => [
+			["gives a reason (stall / torque / current / motors)", /stall|torque|current|motor|power|brown/i.test(a)],
+			["used ≤ 2 tool calls", tools.length <= 2],
+		],
+		{ conversation: decisionConversation },
+	);
+
+	// A trap: nothing in the vault says anything about wheels. The right answer is "nothing".
+	await scenario("hallucination", "A question with no answer in the vault", "What did I decide about the chess robot's wheels?", (a, tools) => {
+		const links = [...a.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g)].map((m) => m[1].trim());
+		const unresolved = links.filter((l) => !vault.resolve(l));
+		return [
+			["says the notes have nothing about wheels", /\b(no|not|nothing|never|doesn't|does not|isn't|aren't|don't|do not)\b[^.\n]{0,120}\b(wheel|mention|decision|record|found|discuss)/i.test(a) || /gantry|magnet|electromagnet/i.test(a)],
+			["invents no wheel decision", !/\b(decided|chose|went with|settled on)\b[^.\n]{0,60}\bwheel/i.test(a) || /\b(no|not|nothing|never)\b/i.test(a)],
+			[`every wikilink resolves (${unresolved.length} invented)`, unresolved.length === 0],
+			["used ≤ 5 tool calls", tools.length <= 5],
+		];
+	});
 
 	await scenario("qa-person", "Person lookup", "Who helped me build the chess robot frame?", (a) => [
 		["names Marcus Vale", /Marcus Vale/.test(a)],
@@ -266,6 +332,32 @@ async function main() {
 		["says the note does not exist", /(no|not|isn't|is not|doesn't|does not|never)\b[^.]{0,80}\b(exist|found|note|entry|such|have|written)/i.test(a) || /september (only )?has 30 days|not a valid date|invalid date/i.test(a)],
 		["used ≤ 3 tool calls", tools.length <= 3],
 	]);
+
+	// The user rejects the diff: the agent must stop, say so and ask, never retry or go on.
+	const MUTATING = new Set(["edit_note", "edit_notes", "replace_note", "replace_section", "create_note", "append_to_note", "move_note", "delete_file"]);
+	{
+		const target = "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md";
+		const before = await vault.read(target);
+		await scenario(
+			"rejection",
+			"The user rejects the change",
+			`In ${target}, remove the recording embed line from the 2026-09-02 section (keep its Summary).`,
+			(a, tools) => [
+				[`stopped after the rejected write (${tools.filter((t) => MUTATING.has(t)).length} write attempts)`, tools.filter((t) => MUTATING.has(t)).length <= 1],
+				["says the change was rejected or not applied", /reject|declin|not applied|wasn't applied|was not made|didn't apply|not approved|cancel/i.test(a)],
+				["asks what to do instead", /instead|prefer|would you like|how would you|what would you|should i|want me/i.test(a)],
+			],
+			{ approve: "reject", expectQuestion: true },
+		);
+		const row = rows[rows.length - 1];
+		const unchanged = (await vault.read(target)) === before;
+		console.log(`  ${unchanged ? "PASS" : "FAIL"}  the note is unchanged after the rejection`);
+		if (unchanged) row.pass++;
+		else {
+			row.fail++;
+			failures++;
+		}
+	}
 
 	// The "Process my daily notes" command: the same prompt the plugin sends.
 	await scenario("distill", "Process my daily notes", processDailyNotesPrompt({ folder: "Daily", heading: "Capture", destination: "Topics", move: true }), (_a, tools) => [["used ≤ 30 tool calls", tools.length <= 30]]);
@@ -338,8 +430,9 @@ async function main() {
 		const after = await vault.read(target);
 		const changed = after.split("\n").find((l) => l.startsWith("- The magnet sometimes drags")) ?? "";
 		for (const [label, ok] of [
-			["the selected line now ends with the tag", /#open-problem\s*$/.test(changed)],
-			["the line's text is otherwise intact", changed.replace(/\s*#open-problem\s*$/, "") === line],
+			// "#open-problem." is accepted: Obsidian ends the tag at the period, and models like to keep the sentence's full stop.
+			["the selected line now ends with the tag", /#open-problem\.?\s*$/.test(changed)],
+			["the line's text is otherwise intact", changed.replace(/\s*#open-problem\.?\s*$/, "").replace(/\.$/, "") === line.replace(/\.$/, "")],
 			["nothing else in the note changed", after.replace(changed, line) === before],
 		] as [string, boolean][]) {
 			console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
@@ -448,10 +541,16 @@ async function main() {
 		if (!ok) failures++;
 	}
 
+	// Scenarios ONLY skipped left dummy rows for their post-checks; drop them from the report.
+	const ranRows = rows.filter((r) => !r.skipped);
+	rows.length = 0;
+	rows.push(...ranRows);
 	console.log("\n=== metrics");
-	console.log("scenario        seconds  calls  errors  misses  repeats  maxPromptTok  pass/fail");
+	console.log("scenario        seconds  calls  errors  misses  repeats  maxPromptTok  pass/fail  steps  model s (read+gen)");
 	for (const r of rows) {
-		console.log(`${r.id.padEnd(15)} ${(r.ms / 1000).toFixed(1).padStart(7)}  ${String(r.calls).padStart(5)}  ${String(r.errors).padStart(6)}  ${String(r.misses).padStart(6)}  ${String(r.repeats).padStart(7)}  ${String(r.prompt).padStart(12)}  ${r.pass}/${r.fail}`);
+		console.log(
+			`${r.id.padEnd(15)} ${(r.ms / 1000).toFixed(1).padStart(7)}  ${String(r.calls).padStart(5)}  ${String(r.errors).padStart(6)}  ${String(r.misses).padStart(6)}  ${String(r.repeats).padStart(7)}  ${String(r.prompt).padStart(12)}  ${`${r.pass}/${r.fail}`.padEnd(9)}  ${String(r.steps).padStart(5)}  ${((r.promptMs + r.evalMs) / 1000).toFixed(1)} (${(r.promptMs / 1000).toFixed(1)}+${(r.evalMs / 1000).toFixed(1)})`,
+		);
 	}
 	const total = rows.reduce((n, r) => n + r.ms, 0);
 	const checks = rows.reduce((n, r) => n + r.pass + r.fail, 0);
@@ -472,7 +571,19 @@ async function main() {
 		tag: TAG,
 		notes: vault.listNotes().length,
 		systemPromptChars: sys.length,
-		totals: { seconds: Math.round(total / 1000), calls: rows.reduce((n, r) => n + r.calls, 0), errors: rows.reduce((n, r) => n + r.errors, 0), misses: rows.reduce((n, r) => n + r.misses, 0), repeats: rows.reduce((n, r) => n + r.repeats, 0), passed, checks, failures },
+		totals: {
+			seconds: Math.round(total / 1000),
+			calls: rows.reduce((n, r) => n + r.calls, 0),
+			errors: rows.reduce((n, r) => n + r.errors, 0),
+			misses: rows.reduce((n, r) => n + r.misses, 0),
+			repeats: rows.reduce((n, r) => n + r.repeats, 0),
+			steps: rows.reduce((n, r) => n + r.steps, 0),
+			modelSeconds: Math.round(rows.reduce((n, r) => n + r.promptMs + r.evalMs, 0) / 1000),
+			promptSeconds: Math.round(rows.reduce((n, r) => n + r.promptMs, 0) / 1000),
+			passed,
+			checks,
+			failures,
+		},
 		scenarios: rows.map((r) => ({ ...r, seconds: Math.round(r.ms / 10) / 100 })),
 	};
 	if (!ONLY) {

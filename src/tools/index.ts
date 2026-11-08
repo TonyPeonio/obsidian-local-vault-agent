@@ -160,7 +160,7 @@ function truncate(text: string, max: number, offset = 0): { text: string; trunca
 async function requestApproval(ctx: ToolContext, req: ApprovalRequest): Promise<void> {
 	const decision = await ctx.approve(req);
 	if (decision === "reject") {
-		throw new ToolError("The user rejected this change. Ask them what they would like instead; do not retry the same edit.");
+		throw new ToolError("REJECTED: the user declined this change in the approval dialog, so nothing was written. Do not retry it or a variant of it. Tell the user which change was rejected and ask what they would like instead, then stop.");
 	}
 }
 
@@ -407,8 +407,14 @@ export const listSections: ToolDefinition = {
 	mutates: false,
 	async execute(args, ctx) {
 		const raw = args.containing;
-		const needles = (Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 4);
 		const wantHeading = str(args, "heading", false).replace(/^#+\s*/, "").trim().toLowerCase();
+		// Models send containing: ["## Capture"] together with heading: "Capture". The heading line
+		// is not part of a section's body, so that text would match nothing; it means the heading.
+		const needles = (Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [])
+			.map((x) => String(x).trim())
+			.filter(Boolean)
+			.filter((x) => !wantHeading || x.replace(/^#+\s*/, "").trim().toLowerCase() !== wantHeading)
+			.slice(0, 4);
 		if (needles.length === 0 && !wantHeading) throw new ToolError("Give heading (a section to survey) and/or containing (1–4 texts to test for).");
 		const folder = str(args, "folder", false).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
 		const only = str(args, "path", false);
@@ -426,6 +432,10 @@ export const listSections: ToolDefinition = {
 		const blocks: string[] = [];
 		let shown = 0;
 		let total = 0;
+		/** Sections that matched the heading/level filter before the `containing` test. */
+		let candidates = 0;
+		/** Sections that contain every one of the texts (when two or more were given). */
+		let withAll = 0;
 		for (const n of notes) {
 			const lines = (await ctx.vault.read(n.path)).split("\n");
 			// A section runs to the next heading of the same or a higher level, so nested
@@ -452,6 +462,7 @@ export const listSections: ToolDefinition = {
 				const bodyLines = lines.slice(s.line + 1, end);
 				const body = bodyLines.join("\n");
 				const flags = lowers.map((l) => body.toLowerCase().includes(l));
+				candidates++;
 				if (onlyMatching && !flags.some(Boolean)) continue;
 				total++;
 				if (shown >= limit) continue;
@@ -464,17 +475,33 @@ export const listSections: ToolDefinition = {
 					row += nonEmpty.length === 0 ? " (empty)" : ` (${nonEmpty.length} line${nonEmpty.length === 1 ? "" : "s"}, ${body.trim().length} chars): ${first.length > 100 ? first.slice(0, 99) + "…" : first}`;
 				}
 				if (needles.length) row += `${wantHeading ? " |" : ":"} ${needles.map((t, i) => `${t} ${flags[i] ? "yes" : "no"}`).join(", ")}`;
+				if (needles.length > 1 && flags.every(Boolean)) {
+					row += " → all";
+					withAll++;
+				}
 				rows.push(row);
 			}
 			if (rows.length) blocks.push(`${n.path}\n${rows.join("\n")}`);
 		}
 		if (total === 0) {
+			const where = folder ? ` under ${folder}/` : "";
+			const texts = needles.map((t) => `"${t}"`).join(", ");
+			if (onlyMatching && candidates > 0) {
+				// The sections exist; none has the text. Say both, or the model concludes the heading is missing.
+				return `${candidates} section${candidates === 1 ? "" : "s"}${wantHeading ? ` headed "${wantHeading}"` : ""}${where} exist, but none contains ${texts}. Call again without containing to survey them, or with other texts.`;
+			}
 			const what = wantHeading ? `No section headed "${wantHeading}"` : "No section";
-			return `${what}${onlyMatching ? " contains any of " + needles.map((t) => `"${t}"`).join(", ") : wantHeading ? "" : "s found"}${folder ? ` under ${folder}/` : ""}.`;
+			return `${what}${onlyMatching ? " contains any of " + texts : wantHeading ? "" : "s found"}${where}.`;
 		}
 		const more = total > shown ? `\n…${total - shown} more sections not shown; narrow with folder/path or raise the limit.` : "";
-		const legend = wantHeading ? "(non-empty lines, characters, first line)" : "(flags per text, in order)";
-		return `${total} section${total === 1 ? "" : "s"} ${legend}:\n${blocks.join("\n")}${more}`;
+		const legend = wantHeading ? "(non-empty lines, characters, first line)" : needles.length > 1 ? '(flags per text, in order; "→ all" marks a section that has every text)' : "(flags per text, in order)";
+		// The flags are the answer: a model that re-reads every section to "check" spends the
+		// whole turn reading, so say what to do with the marked ones.
+		const verdict =
+			needles.length > 1
+				? `\n${withAll} section${withAll === 1 ? "" : "s"} marked "→ all" ${withAll === 1 ? "has" : "have"} every text. These flags are exact: act on the marked sections directly (for example edit_notes with path, heading and line_contains), without reading them first.`
+				: "";
+		return `${total} section${total === 1 ? "" : "s"} ${legend}:\n${blocks.join("\n")}${more}${verdict}`;
 	},
 };
 
