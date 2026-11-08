@@ -1,5 +1,6 @@
 import type { OllamaClient } from "./ollama";
 import { OllamaError } from "./ollama";
+import { splitSentences } from "./chunker";
 import { buildOutline, outlineBudget } from "./outline";
 import { ToolError, toOllamaTools } from "./tools";
 import type { UndoStack } from "./undo";
@@ -126,12 +127,25 @@ export function announcesNextStep(text: string): boolean {
 const READ_TOOLS = new Set(["read_note", "read_section", "get_active_note"]);
 
 /**
- * Which search hits an uncited answer should name: the hits whose note name or a folder of
- * theirs (4+ characters) is mentioned in the answer; failing that, all of them when there are
- * at most three. Ten hits the model ignored are not sources.
+ * Which search hits an uncited answer should name. First the hits whose returned text the answer
+ * quotes (a sentence of 30+ characters word for word, as in "what did the professor say"), since
+ * a note on the same subject can share the answer's words without being where they came from.
+ * Otherwise the hits whose note name or a folder of theirs (4+ characters) is mentioned in the
+ * answer; failing that, all of them when there are at most three. Ten hits the model ignored are
+ * not sources.
  */
-export function pickSources(answer: string, hits: string[]): string[] {
+export function pickSources(answer: string, hits: string[], texts?: Map<string, string>): string[] {
 	if (hits.length === 0) return [];
+	if (texts) {
+		const fragments = quotable(answer);
+		const quoted = hits.filter((p) => {
+			const text = texts.get(p);
+			if (!text) return false;
+			const plain = plainText(text);
+			return fragments.some((f) => plain.includes(f));
+		});
+		if (quoted.length) return quoted;
+	}
 	const lower = answer.toLowerCase();
 	const mentioned = hits.filter((p) =>
 		p
@@ -141,6 +155,27 @@ export function pickSources(answer: string, hits: string[]): string[] {
 	);
 	if (mentioned.length) return mentioned;
 	return hits.length <= 3 ? hits : [];
+}
+
+/** Markdown emphasis, quote marks and blockquote markers removed, whitespace collapsed, lower case. */
+function plainText(s: string): string {
+	return s
+		.replace(/^\s*>\s?/gm, "")
+		.replace(/\*\*|__|[*_`"“”]/g, "")
+		.replace(/\s+/g, " ")
+		.trim()
+		.toLowerCase();
+}
+
+/** The answer's quoted spans of 20+ and sentences of 30+ characters, in the same plain form, for matching against hit text. */
+function quotable(answer: string): string[] {
+	const out: string[] = [];
+	for (const m of answer.matchAll(/["“]([^"”\n]{20,})["”]/g)) out.push(plainText(m[1]));
+	for (const line of answer.split("\n")) {
+		const plain = plainText(line.replace(/^\s*(?:[-*+]|\d+\.)\s+/, ""));
+		for (const sentence of splitSentences(plain)) if (sentence.length >= 30) out.push(sentence);
+	}
+	return out;
 }
 
 /** Appends "Sources: [[A]], [[B]]" (at most six) to an answer that cited nothing. */
@@ -385,6 +420,8 @@ export class Agent {
 		const readPaths: string[] = [];
 		/** Notes grep_vault matched this turn; an answer given straight from a grep cites these. */
 		const hitPaths: string[] = [];
+		/** The text search_passages returned per note, so an answer that quotes a passage cites its note. */
+		const hitTexts = new Map<string, string>();
 		/** Results of read-only calls this turn by callKey, so an identical call is not run again.
 		 * Cleared after every write, since the vault may then differ. */
 		const callCache = new Map<string, string>();
@@ -444,7 +481,7 @@ export class Agent {
 			// An answer built from notes it read but citing none of them gets a sources footer.
 			// A grep or passage search that hit a few notes counts too: models answer "it was on
 			// 2026-11-06" straight from the matching lines without citing the note they came from.
-			const sources = readPaths.length ? readPaths : pickSources(assistant.content, hitPaths);
+			const sources = readPaths.length ? readPaths : pickSources(assistant.content, hitPaths, hitTexts);
 			if (!assistant.tool_calls?.length && writes === 0 && sources.length > 0 && !/\[\[/.test(assistant.content) && assistant.content.trim()) {
 				assistant.content = withSources(assistant.content, sources);
 			}
@@ -575,7 +612,12 @@ export class Agent {
 					} else if (call.function.name === "grep_vault") {
 						for (const m of result.matchAll(/^(.+?\.md):\d+[ :-]/gm)) if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
 					} else if (call.function.name === "search_passages") {
-						for (const m of result.matchAll(/^--- \[\d+\] (.+?)(?: › .*)? \(score /gm)) if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
+						for (const block of result.split(/^(?=--- \[\d+\] )/m)) {
+							const m = /^--- \[\d+\] (.+?)(?: › .*)? \(score [^)]*\)\n?([\s\S]*)$/.exec(block);
+							if (!m) continue;
+							if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
+							hitTexts.set(m[1], `${hitTexts.get(m[1]) ?? ""}\n${m[2]}`);
+						}
 					}
 				}
 			}

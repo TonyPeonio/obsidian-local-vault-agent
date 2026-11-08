@@ -570,6 +570,23 @@ describe("sources footer", () => {
 		expect(pickSources("x", [])).toEqual([]);
 	});
 
+	it("names the note whose passage the answer quotes, not a note that shares the subject's name", () => {
+		const lecture = "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md";
+		const paper = "Research/Isolation Forest.md";
+		const texts = new Map([
+			[lecture, "**[12:16]** So the idea behind isolation forest is this.\n\n**[21:29]** In the demo I set contamination to 0.05, so the model flags the top five percent of points as anomalies."],
+			[paper, "Anomalies are few and different, so random splits isolate them in short paths."],
+		]);
+		const answer = 'The professor mentioned **contamination** at **[21:29]**:\n\n> "In the demo I set contamination to 0.05, so the model flags the top five percent of points as anomalies."\n\nThis is the isolation forest parameter.';
+		expect(pickSources(answer, [lecture, paper], texts)).toEqual([lecture]);
+		// A short quoted phrase inside a longer sentence counts too.
+		expect(pickSources('The professor emphasized that "the model flags the top five percent" in the demo, an isolation forest detail.', [lecture, paper], texts)).toEqual([lecture]);
+		// Without passage text the name mention still decides.
+		expect(pickSources(answer, [lecture, paper])).toEqual([paper]);
+		// Nothing quoted: back to the name rule.
+		expect(pickSources("Isolation forest isolates anomalies in short paths, see the paper.", [lecture, paper], texts)).toEqual([paper]);
+	});
+
 	it("cites the notes a grep matched when the answer came straight from the matching lines", async () => {
 		const { agent } = setup([{ tool: "grep_vault", args: { pattern: "electromagnet" } }, { content: "It moves pieces with an electromagnet." }]);
 		const conv = newConversation();

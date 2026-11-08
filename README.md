@@ -173,14 +173,15 @@ see a CORS/network error, set `OLLAMA_ORIGINS=app://obsidian.md*` on the Ollama 
 
 ## Benchmarks
 
-Every release is run through a scored benchmark: 19 scenarios on a generated 339-note vault
+Every release is run through a scored benchmark: 20 scenarios on a generated 339-note vault
 (questions across notes, a follow-up turn that must use the conversation, a question with no
-answer in the vault, enumeration, a clean-up over 40 lecture sections, moving finished projects,
+answer in the vault, quoting a lecture transcript with its `[m:ss]` timestamp through the
+Lecture Companion block in `AGENT.md`, enumeration, a clean-up over 40 lecture sections, moving finished projects,
 processing 127 daily notes, acting on the Vault Suggestions note, editing a selection, a note
 that does not exist, a change the user rejects, and the loop failures reported from real vaults).
 Each scenario is timed and counted for tool calls, model calls, model time, tool errors, guessed
 paths, invented links and repeated calls, and checked against facts the generator recorded.
-115 checks in all; the vault is restored after every run.
+122 checks in all; the vault is restored after every run.
 
 Version 0.5.1, 2026-11-07/08, RTX 5070 12 GB, Ollama 0.40, 32k context unless noted. Identical
 runs differ by up to 2× in wall time, so the defaults were run many times over the night.
@@ -188,6 +189,7 @@ runs differ by up to 2× in wall time, so the defaults were run many times over 
 | Configuration | Checks | Seconds | Model s | Tool calls | Repeats |
 |---|---:|---:|---:|---:|---:|
 | **qwen3.5:9b, defaults (thinking off, temp 0.6), final build** | **113, 113, 112** | **151, 243, 155** | 147, 237, 138 | 65, 186, 66 | 0, 0, 3 |
+| qwen3.5:9b, defaults, with the Lecture Companion scenario (20 scenarios, 122 checks) | 119, 118 of 122 | 173, 265 | 165, 238 | 59, 94 | 0, 3 |
 | qwen3.5:9b, defaults, earlier 0.5.1 builds the same night (10 runs) | 108–114 | 157–262 | | 61–99 | 0–3 |
 | qwen3.5:9b, note gists on | 113 | 231 (+230 to gist 334 notes once) | 206 | 110 | 0 |
 | qwen3.5:9b, 64k context | 112 | 308 | 294 | 208 | 0 |
@@ -278,7 +280,7 @@ npm run make-vault && npm run e2e:large   # the scored benchmark (see Benchmarks
 npm run build   # type-check + Obsidian review lint + production bundle
 ```
 
-The benchmark (`scripts/e2e-large.ts`) runs 16 scenarios on a generated 339-note vault
+The benchmark (`scripts/e2e-large.ts`) runs 20 scenarios on a generated 339-note vault
 (`scripts/make-vault.mjs`, with `scripts/large-facts.json` recording the facts the checks look
 for) and saves per-scenario seconds, tool calls, errors, guessed paths, repeated calls and
 pass/fail to `bench/<version>[-tag].json`. `MODEL=`, `NUM_CTX=`, `THINK=on|off`, `TEMPERATURE=`,

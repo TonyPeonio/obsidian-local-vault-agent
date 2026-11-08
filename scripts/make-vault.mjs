@@ -82,6 +82,38 @@ const courses = [
 
 const facts = { lectures: [], decisions: [], people: [], recordings: { withSummary: [], withoutSummary: [] }, counts: {}, garden: { brokenNote: "Projects/Chess Robot.md", brokenTarget: "Projects/Gantry Spec" } };
 
+// Something the professor literally said in a few lectures (course code → topic index → sentence),
+// so a scenario can ask "what did the professor say about X, and at what time". It lands in that
+// lecture's Transcript when the section has a Summary (the shape Lecture Companion writes).
+const spoken = {
+	"CSCI 470": { 9: "In the demo I set contamination to 0.05, so the model flags the top five percent of points as anomalies. Set it too high and you start flagging normal data." },
+	"CSCI 406": { 5: "With a binary heap Dijkstra runs in O((V+E) log V). A Fibonacci heap gets you E plus V log V on paper, but nobody ships that." },
+	"PHGN 200": { 6: "The time constant tau is R times C. In the lab circuit that was 10 kilo-ohms times 100 microfarads, so about one second." },
+};
+
+/** `m:ss` as Lecture Companion writes it (minutes not zero-padded). */
+const mmss = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+
+/**
+ * A short Transcript in Lecture Companion's shape: 4–5 paragraphs, each starting `**[m:ss]**`.
+ * Deterministic from the lecture's index alone (no PRNG draws, so every other note in the vault
+ * stays byte-identical). Returns the paragraphs and, when the professor said something recorded
+ * in `spoken`, that sentence with its timestamp.
+ */
+const transcript = (c, i, topic, term, detail) => {
+	const at = (k) => mmss(60 * (3 + 9 * k) + ((i * 7 + k * 13) % 60));
+	const said = spoken[c.code]?.[i];
+	const paragraphs = [
+		`Okay, let's get started. Today is ${topic.toLowerCase()}, and the one thing I want you to leave with is ${term}.`,
+		`So the idea behind ${term} is this: ${detail}. Write that down, it is the definition I will use on the exam.`,
+		...(said ? [said] : []),
+		`Let's look at the example on the slide. Notice how ${term} shows up again once you work through it.`,
+		`Any questions on that? Okay. For next week, read the chapter and try the homework problem on ${term}.`,
+	];
+	const lines = paragraphs.map((p, k) => `**[${at(k)}]** ${p}`);
+	return { lines, said: said ? { said, at: at(2) } : undefined };
+};
+
 for (const c of courses) {
 	const sections = [];
 	for (let i = 0; i < c.topics.length; i++) {
@@ -107,9 +139,15 @@ for (const c of courses) {
 			`- ${pick(["Worked example on the board", "Clicker question most people got wrong", "Short quiz at the start", "Guest explanation from the TA"])}.`,
 		);
 		if (chance(0.4)) lines.push(`- [ ] Activity: ${pick(["finish the worksheet", "read chapter " + (i + 2), "redo the proof at home", "try the code sample"])}`);
-		if (hasSummary) lines.push("", "### Summary", "", `- ${c.topics[i]} boils down to ${term}; remember ${detail}.`, `- Likely on the ${week <= 5 ? "midterm" : "final"}.`);
+		const lecture = { course: c.code, date: d, topic: c.topics[i], term, note: `${c.folder}/Lectures - ${c.code}.md` };
+		if (hasSummary) {
+			lines.push("", "### Summary", "", `- ${c.topics[i]} boils down to ${term}; remember ${detail}.`, `- Likely on the ${week <= 5 ? "midterm" : "final"}.`);
+			const t = transcript(c, i, c.topics[i], term, detail);
+			lines.push("", "### Transcript", "", t.lines.join("\n\n"));
+			if (t.said) lecture.transcript = t.said;
+		}
 		sections.push(lines.join("\n"));
-		facts.lectures.push({ course: c.code, date: d, topic: c.topics[i], term, note: `${c.folder}/Lectures - ${c.code}.md` });
+		facts.lectures.push(lecture);
 	}
 	put(`${c.folder}/Lectures - ${c.code}.md`, `# ${c.name} lectures\n\nRunning notes for ${c.code}. Overview: [[${c.code}]].\n\n${sections.join("\n\n")}`);
 	put(
@@ -473,7 +511,18 @@ put("Templates/Lecture.md", `## {{date}}\n\n**Topic:** \n\n- \n\n### Summary\n\n
 put("Templates/Person.md", `---\ntags: [person]\n---\n# \n\n## Interactions\n\n- \n`);
 for (let i = 1; i <= 8; i++) put(`Archive/2025/Old note ${i}.md`, `# Old note ${i}\n\nFrom 2025. ${pick(["Keep for reference.", "Can delete.", "Has the old wiring diagram."])}\n`);
 put("Welcome.md", `# Welcome\n\nThis vault holds school notes (\`School/\`), daily notes (\`Daily/\`), projects, clubs, reading and people. Lecture notes keep one \`## YYYY-MM-DD\` section per class.\n`);
-put("AGENT.md", `# Vault conventions for the agent\n\n## Folders\n- \`Daily/\` — one note per day named \`YYYY-MM-DD\`; new daily content goes under \`## Done\`.\n- \`School/<course>/Lectures - <code>.md\` — one \`## YYYY-MM-DD\` section per class; a \`### Summary\` under it when summarised.\n- \`Templates/\` — never edit or search.\n- \`Archive/\` — old notes; move finished projects to \`Archive/<year>/\`.\n\n## Style\n- \`-\` for bullets, sentence-case headings, wikilinks for every reference to a note or person.\n- Never add YAML frontmatter to a note that has none.\n\n## Never\n- Never delete a recording embed from a lecture section that has no Summary.\n`);
+// The block Lecture Companion appends to AGENT.md (src/core/agent-bridge.ts there): the layout
+// line follows this vault's layout, the other lines are its SHARED_LINES word for word.
+const lectureCompanionBlock = [
+	"<!-- lecture-companion:start -->",
+	"## Lecture notes (Lecture Companion)",
+	"- `School/<course>/Lectures - <code>.md` holds one `## YYYY-MM-DD` section per lecture; under it, one level deeper: `Summary` and `Transcript` when the class was recorded and summarised.",
+	"- `Summary` has `In one sentence`, `Key points`, `Terms and definitions`, `Worked examples and formulas`, `Announcements and deadlines` and `Questions to review` (one heading level below it); every bullet ends with the `[mm:ss]` of the transcript paragraph it came from.",
+	"- `Transcript` is speech-to-text, one paragraph per pause, each starting with `**[m:ss]**` (minutes:seconds into the recording). It is what the professor literally said; names and terms may be misspelled.",
+	"- To answer \"what did the professor say about X, and when\": find the lecture (search the Transcript sections; a passage search returns the paragraph), quote the transcript paragraph that says it, give its `[m:ss]` timestamp, and link the note with a wikilink. A Summary bullet's `[mm:ss]` points at the same paragraph, so a Summary hit gives the time too.",
+	"<!-- lecture-companion:end -->",
+].join("\n");
+put("AGENT.md", `# Vault conventions for the agent\n\n## Folders\n- \`Daily/\` — one note per day named \`YYYY-MM-DD\`; new daily content goes under \`## Done\`.\n- \`School/<course>/Lectures - <code>.md\` — one \`## YYYY-MM-DD\` section per class; a \`### Summary\` under it when summarised.\n- \`Templates/\` — never edit or search.\n- \`Archive/\` — old notes; move finished projects to \`Archive/<year>/\`.\n\n## Style\n- \`-\` for bullets, sentence-case headings, wikilinks for every reference to a note or person.\n- Never add YAML frontmatter to a note that has none.\n\n## Never\n- Never delete a recording embed from a lecture section that has no Summary.\n\n${lectureCompanionBlock}\n`);
 
 // PDFs and images as attachments.
 for (const p of ["Attachments/sars_proteins.pdf", "Attachments/CSCI470-lecture10-slides.pdf", "Attachments/robot-frame.png", "Attachments/wiring-v2.png", "Attachments/syllabus-CSCI406.pdf"]) {

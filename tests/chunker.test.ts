@@ -31,6 +31,15 @@ describe("chunkMarkdown", () => {
 		expect(chunks[1].text).toBe("first");
 	});
 
+	it("keeps transcript timestamp markers verbatim (Lecture Companion's `**[m:ss]**` paragraphs)", () => {
+		const paragraphs = ["**[3:04]** Okay, let's get started.", "**[21:29]** In the demo I set contamination to 0.05.", "**[30:56]** Any questions on that?"];
+		const chunks = chunkMarkdown(`## 2026-11-04\n\n### Summary\n\n- a bullet [21:29]\n\n### Transcript\n\n${paragraphs.join("\n\n")}\n`);
+		const transcript = chunks.filter((c) => c.heading === "Transcript");
+		expect(transcript).toHaveLength(1);
+		expect(transcript[0].text).toBe(paragraphs.join("\n\n"));
+		expect(chunks.find((c) => c.heading === "Summary")?.text).toBe("- a bullet [21:29]");
+	});
+
 	it("ignores '#' lines inside code fences", () => {
 		const chunks = chunkMarkdown("# Real\n\n```sh\n# not a heading\necho hi\n```\n");
 		expect(chunks).toHaveLength(1);

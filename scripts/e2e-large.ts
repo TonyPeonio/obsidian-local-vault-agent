@@ -36,7 +36,7 @@ const VAULT_DIR = process.env.VAULT_DIR ?? "test-vault-large"; // a vault from s
 const THINK = process.env.THINK ?? DEFAULT_SETTINGS.thinking;
 
 interface Facts {
-	lectures: { course: string; date: string; topic: string; term: string; note: string }[];
+	lectures: { course: string; date: string; topic: string; term: string; note: string; transcript?: { said: string; at: string } }[];
 	recordings: { withSummary: { note: string; rec: string }[]; withoutSummary: { note: string; rec: string }[] };
 	attachments: { path: string; size: number }[];
 	counts: { notes: number; chars: number; daily: number };
@@ -244,6 +244,19 @@ async function main() {
 		["names the ML course or note", /CSCI 470|Machine Learning/i.test(a)],
 		[`gives the date ${iso.date}`, a.includes(iso.date)],
 		["cites with a wikilink", /\[\[/.test(a)],
+		["used ≤ 4 tool calls", tools.length <= 4],
+	]);
+
+	// "Ask my lectures": the Transcript section is in Lecture Companion's shape (`**[m:ss]**`
+	// paragraphs) and AGENT.md carries that plugin's conventions block. The answer must quote the
+	// fact, give the paragraph's timestamp (m:ss or mm:ss) and link the note.
+	const said = iso.transcript!;
+	const [min, sec] = said.at.split(":");
+	const timestamp = new RegExp(`(^|[^\\d:])0?${min}:${sec}(?!\\d)`);
+	await scenario("lecture-timestamp", "Quote a lecture transcript with its time", "What did the professor say about contamination in the isolation forest lecture, and at what time in the recording?", (a, tools) => [
+		["gives the value 0.05", /0\.05\b/.test(a)],
+		[`gives the timestamp ${said.at}`, timestamp.test(a)],
+		["links the lecture note", /\[\[[^\]]*Lectures - CSCI 470[^\]]*\]\]/.test(a)],
 		["used ≤ 4 tool calls", tools.length <= 4],
 	]);
 

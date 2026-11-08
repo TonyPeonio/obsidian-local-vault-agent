@@ -40,7 +40,11 @@
       "date": "2026-10-08",
       "topic": "Dijkstra with a binary heap",
       "term": "Dijkstra",
-      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md"
+      "note": "School/CSCI 406 - Algorithms/Lectures - CSCI 406.md",
+      "transcript": {
+        "said": "With a binary heap Dijkstra runs in O((V+E) log V). A Fibonacci heap gets you E plus V log V on paper, but nobody ships that.",
+        "at": "21:01"
+      }
     },
     {
       "course": "CSCI 406",
@@ -138,7 +142,11 @@
       "date": "2026-11-06",
       "topic": "Anomaly detection",
       "term": "isolation forest",
-      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+      "note": "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md",
+      "transcript": {
+        "said": "In the demo I set contamination to 0.05, so the model flags the top five percent of points as anomalies. Set it too high and you start flagging normal data.",
+        "at": "21:29"
+      }
     },
     {
       "course": "CSCI 478",
@@ -611,7 +619,7 @@
     "daily": 127,
     "filler": 0,
     "notes": 339,
-    "chars": 187816
+    "chars": 203465
   },
   "garden": {
     "brokenNote": "Projects/Chess Robot.md",
