@@ -640,6 +640,16 @@ describe("list_sections", () => {
 		expect(out).toContain("## a: ![[Recording yes, ### Summary yes → all");
 		expect(out).toContain("## b: ![[Recording yes, ### Summary no\n");
 		expect(out).toMatch(/1 section marked "→ all" has every text\. These flags are exact/);
+		expect(out).toMatch(/leave the unmarked sections alone/);
+		expect(out).toMatch(/Marked sections \(path › heading\):\nS\/L\.md › a$/m);
+	});
+
+	it("accepts the texts as a Python-style list in a string", async () => {
+		const vault = freshVault();
+		vault.seed("S/L.md", "# L\n\n## a\n\n![[Recording 1.m4a]]\n\n### Summary\n\n- x\n");
+		const { ctx } = makeCtx(vault);
+		const out = await listSections.execute({ containing: "['![[Recording', '### Summary']", folder: "S", level: 2 }, ctx);
+		expect(out).toContain("## a: ![[Recording yes, ### Summary yes → all");
 	});
 
 	it("treats a containing text that is just the heading as the heading, and surveys", async () => {

@@ -406,7 +406,20 @@ export const listSections: ToolDefinition = {
 	},
 	mutates: false,
 	async execute(args, ctx) {
-		const raw = args.containing;
+		let raw: unknown = args.containing;
+		// Models sometimes send the list as text: "['![[Recording', '### Summary']". Read it as a list.
+		if (typeof raw === "string" && /^\s*\[.*\]\s*$/s.test(raw)) {
+			const text: string = raw;
+			try {
+				raw = JSON.parse(text.replace(/'/g, '"'));
+			} catch {
+				raw = text
+					.trim()
+					.slice(1, -1)
+					.split(/\s*,\s*/)
+					.map((x: string) => x.trim().replace(/^['"]|['"]$/g, ""));
+			}
+		}
 		const wantHeading = str(args, "heading", false).replace(/^#+\s*/, "").trim().toLowerCase();
 		// Models send containing: ["## Capture"] together with heading: "Capture". The heading line
 		// is not part of a section's body, so that text would match nothing; it means the heading.
@@ -436,6 +449,8 @@ export const listSections: ToolDefinition = {
 		let candidates = 0;
 		/** Sections that contain every one of the texts (when two or more were given). */
 		let withAll = 0;
+		/** `path › heading` of those sections, listed again at the end so they can be copied as edit targets. */
+		const marked: string[] = [];
 		for (const n of notes) {
 			const lines = (await ctx.vault.read(n.path)).split("\n");
 			// A section runs to the next heading of the same or a higher level, so nested
@@ -474,10 +489,13 @@ export const listSections: ToolDefinition = {
 					const first = (nonEmpty[0] ?? "").trim();
 					row += nonEmpty.length === 0 ? " (empty)" : ` (${nonEmpty.length} line${nonEmpty.length === 1 ? "" : "s"}, ${body.trim().length} chars): ${first.length > 100 ? first.slice(0, 99) + "…" : first}`;
 				}
+				// Only yes/no per text: quoting the matching line here made the model paste the whole
+				// row into edit_notes' line_contains. The needle itself is what line_contains needs.
 				if (needles.length) row += `${wantHeading ? " |" : ":"} ${needles.map((t, i) => `${t} ${flags[i] ? "yes" : "no"}`).join(", ")}`;
 				if (needles.length > 1 && flags.every(Boolean)) {
 					row += " → all";
 					withAll++;
+					if (marked.length < 80) marked.push(`${n.path} › ${s.heading}`);
 				}
 				rows.push(row);
 			}
@@ -499,7 +517,9 @@ export const listSections: ToolDefinition = {
 		// whole turn reading, so say what to do with the marked ones.
 		const verdict =
 			needles.length > 1
-				? `\n${withAll} section${withAll === 1 ? "" : "s"} marked "→ all" ${withAll === 1 ? "has" : "have"} every text. These flags are exact: act on the marked sections directly (for example edit_notes with path, heading and line_contains), without reading them first.`
+				? `\n${withAll} section${withAll === 1 ? "" : "s"} marked "→ all" ${withAll === 1 ? "has" : "have"} every text. These flags are exact: act on the marked sections directly (for example edit_notes with path, heading and line_contains set to the text you searched for), without reading them first, and leave the unmarked sections alone.${
+						marked.length ? `\nMarked sections (path › heading):\n${marked.join("\n")}${withAll > marked.length ? `\n…and ${withAll - marked.length} more` : ""}` : ""
+					}`
 				: "";
 		return `${total} section${total === 1 ? "" : "s"} ${legend}:\n${blocks.join("\n")}${more}${verdict}`;
 	},
@@ -1164,7 +1184,7 @@ export const moveNote: ToolDefinition = {
 		await requestApproval(ctx, { tool: "move_note", path, before: path, after: newPath, summary: `Move ${path} → ${newPath}` });
 		await ctx.vault.rename(path, newPath);
 		ctx.recordChange?.({ tool: "move_note", path: newPath, before: path, after: newPath });
-		return `Moved ${path} to ${newPath}. Links in other notes were updated.`;
+		return `Moved ${path} to ${newPath}. Links in other notes were updated. The note now exists only at ${newPath}; the old path is gone, so do not read it to verify.`;
 	},
 };
 
