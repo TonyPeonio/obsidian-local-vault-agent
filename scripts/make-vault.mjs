@@ -2,15 +2,26 @@
 // a CS student's notes with courses, lectures (recordings + summaries), daily notes,
 // projects, clubs, reading, people, recipes and messy inbox notes. Nothing here is real.
 //
-//   node scripts/make-vault.mjs [outDir]      (default: test-vault-large)
+//   node scripts/make-vault.mjs                       # 339 notes into test-vault-large/
+//   SCALE=3 OUT=test-vault-x3 node scripts/make-vault.mjs   # the same 339 plus ~660 filler notes
 //
-// Also writes scripts/large-facts.json: the "landmark" facts the scenarios ask about.
+// Options (environment variables):
+//   OUT    output folder (default test-vault-large; a first positional argument also works).
+//   SCALE  vault size multiplier (default 1). SCALE=N adds (N-1) × 330 filler notes in folders
+//          nothing else uses (Zettel/, Library/, Archive/2024/), so every landmark fact and
+//          every scenario check keeps its meaning; the base notes are byte-identical at any SCALE.
+//   FACTS  where to write the landmark facts (default scripts/large-facts.json for the default
+//          OUT, otherwise scripts/large-facts-<basename of OUT>.json). The e2e script reads the
+//          facts file matching its VAULT_DIR by the same rule.
 import { mkdirSync, rmSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, basename, resolve } from "path";
 import { fileURLToPath } from "url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const out = process.argv[2] ?? join(here, "..", "test-vault-large");
+const DEFAULT_OUT = "test-vault-large";
+const out = resolve(process.env.OUT ?? process.argv[2] ?? join(here, "..", DEFAULT_OUT));
+const SCALE = Math.max(1, Math.floor(Number(process.env.SCALE ?? 1)) || 1);
+const factsPath = process.env.FACTS ?? join(here, basename(out) === DEFAULT_OUT ? "large-facts.json" : `large-facts-${basename(out)}.json`);
 
 // Deterministic PRNG (mulberry32).
 let seed = 20261105;
@@ -469,6 +480,98 @@ for (const p of ["Attachments/sars_proteins.pdf", "Attachments/CSCI470-lecture10
 	attachments.push({ path: p, size: 300_000 + Math.floor(rand() * 4_000_000) });
 }
 
+// ---------------------------------------------------------------- filler (SCALE > 1)
+// Realistic-looking notes that no scenario asks about, in folders nothing above uses. They
+// have their own PRNG so the base notes above are byte-identical at every SCALE, link only
+// among themselves (no broken links, no orphans), carry no recording embeds, Summary
+// sections, Capture sections, code blocks or `status: done` frontmatter, and avoid the
+// landmark terms, so the gardener report and every check stay the same; only the outline,
+// the index and the search rankings get bigger.
+const FILLER_PER_SCALE = 330;
+facts.counts.filler = 0;
+facts.scale = SCALE;
+if (SCALE > 1) {
+	let fseed = 0x5ca1e;
+	const frand = () => {
+		fseed |= 0;
+		fseed = (fseed + 0x6d2b79f5) | 0;
+		let t = Math.imul(fseed ^ (fseed >>> 15), 1 | fseed);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+	const fpick = (arr) => arr[Math.floor(frand() * arr.length)];
+	const fint = (lo, hi) => lo + Math.floor(frand() * (hi - lo + 1));
+	const fchance = (p) => frand() < p;
+
+	const domains = [
+		["os", ["Process scheduling", "Page replacement", "Copy-on-write forks", "Interrupt latency", "File system journaling", "Memory-mapped IO", "Kernel preemption", "Deadlock avoidance", "Thread pools", "Signals and handlers", "Boot sequence", "System call overhead", "Spinlocks vs mutexes", "Zombie processes", "Huge pages"]],
+		["networking", ["TCP congestion control", "DNS resolution", "ARP spoofing", "BGP path selection", "QUIC handshake", "NAT traversal", "TLS certificate chains", "Packet fragmentation", "Routing table lookup", "Wi-Fi channel bonding", "HTTP caching headers", "WebSocket framing", "Multicast groups", "Traceroute internals", "IPv6 addressing"]],
+		["databases", ["Write-ahead logging", "MVCC snapshots", "Query planning", "Index selectivity", "Two-phase commit", "Sharding keys", "Connection pooling", "Materialised views", "Schema migrations", "Bloom filters in storage engines", "Cardinality estimation", "Isolation anomalies", "Columnar storage", "Vacuuming dead tuples", "Change data capture"]],
+		["compilers", ["Lexer state machines", "LL versus LR parsing", "Static single assignment", "Register allocation", "Dead code elimination", "Inlining heuristics", "Garbage collection roots", "Tail call optimisation", "Type inference", "Linking and relocation", "Peephole passes", "Escape analysis", "Bytecode interpreters", "Loop unrolling", "Name mangling"]],
+		["distributed", ["Leader election", "Vector clocks", "Gossip protocols", "Idempotent retries", "Backpressure", "Circuit breakers", "Consistent hashing", "Quorum reads", "Clock skew", "Exactly-once delivery myths", "Saga pattern", "Rate limiting", "Service discovery", "Split brain", "Log compaction"]],
+		["statistics", ["Bootstrap confidence intervals", "Simpson's paradox", "Bayes factors", "Power analysis", "Multiple comparisons", "Survival curves", "Heteroscedasticity", "Mixed effects models", "Permutation tests", "Prior sensitivity", "Effect sizes", "Censoring", "Autocorrelation", "Robust regression", "Markov chain Monte Carlo"]],
+		["astronomy", ["Parallax distances", "Hertzsprung-Russell diagram", "Redshift surveys", "Exoplanet transits", "Dark matter rotation curves", "Cepheid variables", "Spectral classes", "Gravitational lensing", "Cosmic microwave background", "Telescope aperture", "Orbital resonance", "Main sequence lifetime", "Solar flares", "Meteor showers", "Light pollution"]],
+		["life", ["Trail running pacing", "Film photography exposure", "Sourdough starters", "Spanish subjunctive", "Index fund basics", "Weekly review habit", "Bike chain maintenance", "Meal planning", "Sleep hygiene", "Cold weather layering", "Houseplant watering", "Budget envelopes", "Touch typing practice", "Climbing footwork", "Reading goals"]],
+	];
+	const facets = ["Overview", "Why it matters", "Key terms", "Worked example", "Pitfalls", "Open questions", "See also", "History", "Counterexamples", "Checklist", "In practice", "What I got wrong"];
+	const F1 = ["The core idea is that", "Most explanations skip that", "It took me a while to see that", "The textbook version says", "In the lab it turned out that", "A useful mental model:", "The short version:", "Contrary to what I assumed,"];
+	const F2 = ["the behaviour depends on the order of operations", "the simple case hides the interesting one", "everything is a trade-off against latency", "the invariant has to hold at every step", "the naive approach works until it suddenly does not", "the cost is paid up front and recovered later", "the edge cases are where the real design lives", "two mechanisms compete for the same resource"];
+	const F3 = ["Revisit after the exam.", "Compare with the wiki article.", "Draw the diagram again from memory.", "Turn this into a flashcard.", "Good interview question.", "Still fuzzy on the proof.", "Measured it; the difference was small.", "Worth a weekend experiment."];
+	const fprose = (topic, n) => Array.from({ length: n }, () => `${fpick(F1)} ${topic.toLowerCase()} ${fpick(["shows how", "is a case where", "matters because", "breaks when", "works since"])} ${fpick(F2)}. ${fpick(F3)}`).join(" ");
+	const sources = ["lecture handout", "a blog post", "the manual", "a conference talk", "office hours", "a podcast", "trial and error", "a textbook chapter", "a friend's explanation"];
+	const extraTags = ["review", "draft", "flashcard", "evergreen", "todo", "question", "exam", "weekend"];
+
+	// Titles first (every basename unique across the vault), then bodies that link among them.
+	const taken = new Set(Array.from(files.keys()).map((p) => basename(p, ".md").toLowerCase()));
+	const titles = [];
+	const unique = (t) => {
+		let name = t;
+		for (let k = 2; taken.has(name.toLowerCase()); k++) name = `${t} (${k})`;
+		taken.add(name.toLowerCase());
+		return name;
+	};
+	const total = FILLER_PER_SCALE * (SCALE - 1);
+	for (let i = 0; i < total; i++) {
+		const [tag, topics] = domains[i % domains.length];
+		const topic = topics[Math.floor(i / domains.length) % topics.length];
+		const round = Math.floor(i / (domains.length * topics.length));
+		const kind = i % 11 < 5 ? "zettel" : i % 11 < 8 ? "library" : "archive";
+		let title;
+		if (kind === "zettel") title = unique(round === 0 ? topic : `${topic} - ${fpick(facets).toLowerCase()}`);
+		else if (kind === "library") title = unique(`${fpick(["Notes on", "Reading", "Summary of", "Highlights from", "Course notes on"])} ${topic.toLowerCase()} (${fint(2019, 2024)})`);
+		else title = unique(`${fpick(["Fall 2024", "Spring 2024"])} ${topic} ${fpick(["week", "lab", "quiz", "worksheet"])} ${fint(1, 14)}`);
+		titles.push({ title, path: `${kind === "zettel" ? "Zettel" : kind === "library" ? "Library" : "Archive/2024"}/${title}.md`, topic, tag, kind });
+	}
+	for (const t of titles) {
+		const links = new Set();
+		for (let k = fint(1, 4); k > 0; k--) {
+			const other = fpick(titles);
+			if (other !== t) links.add(other.title);
+		}
+		const linkList = Array.from(links);
+		const tags = [t.tag, ...(fchance(0.6) ? [fpick(extraTags)] : []), ...(fchance(0.3) ? [fpick(extraTags)] : [])];
+		const lines = [];
+		if (t.kind !== "zettel" || fchance(0.5)) lines.push("---", `tags: [${Array.from(new Set(tags)).join(", ")}]`, ...(t.kind === "library" ? [`source: "${fpick(sources)}"`] : []), "---");
+		lines.push(`# ${t.title}`, "", fprose(t.topic, fint(1, 3)), "");
+		const nHeadings = fint(2, 6);
+		const chosen = facets.slice().sort(() => frand() - 0.5).slice(0, nHeadings);
+		chosen.forEach((h, idx) => {
+			lines.push(`## ${h}`, "");
+			if (h === "See also") lines.push(...linkList.map((l) => `- [[${l}]]`), "");
+			else if (h === "Checklist") lines.push(...Array.from({ length: fint(2, 5) }, () => `- [${fchance(0.5) ? "x" : " "}] ${fpick(["re-read the notes", "try the example", "ask in office hours", "write the summary", "find a second source"])}`), "");
+			else if (h === "Key terms") lines.push(...Array.from({ length: fint(2, 5) }, () => `- **${fpick(["invariant", "amortised cost", "steady state", "boundary condition", "failure mode", "warm-up", "baseline", "saturation"])}** — ${fpick(F2)}.`), "");
+			else {
+				for (let p = fint(1, 3); p > 0; p--) lines.push(fprose(t.topic, fint(1, 4)), "");
+				if (idx === 0 && linkList.length && !chosen.includes("See also")) lines.push(`Related: ${linkList.map((l) => `[[${l}]]`).join(", ")}.`, "");
+			}
+		});
+		if (!chosen.includes("See also") && !lines.some((l) => l.startsWith("Related:"))) lines.push(`Related: ${linkList.map((l) => `[[${l}]]`).join(", ")}.`, "");
+		if (t.kind === "zettel" && !lines[0].startsWith("---")) lines.push(tags.map((x) => `#${x}`).join(" "));
+		put(t.path, lines.join("\n"));
+	}
+	facts.counts.filler = titles.length;
+}
+
 // ---------------------------------------------------------------- write
 rmSync(out, { recursive: true, force: true });
 let chars = 0;
@@ -480,5 +583,5 @@ for (const [path, content] of files) {
 facts.counts.notes = files.size;
 facts.counts.chars = chars;
 facts.attachments = attachments;
-writeFileSync(join(here, "large-facts.json"), JSON.stringify(facts, null, 2));
-console.log(`wrote ${files.size} notes (${chars} chars) and ${attachments.length} attachment stubs to ${out}`);
+writeFileSync(factsPath, JSON.stringify(facts, null, 2));
+console.log(`wrote ${files.size} notes (${chars} chars${facts.counts.filler ? `, ${facts.counts.filler} filler at SCALE=${SCALE}` : ""}) and ${attachments.length} attachment stubs to ${out}; facts in ${factsPath}`);

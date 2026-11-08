@@ -33,7 +33,8 @@ const runs = Number(process.env.RUNS ?? 1);
 const version = JSON.parse(readFileSync("manifest.json", "utf8")).version;
 
 execFileSync("npx", ["esbuild", "scripts/e2e-large.ts", "--bundle", "--platform=node", "--format=cjs", "--outfile=.e2e/e2e-large.cjs", "--log-level=warning"], { stdio: "inherit", shell: true });
-if (!existsSync("test-vault-large")) execFileSync("node", ["scripts/make-vault.mjs"], { stdio: "inherit" });
+const vaultDir = process.env.VAULT_DIR ?? "test-vault-large"; // passed through to the e2e script; generate it first for other sizes (SCALE=3 OUT=…)
+if (!existsSync(vaultDir)) execFileSync("node", ["scripts/make-vault.mjs"], { stdio: "inherit", env: { ...process.env, OUT: vaultDir } });
 
 const files = [];
 for (const name of names) {

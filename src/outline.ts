@@ -1,4 +1,4 @@
-import type { VaultAccess } from "./types";
+import type { NoteInfo, VaultAccess } from "./types";
 
 /**
  * A compact map of the whole vault for the system prompt: every note path, grouped by
@@ -69,8 +69,48 @@ export function buildOutline(vault: VaultAccess, opts: OutlineOptions | number):
 	if (fits(withHeadings)) return withHeadings;
 	const bare = render("none", notes.length, 0);
 	if (fits(bare)) return bare;
+	// Too many notes even for bare names (about 1000 at 32k). Keep every folder on the map:
+	// folders with at most k notes list them, bigger ones collapse to one line with their count
+	// and name range, so the model still knows the folder exists and can list_notes it. The old
+	// fallback kept an alphabetical prefix, which silently dropped whole folders (School/,
+	// Projects/, People/ …) while Archive/ and Daily/ used up the budget.
+	const folders = groupByFolder(notes);
+	const biggest = Math.max(...folders.map((f) => f.notes.length));
+	const k = largest(biggest, (n) => fits(renderFolders(folders, n)));
+	const collapsed = renderFolders(folders, fits(renderFolders(folders, k)) ? k : 0);
+	if (fits(collapsed)) return collapsed;
 	const prefix = largest(notes.length, (n) => fits(render("none", n, 0)));
 	return render("none", Math.max(prefix, 1), 0);
+}
+
+interface FolderGroup {
+	folder: string;
+	notes: NoteInfo[];
+}
+
+/** Notes grouped by folder, in path order (`notes` must already be sorted by path). */
+function groupByFolder(notes: NoteInfo[]): FolderGroup[] {
+	const groups: FolderGroup[] = [];
+	for (const note of notes) {
+		const last = groups[groups.length - 1];
+		if (last && last.folder === note.folder) last.notes.push(note);
+		else groups.push({ folder: note.folder, notes: [note] });
+	}
+	return groups;
+}
+
+/** Every folder; those with more than `maxListed` notes (and more than one) as a single summary line. */
+function renderFolders(folders: FolderGroup[], maxListed: number): string {
+	const lines: string[] = [];
+	for (const { folder, notes } of folders) {
+		const name = folder === "" ? "/" : `${folder}/`;
+		if (notes.length <= Math.max(maxListed, 1)) {
+			lines.push(name, ...notes.map((n) => `  ${n.basename}.md`));
+		} else {
+			lines.push(`${name} (${notes.length} notes, ${notes[0].basename} … ${notes[notes.length - 1].basename}; list_notes shows them)`);
+		}
+	}
+	return lines.join("\n");
 }
 
 /** Largest n in [0, max] for which `ok(n)` holds, assuming monotonic `ok`. */

@@ -7,3 +7,5 @@ test-vault/.obsidian/workspace*.json
 .e2e/
 test-vault-large/
 bench/**/*.log
+test-vault-*/
+scripts/large-facts-*.json

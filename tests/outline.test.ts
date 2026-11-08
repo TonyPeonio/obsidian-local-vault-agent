@@ -25,9 +25,28 @@ describe("buildOutline", () => {
 		const bare = buildOutline(vault(), full.length - 1);
 		expect(bare).not.toContain("›");
 		expect(bare).toContain("  Chess Robot.md\n  Engine Notes.md");
-		const cut = buildOutline(vault(40), 200);
-		expect(cut.length).toBeLessThanOrEqual(200);
+		const cut = buildOutline(vault(40), 100);
+		expect(cut.length).toBeLessThanOrEqual(100);
 		expect(cut).toMatch(/…and \d+ more notes/);
+	});
+
+	it("keeps every folder visible when bare names do not fit, collapsing the big ones", () => {
+		// 40 daily notes do not fit in 300 chars, but every folder still appears: the small ones
+		// in full, Daily/ as one line with its count and range. Before, the alphabetical prefix
+		// fallback dropped Projects/ and Welcome.md entirely.
+		const v = vault(40);
+		const out = buildOutline(v, 300);
+		expect(out.length).toBeLessThanOrEqual(300);
+		expect(out).toContain("Projects/\n  Chess Robot.md\n  Engine Notes.md");
+		expect(out).toContain("/\n  Welcome.md");
+		expect(out).toContain("Daily/ (40 notes, 2026-01-01 … 2026-01-40; list_notes shows them)");
+		expect(out).not.toContain("more notes");
+		// With a little more room the mid-sized folder is listed and only the biggest collapses.
+		for (let i = 0; i < 8; i++) v.seed(`Zettel/Note ${i}.md`, "# n");
+		const mid = buildOutline(v, 450);
+		expect(mid.length).toBeLessThanOrEqual(450);
+		expect(mid).toContain("Zettel/\n  Note 0.md");
+		expect(mid).toMatch(/^Daily\/ \(40 notes/m);
 	});
 
 	it("budget scales with the context window", () => {

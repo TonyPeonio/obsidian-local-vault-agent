@@ -609,6 +609,7 @@
   },
   "counts": {
     "daily": 127,
+    "filler": 0,
     "notes": 339,
     "chars": 187816
   },
@@ -679,6 +680,7 @@
     ],
     "captureCount": 127
   },
+  "scale": 1,
   "attachments": [
     {
       "path": "Recording 20260903123013.m4a",

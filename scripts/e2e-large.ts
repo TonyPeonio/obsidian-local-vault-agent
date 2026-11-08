@@ -7,7 +7,7 @@
  *   GISTS=1 → also generate note gists first (slow) and use them in the outline.
  */
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
-import { join, relative } from "path";
+import { basename, join, relative, resolve } from "path";
 import { Agent, buildSystemPrompt, looksLikePermissionQuestion, newConversation, type AgentConfig } from "../src/agent";
 import { DEFAULT_SETTINGS, SAMPLING } from "../src/settings";
 import { GistCache, type GistData } from "../src/gists";
@@ -31,6 +31,7 @@ const ONLY = process.env.ONLY; // comma-separated scenario ids
 const TEMPERATURE = process.env.TEMPERATURE !== undefined ? Number(process.env.TEMPERATURE) : DEFAULT_SETTINGS.temperature;
 const PRESENCE = process.env.PRESENCE !== undefined ? Number(process.env.PRESENCE) : SAMPLING.presence_penalty;
 const TAG = process.env.TAG ?? "";
+const VAULT_DIR = process.env.VAULT_DIR ?? "test-vault-large"; // a vault from scripts/make-vault.mjs (OUT=…)
 /** "auto" | "on" | "off"; the plugin default unless THINK is set. */
 const THINK = process.env.THINK ?? DEFAULT_SETTINGS.thinking;
 
@@ -62,8 +63,11 @@ function loadVault(dir: string): FakeVault {
 }
 
 async function main() {
-	const root = join(process.cwd(), "test-vault-large");
-	const facts = JSON.parse(readFileSync(join(process.cwd(), "scripts/large-facts.json"), "utf8")) as Facts;
+	// VAULT_DIR picks the generated vault (see scripts/make-vault.mjs: OUT/SCALE); the facts file
+	// follows it by the generator's rule unless FACTS names one.
+	const root = resolve(process.cwd(), VAULT_DIR);
+	const factsFile = process.env.FACTS ?? join(process.cwd(), "scripts", basename(root) === "test-vault-large" ? "large-facts.json" : `large-facts-${basename(root)}.json`);
+	const facts = JSON.parse(readFileSync(factsFile, "utf8")) as Facts;
 	const vault = loadVault(root);
 	for (const a of facts.attachments) vault.seedFile(a.path, a.size);
 	// The gardener's note, as the plugin's command would write it, so a scenario can act on it.

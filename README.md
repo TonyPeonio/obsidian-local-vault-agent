@@ -226,6 +226,23 @@ What the numbers say:
   clean-up run in four where the model greps and reads instead of surveying and runs out of
   steps without editing.
 
+**Vault size.** The same benchmark on a 3× vault (997 notes: the 339 above plus 660 filler
+notes in `Zettel/`, `Library/` and `Archive/2024/`, 1.9 M characters) with the defaults scored
+110 of 115 in 214 s with 83 tool calls (339 notes the same night: 112, 155 s, 66 calls). The
+index took 47 s instead of 8–10 s, the system prompt grew from ~5.0k to ~6.2k tokens and each
+scenario's largest prompt by 1.5–2.5k tokens; the misses were a follow-up turn that re-read its
+source, a malformed tool call, a repeated survey, an answer that dropped a fact it had stated a
+step earlier, and the clean-up deleting three unsummarised embeds after grepping instead of
+trusting its survey — the same single-check misses seen at 339 notes, none caused by a note the
+agent could not find. One real defect did show: at ~1000 notes the outline no longer fit even as
+bare file names and fell back to an alphabetical prefix, so `School/`, `Projects/`, `People/`,
+`Meetings/` and `Research/` vanished from the system prompt while `Archive/` and 127 daily
+dates used the budget. Folders that do not fit now collapse to one line with their note count
+and name range, and every folder stays on the map; with that fix the 3× run scored 114 of 115
+with 79 calls and a ~5.1k-token system prompt, in 316 s of which 171 s was the clean-up taking
+its known grep-and-read path (every other scenario finished in 3–41 s, as at 339 notes). Reproduce with `SCALE=3 OUT=test-vault-x3 node scripts/make-vault.mjs` and
+`VAULT_DIR=test-vault-x3 TAG=scale3 npm run e2e:large`; results are in `bench/0.5.1-scale3*.json`.
+
 Run it yourself with `npm run make-vault && npm run e2e:large` (see Development); results land
 in `bench/`.
 
@@ -262,7 +279,9 @@ The benchmark (`scripts/e2e-large.ts`) runs 16 scenarios on a generated 339-note
 (`scripts/make-vault.mjs`, with `scripts/large-facts.json` recording the facts the checks look
 for) and saves per-scenario seconds, tool calls, errors, guessed paths, repeated calls and
 pass/fail to `bench/<version>[-tag].json`. `MODEL=`, `NUM_CTX=`, `THINK=on|off`, `TEMPERATURE=`,
-`PRESENCE=`, `GISTS=1`, `TAG=` and `ONLY=id,id` select what runs. `npm run bench-matrix` runs
+`PRESENCE=`, `GISTS=1`, `TAG=` and `ONLY=id,id` select what runs; `VAULT_DIR=` points it at a
+vault generated with `SCALE=3 OUT=test-vault-x3 node scripts/make-vault.mjs` (the same 339
+notes plus 660 filler notes in their own folders, facts in `scripts/large-facts-test-vault-x3.json`). `npm run bench-matrix` runs
 several configurations back to back (`RUNS=2` for variance) and prints one table;
 `npm run bench-table a.json b.json` renders a before/after comparison. Add a scenario whenever a
 real-vault failure is reproduced; the results in `bench/` are the release gate.
