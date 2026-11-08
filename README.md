@@ -188,7 +188,8 @@ runs differ by up to 2× in wall time, so the defaults were run many times over 
 
 | Configuration | Checks | Seconds | Model s | Tool calls | Repeats |
 |---|---:|---:|---:|---:|---:|
-| **qwen3.5:9b, defaults (thinking off, temp 0.6), final build** | **113, 113, 112** | **151, 243, 155** | 147, 237, 138 | 65, 186, 66 | 0, 0, 3 |
+| **qwen3.5:9b, defaults (thinking off, temp 0.6), final build, 20 scenarios / 122 checks** | **121, 120, 120** | **167, 184, 197** | 162, 178, 192 | 64, 79, 64 | 0, 1, 0 |
+| same build on the 19-scenario / 115-check set earlier the same night | 113, 113, 112 | 151, 243, 155 | 147, 237, 138 | 65, 186, 66 | 0, 0, 3 |
 | qwen3.5:9b, defaults, with the Lecture Companion scenario (20 scenarios, 122 checks) | 119, 118 of 122 | 173, 265 | 165, 238 | 59, 94 | 0, 3 |
 | qwen3.5:9b, defaults, earlier 0.5.1 builds the same night (10 runs) | 108–114 | 157–262 | | 61–99 | 0–3 |
 | qwen3.5:9b, note gists on | 113 | 231 (+230 to gist 334 notes once) | 206 | 110 | 0 |
