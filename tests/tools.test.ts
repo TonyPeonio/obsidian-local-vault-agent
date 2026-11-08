@@ -644,6 +644,17 @@ describe("list_sections", () => {
 		expect(out).toMatch(/Marked sections \(path › heading\):\nS\/L\.md › a$/m);
 	});
 
+	it("leaves out a parent section whose match comes only from a child", async () => {
+		const vault = freshVault();
+		vault.seed("S/L.md", "# Lectures\n\nIntro.\n\n## a\n\n![[Recording 1.m4a]]\n\n### Summary\n\n- x\n\n## b\n\n![[Recording 2.m4a]]\n");
+		const { ctx } = makeCtx(vault);
+		const out = await listSections.execute({ containing: ["![[Recording", "### Summary"], folder: "S" }, ctx);
+		expect(out).not.toContain("# Lectures");
+		expect(out).toContain("## a: ![[Recording yes, ### Summary yes → all");
+		expect(out).toContain("## b: ![[Recording yes, ### Summary no");
+		expect(out).toMatch(/^2 sections/);
+	});
+
 	it("accepts the texts as a Python-style list in a string", async () => {
 		const vault = freshVault();
 		vault.seed("S/L.md", "# L\n\n## a\n\n![[Recording 1.m4a]]\n\n### Summary\n\n- x\n");
@@ -678,7 +689,8 @@ describe("list_sections", () => {
 		const { ctx } = makeCtx(vault);
 		const out = await listSections.execute({ containing: ["![[Recording", "### Summary"], folder: "S", level: 2 }, ctx);
 		expect(out).toMatch(/^2 sections/);
-		expect(out).toContain("S/L.md\n  ## a: ![[Recording yes, ### Summary yes → all\n  ## b: ![[Recording yes, ### Summary no");
+		expect(out).toContain("Sections with EVERY text (1):\nS/L.md\n  ## a: ![[Recording yes, ### Summary yes → all\n");
+		expect(out).toContain('Sections with only SOME of the texts (1) — leave these alone when the rule is "has both":\nS/L.md\n  ## b: ![[Recording yes, ### Summary no');
 		expect(out).not.toContain("## c");
 		const all = await listSections.execute({ containing: ["zzz"], path: "S/L", only_matching: false }, ctx);
 		expect(all).toMatch(/^5 sections/);

@@ -360,7 +360,13 @@ export const grepVault: ToolDefinition = {
 		if (result.total === 0) return `${note}No note contains "${rawPattern}"${folder ? ` under ${folder}/` : ""}.`;
 		const { blocks, shown, total, notesHit } = result;
 		const more = total > shown ? `\n…${total - shown} more matching lines not shown; narrow with folder or raise the limit.` : "";
-		return `${note}${total} matching line${total === 1 ? "" : "s"} in ${notesHit} note${notesHit === 1 ? "" : "s"}:\n${blocks.join("\n--\n")}${more}`;
+		// Many matches with context usually means "which of these sections also has X": that is
+		// one list_sections call, not a reading tour.
+		const hint =
+			total >= 8 && context > 0
+				? `\nTo know which of these sections also contain (or lack) another text, call list_sections({containing: [${JSON.stringify(rawPattern)}, "<other text>"]}) once instead of reading them.`
+				: "";
+		return `${note}${total} matching line${total === 1 ? "" : "s"} in ${notesHit} note${notesHit === 1 ? "" : "s"}:\n${blocks.join("\n--\n")}${more}${hint}`;
 	},
 };
 
@@ -451,6 +457,8 @@ export const listSections: ToolDefinition = {
 		let withAll = 0;
 		/** `path › heading` of those sections, listed again at the end so they can be copied as edit targets. */
 		const marked: string[] = [];
+		/** Notes whose rows have only some of the texts (grouped mode). */
+		const someBlocks: string[] = [];
 		for (const n of notes) {
 			const lines = (await ctx.vault.read(n.path)).split("\n");
 			// A section runs to the next heading of the same or a higher level, so nested
@@ -463,10 +471,13 @@ export const listSections: ToolDefinition = {
 				if (h) heads.push({ heading: h[2].trim(), lvl: h[1].length, line: i });
 			}
 			const rows: string[] = [];
-			for (let k = 0; k < heads.length; k++) {
-				const s = heads[k];
-				if (level && s.lvl !== level) continue;
-				if (wantHeading && !s.heading.toLowerCase().startsWith(wantHeading)) continue;
+			/** With two or more texts the rows are grouped: every text vs only some. */
+			const someRows: string[] = [];
+			const grouped = needles.length > 1 && !wantHeading;
+			// Each section's extent and flags, computed once: a parent whose match comes only from
+			// a child (the note's "# Title" contains every "## date" section) must not be reported,
+			// or the model edits "heading: <note title>" and takes every recording in the note.
+			const info = heads.map((s, k) => {
 				let end = lines.length;
 				for (let j = k + 1; j < heads.length; j++) {
 					if (heads[j].lvl <= s.lvl) {
@@ -477,6 +488,18 @@ export const listSections: ToolDefinition = {
 				const bodyLines = lines.slice(s.line + 1, end);
 				const body = bodyLines.join("\n");
 				const flags = lowers.map((l) => body.toLowerCase().includes(l));
+				return { s, end, bodyLines, body, flags };
+			});
+			const shadowed = (k: number): boolean => {
+				const { s, end, flags } = info[k];
+				if (!needles.length || wantHeading || !flags.some(Boolean)) return false;
+				return info.some((c) => c.s.line > s.line && c.s.line < end && c.s.lvl > s.lvl && c.flags.some(Boolean) && flags.every((f, i) => !f || c.flags[i]));
+			};
+			for (let k = 0; k < heads.length; k++) {
+				const { s, bodyLines, body, flags } = info[k];
+				if (level && s.lvl !== level) continue;
+				if (wantHeading && !s.heading.toLowerCase().startsWith(wantHeading)) continue;
+				if (shadowed(k)) continue;
 				candidates++;
 				if (onlyMatching && !flags.some(Boolean)) continue;
 				total++;
@@ -492,14 +515,17 @@ export const listSections: ToolDefinition = {
 				// Only yes/no per text: quoting the matching line here made the model paste the whole
 				// row into edit_notes' line_contains. The needle itself is what line_contains needs.
 				if (needles.length) row += `${wantHeading ? " |" : ":"} ${needles.map((t, i) => `${t} ${flags[i] ? "yes" : "no"}`).join(", ")}`;
-				if (needles.length > 1 && flags.every(Boolean)) {
+				const hasAll = needles.length > 1 && flags.every(Boolean);
+				if (hasAll) {
 					row += " → all";
 					withAll++;
 					if (marked.length < 80) marked.push(`${n.path} › ${s.heading}`);
 				}
-				rows.push(row);
+				if (grouped && !hasAll) someRows.push(row);
+				else rows.push(row);
 			}
 			if (rows.length) blocks.push(`${n.path}\n${rows.join("\n")}`);
+			if (someRows.length) someBlocks.push(`${n.path}\n${someRows.join("\n")}`);
 		}
 		if (total === 0) {
 			const where = folder ? ` under ${folder}/` : "";
@@ -521,6 +547,12 @@ export const listSections: ToolDefinition = {
 						marked.length ? `\nMarked sections (path › heading):\n${marked.join("\n")}${withAll > marked.length ? `\n…and ${withAll - marked.length} more` : ""}` : ""
 					}`
 				: "";
+		if (needles.length > 1 && !wantHeading) {
+			// Two groups, so "25 sections" can never be read as "25 sections with both".
+			const every = `Sections with EVERY text (${withAll}):\n${blocks.length ? blocks.join("\n") : "(none)"}`;
+			const partial = `Sections with only SOME of the texts (${total - withAll}) — leave these alone when the rule is "has both":\n${someBlocks.length ? someBlocks.join("\n") : "(none)"}`;
+			return `${total} section${total === 1 ? "" : "s"} ${legend}:\n${every}\n${partial}${more}${verdict}`;
+		}
 		return `${total} section${total === 1 ? "" : "s"} ${legend}:\n${blocks.join("\n")}${more}${verdict}`;
 	},
 };

@@ -191,7 +191,8 @@ async function main() {
 				// Writes are logged in full (well, 600 chars) so a wrong edit can be diagnosed from the log.
 				onToolStart: (c) => console.log(`  [tool] ${c.function.name} ${JSON.stringify(c.function.arguments).slice(0, /^(edit_note|edit_notes|replace_section|replace_note|create_note|append_to_note)$/.test(c.function.name) ? 600 : 110)}`),
 				onToolDone: (c, r, ok) => {
-					tools.push(c.function.name);
+					// A write the agent refused after a rejection never ran; it is not an attempt.
+					if (!/^Not executed: the user rejected/.test(r)) tools.push(c.function.name);
 					if (!ok) {
 						errors++;
 						if (/^Error: No note found/.test(r)) misses++;
