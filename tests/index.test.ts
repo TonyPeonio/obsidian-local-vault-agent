@@ -143,4 +143,32 @@ describe("searchPassages", () => {
 		expect(capped.filter((p) => p.path === "Projects/Chess Robot.md")).toHaveLength(1);
 		expect(await index.searchPassages("x", 2)).toHaveLength(2);
 	});
+
+	it("embeds only the chunks that changed when a note is edited", async () => {
+		const { index, ollama, vault, store } = setup(true, ["Templates"]);
+		await index.syncAll();
+		const before = JSON.parse(JSON.stringify(store.data!.files["Projects/Chess Robot.md"].chunks)) as { heading: string; text: string; vec: string }[];
+		ollama.embedCalls.length = 0;
+
+		// A new section at the end, as a transcript or a daily note grows: one new chunk, one embedding.
+		await vault.modify("Projects/Chess Robot.md", "# Chess Robot\n\nThe gantry moves pieces with an electromagnet.\n\n## Sensors\n\nHall sensors detect pieces.\n\n## Firmware\n\nThe controller runs GRBL.");
+		await index.syncAll();
+		expect(ollama.embedCalls.flat()).toHaveLength(1);
+		expect(ollama.embedCalls.flat()[0]).toContain("The controller runs GRBL.");
+		const after = store.data!.files["Projects/Chess Robot.md"].chunks;
+		expect(after).toHaveLength(before.length + 1);
+		// The untouched chunks kept their vectors, and the note is fully searchable.
+		for (const c of before) expect(after.find((a) => a.heading === c.heading && a.text === c.text)?.vec).toBe(c.vec);
+		expect((await index.searchPassages("controller GRBL firmware", 1))[0].text).toContain("GRBL");
+
+		// Saved again with the same text (only the mtime moved): nothing is sent at all.
+		ollama.embedCalls.length = 0;
+		await vault.modify("Projects/Chess Robot.md", await vault.read("Projects/Chess Robot.md"));
+		await index.syncAll();
+		expect(ollama.embedCalls).toHaveLength(0);
+
+		// A forced rebuild still embeds everything.
+		await index.syncAll(true);
+		expect(ollama.embedCalls.flat().length).toBeGreaterThan(after.length);
+	});
 });

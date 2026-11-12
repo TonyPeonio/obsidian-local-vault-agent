@@ -1,7 +1,7 @@
 import { MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf, loadPdfJs, moment, normalizePath, requestUrl } from "obsidian";
 import { Agent, type AgentConfig } from "./agent";
 import { ApprovalModal } from "./approval-modal";
-import { SUGGESTIONS_NOTE, gardenVault, renderGardenReport } from "./gardener";
+import { LEGACY_SUGGESTIONS_NOTE, gardenFixes, gardenVault, planGardenAction, renderGardenChat, renderPlanResult, type GardenAction, type GardenReport, type PlannedChange } from "./gardener";
 import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, type IndexData, type IndexStatus } from "./index";
 import { ObsidianVault } from "./obsidian-vault";
@@ -183,7 +183,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "suggest-improvements",
-			name: "Suggest vault improvements (write the Vault Suggestions note)",
+			name: "Suggest vault improvements (report in the chat)",
 			callback: () => void this.suggestImprovements(),
 		});
 		this.addCommand({
@@ -226,7 +226,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 
 		// Keep the index in step with the vault. Debounce per path so a burst of edits to one
-		// note embeds once, while edits to different notes are all picked up.
+		// note embeds once, while edits to different notes are all picked up. Ten seconds rather
+		// than two: a note being typed in pauses every few seconds, and each pause woke the GPU.
 		const timers = new Map<string, number>();
 		const changed = (file: TFile) => {
 			const existing = timers.get(file.path);
@@ -237,7 +238,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 					timers.delete(file.path);
 					this.index.enqueue(file.path);
 					this.gists.enqueue(file.path);
-				}, 2000),
+				}, 10000),
 			);
 		};
 		this.register(() => timers.forEach((t) => window.clearTimeout(t)));
@@ -470,33 +471,61 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	}
 
 	/**
-	 * The vault gardener: analyses the vault without a model and writes (or refreshes) the
-	 * Vault Suggestions note after the usual diff approval, then opens it.
+	 * The vault gardener: analyses the vault without a model and reports in the chat, with a
+	 * button per section. Nothing is written to the vault here.
 	 */
-	async suggestImprovements(): Promise<void> {
+	async suggestImprovements(view?: AgentView | null): Promise<void> {
+		const target = view ?? (await this.activateView());
+		if (!target) return;
 		const hasIndex = this.settings.semanticSearch && this.index.ready;
+		const conventions = this.settings.conventionsNote.trim() ? this.vault.resolve(this.settings.conventionsNote) : null;
 		const report = await gardenVault(this.vault, {
 			dailyFolder: this.dailyFolder,
 			inboxHeading: this.settings.dailyInboxHeading,
-			exclude: (p) => isExcluded(p, this.settings.excludedFolders),
+			// The conventions note is read on every message; it needs no links to be in use.
+			exclude: (p) => isExcluded(p, this.settings.excludedFolders) || p === conventions,
 			noteVectors: hasIndex ? this.index.noteVectors() : undefined,
 		});
-		const after = renderGardenReport(report, { hasIndex });
-		const path = SUGGESTIONS_NOTE;
-		const existing = this.app.vault.getFileByPath(path);
-		const before = existing ? await this.app.vault.cachedRead(existing) : "";
-		if (before === after) {
-			new Notice("Vault Suggestions is already up to date.");
-			await this.app.workspace.openLinkText(path, "", false);
-			return;
+		await target.showGardenReport(renderGardenChat(report, { hasIndex }), gardenFixes(report), report, this.app.vault.getFileByPath(LEGACY_SUGGESTIONS_NOTE) !== null);
+	}
+
+	/**
+	 * Carries out one of the gardener's mechanical fixes (repoint moved links, link mentions, remove
+	 * identical copies) without the model: the edits are worked out from the notes as they are now,
+	 * each is shown as a diff and recorded for undo under `turn`, exactly like an agent edit. Returns
+	 * the report for the chat, or null when the action is not a mechanical one.
+	 */
+	async applyGardenAction(action: GardenAction, report: GardenReport, turn: number): Promise<string | null> {
+		const plan = await planGardenAction(this.vault, action, report);
+		if (!plan) return null;
+		const applied: PlannedChange[] = [];
+		let approveAll = this.settings.autoApproveEdits;
+		let stopped = false;
+		for (const change of plan.changes) {
+			if (!approveAll) {
+				const modal = new ApprovalModal(this.app, { tool: change.tool, path: change.path, before: change.before, after: change.after, summary: change.summary });
+				modal.open();
+				const decision = await modal.result;
+				if (decision === "reject") {
+					stopped = true;
+					break;
+				}
+				if (decision === "approve-all") approveAll = true;
+			}
+			if (change.tool === "delete_file") await this.vault.trash(change.path);
+			else await this.vault.modify(change.path, change.after);
+			this.undo.push({ tool: change.tool, path: change.path, before: change.before, after: change.after, time: Date.now(), turn });
+			applied.push(change);
 		}
-		const modal = new ApprovalModal(this.app, { tool: existing ? "replace_note" : "create_note", path, before, after, summary: `${existing ? "Update" : "Create"} ${path}` });
-		modal.open();
-		const decision = await modal.result;
-		if (decision === "reject") return;
-		if (existing) await this.app.vault.modify(existing, after);
-		else await this.app.vault.create(path, after);
-		await this.app.workspace.openLinkText(path, "", false);
+		return renderPlanResult(applied, plan, stopped);
+	}
+
+	/** Moves the checklist note older versions wrote to the trash (its open checkboxes show up in task queries). */
+	async deleteLegacySuggestions(): Promise<boolean> {
+		const file = this.app.vault.getFileByPath(LEGACY_SUGGESTIONS_NOTE);
+		if (!file) return false;
+		await this.app.fileManager.trashFile(file);
+		return true;
 	}
 
 	/** Sends the summarize prompt for the open note (command and /summarize). */

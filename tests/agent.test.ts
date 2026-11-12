@@ -10,6 +10,7 @@ import {
 	REJECTION_QUESTION,
 	REPEATED_CALLS_WRAP_UP,
 	buildSystemPrompt,
+	turnContext,
 	callKey,
 	invalidateCache,
 	linkifyNotePaths,
@@ -414,22 +415,53 @@ describe("looksLikePermissionQuestion", () => {
 });
 
 describe("buildSystemPrompt", () => {
-	it("mentions vault size, date, active note, outline, conventions and extra instructions", () => {
+	it("mentions vault size, outline, conventions and extra instructions", () => {
 		const vault = new FakeVault({ "A.md": "# Alpha\n\na", "Sub/B.md": "b" });
 		vault.activePath = "A.md";
-		const p = buildSystemPrompt(vault, { ...config, extraSystemPrompt: "Be terse." }, new Date("2026-11-05T00:00:00Z"), "Daily notes live in Daily/.");
+		const p = buildSystemPrompt(vault, { ...config, extraSystemPrompt: "Be terse." }, "Daily notes live in Daily/.");
 		expect(p).toContain("2 markdown notes");
-		expect(p).toContain("Today is 2026-11-05");
-		expect(p).toContain("A.md");
 		expect(p).toContain("Vault outline");
 		expect(p).toContain("  A.md — Alpha");
 		expect(p).toContain("Sub/\n  B.md");
 		expect(p).toContain("vault conventions");
 		expect(p).toContain("Daily notes live in Daily/.");
 		expect(p).toContain("Be terse.");
-		expect(buildSystemPrompt(vault, config, new Date())).not.toContain("vault conventions");
-		const withDaily = buildSystemPrompt(vault, config, new Date(), null, undefined, { path: "Daily/2026-11-06.md", exists: false });
-		expect(withDaily).toContain("Today's daily note is Daily/2026-11-06.md (it does not exist yet");
+		expect(buildSystemPrompt(vault, config)).not.toContain("vault conventions");
+	});
+
+	it("holds nothing that varies per message, so the cached prompt prefix survives a new turn", () => {
+		const vault = new FakeVault({ "A.md": "# Alpha\n\na", "Sub/B.md": "b" });
+		vault.activePath = "A.md";
+		const before = buildSystemPrompt(vault, config);
+		vault.activePath = "Sub/B.md";
+		expect(buildSystemPrompt(vault, config)).toBe(before);
+		expect(before).not.toMatch(/Today is|currently has this note open/);
+	});
+
+	it("puts the date, open note and daily note in the turn context", () => {
+		const vault = new FakeVault({ "A.md": "a" });
+		expect(turnContext(vault, new Date("2026-11-05T00:00:00Z"))).toBe("Today is 2026-11-05. No note is currently open in the editor.");
+		vault.activePath = "A.md";
+		const ctx = turnContext(vault, new Date("2026-11-05T00:00:00Z"), { path: "Daily/2026-11-05.md", exists: false });
+		expect(ctx).toContain("The user currently has this note open: A.md");
+		expect(ctx).toContain("Today's daily note is Daily/2026-11-05.md (it does not exist yet");
+	});
+
+	it("sends the context with the user's message and keeps earlier turns byte-identical", async () => {
+		const { agent, ollama, vault } = setup([{ content: "one" }, { content: "two" }]);
+		const conv = newConversation();
+		vault.activePath = "Projects/Chess Robot.md";
+		await agent.run(conv, "first", {});
+		vault.activePath = "Ideas/Sensors.md";
+		await agent.run(conv, "second", {});
+		const [a, b] = ollama.requests;
+		// What is stored (and shown in the chat) is the user's text; the context rides along separately.
+		expect(conv.messages[0].content).toBe("first");
+		expect(a.messages[1].content).toMatch(/^first\n\n\[State when this message was sent — Today is \d{4}-\d{2}-\d{2}\. The user currently has this note open: Projects\/Chess Robot\.md/);
+		expect(b.messages.at(-1)?.content).toContain("currently has this note open: Ideas/Sensors.md");
+		// Switching notes changed neither the system prompt nor anything already sent.
+		expect(b.messages[0].content).toBe(a.messages[0].content);
+		expect(b.messages[1].content).toBe(a.messages[1].content);
 	});
 
 	it("is given the conventions note on every run", async () => {

@@ -417,3 +417,13 @@
 .lva-options-modal .lva-tune-lines li {
 	margin-bottom: var(--size-4-1);
 }
+
+.lva-fixes {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+.lva-fixes .lva-chip:disabled {
+	opacity: 0.5;
+	cursor: default;
+}

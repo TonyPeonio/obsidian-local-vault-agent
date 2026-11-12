@@ -297,18 +297,26 @@ export class SemanticIndex {
 				const content = await this.vault.read(path);
 				const model = this.opts.getModel();
 				const chunks = chunkMarkdown(content);
-				const inputs = chunks.map((c) =>
-					embedInput(model, `${noteTitle(path)}${c.heading ? ` > ${c.heading}` : ""}\n${c.text}`, "document"),
+				// A chunk whose heading and text are unchanged keeps its vector; only new or edited
+				// chunks go to the embedding model. A note that grows a paragraph at a time (a lecture
+				// being transcribed, a daily note being typed) otherwise had every chunk embedded again
+				// on each save, which on a laptop is a GPU burst every few seconds for nothing.
+				const chunkKey = (c: { heading: string; text: string }) => `${c.heading}\n${c.text}`;
+				const known = new Map<string, string>();
+				for (const c of this.data.files[path]?.chunks ?? []) known.set(chunkKey(c), c.vec);
+				const vecs: (string | undefined)[] = chunks.map((c) => known.get(chunkKey(c)));
+				const missing = chunks.map((_, i) => i).filter((i) => vecs[i] === undefined);
+				const inputs = missing.map((i) =>
+					embedInput(model, `${noteTitle(path)}${chunks[i].heading ? ` > ${chunks[i].heading}` : ""}\n${chunks[i].text}`, "document"),
 				);
-				const vectors: number[][] = [];
 				for (let i = 0; i < inputs.length; i += batchSize) {
-					const batch = inputs.slice(i, i + batchSize);
-					vectors.push(...(await this.client.embed(model, batch, signal)));
+					const vectors = await this.client.embed(model, inputs.slice(i, i + batchSize), signal);
+					if (vectors.length && this.data.dims === 0) this.data.dims = vectors[0].length;
+					vectors.forEach((v, k) => (vecs[missing[i + k]] = encodeVec(v)));
 				}
-				if (vectors.length && this.data.dims === 0) this.data.dims = vectors[0].length;
 				this.data.files[path] = {
 					mtime: note?.mtime ?? Date.now(),
-					chunks: chunks.map((c, i) => ({ heading: c.heading, text: c.text, vec: encodeVec(vectors[i]) })),
+					chunks: chunks.map((c, i) => ({ heading: c.heading, text: c.text, vec: vecs[i] as string })),
 				};
 				this.decoded.delete(path);
 				this.dirty = true;

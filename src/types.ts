@@ -21,6 +21,8 @@ export interface ChatMessage {
 	tool_calls?: ToolCall[];
 	/** For role === "tool": the name of the tool that produced this result. */
 	tool_name?: string;
+	/** For role === "user": the date, open note and daily note when the message was sent; appended to the content for the model, not shown in the chat. */
+	context?: string;
 	/** For role === "tool": the agent's repeated-call cache key for this result (not sent to the model). */
 	cacheKey?: string;
 }

@@ -3,6 +3,7 @@ import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIco
 import type LocalVaultAgentPlugin from "./main";
 import { AUTO_CONTINUE_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
 import { ComposerSuggest } from "./composer-suggest";
+import type { GardenFix, GardenReport } from "./gardener";
 import { HELP_TEXT, attachMentions, matchCommands, matchNotes, parseSlash } from "./mentions";
 import { conversationToMarkdown } from "./transcript";
 import type { ChangeRecord, ChatMessage, ToolCall, UsageInfo } from "./types";
@@ -25,6 +26,10 @@ export class AgentView extends ItemView {
 	private modelSelect!: HTMLSelectElement;
 	private abort: AbortController | null = null;
 	private running = false;
+	/** True while a mechanical /garden fix is being applied (its diffs are open). */
+	private gardening = false;
+	/** Whether the next message gets the notes it links to attached; off for prompts that only list notes. */
+	private attachNext = true;
 	private unsubscribeStatus: (() => void) | null = null;
 	private unsubscribeGists: (() => void) | null = null;
 	private usage: UsageInfo | null = null;
@@ -142,8 +147,9 @@ export class AgentView extends ItemView {
 	}
 
 	/** Send a message programmatically (used by commands). */
-	async send(text: string): Promise<void> {
+	async send(text: string, attachMentioned = true): Promise<void> {
 		this.inputEl.value = text;
+		this.attachNext = attachMentioned;
 		await this.submit();
 	}
 
@@ -294,7 +300,7 @@ export class AgentView extends ItemView {
 				await this.plugin.processDailyNotes(this);
 				break;
 			case "garden":
-				await this.plugin.suggestImprovements();
+				await this.plugin.suggestImprovements(this);
 				break;
 			case "undo":
 				await this.plugin.undoLast();
@@ -325,9 +331,76 @@ export class AgentView extends ItemView {
 		}
 	}
 
+	/** Adds a user line and an assistant reply that the plugin itself produced (no model call) to the chat and its history. */
+	private async appendExchange(userText: string, markdown: string): Promise<HTMLElement> {
+		this.messagesEl.querySelector(".lva-welcome")?.remove();
+		const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
+		user.createDiv({ cls: "lva-bubble", text: userText });
+		const root = this.messagesEl.createDiv({ cls: "lva-msg lva-assistant" });
+		await this.renderMarkdown(markdown, root.createDiv({ cls: "lva-bubble lva-markdown" }));
+		// History must start with a user message, hence the pair.
+		this.conversation.messages.push({ role: "user", content: userText }, { role: "assistant", content: markdown });
+		this.plugin.saveChat(this.conversation.messages);
+		this.scrollToBottom();
+		return root;
+	}
+
+	/**
+	 * Shows the gardener's report as an assistant message with one button per section. The report
+	 * joins the conversation, so "repoint the first three broken links" typed by hand works too.
+	 * Nothing is written to the vault until a button is used, and then each change is a diff.
+	 */
+	async showGardenReport(markdown: string, fixes: GardenFix[], report: GardenReport, legacyNote: boolean): Promise<void> {
+		if (this.running || this.gardening) {
+			new Notice("Wait for the current reply to finish, or stop it, first.");
+			return;
+		}
+		const root = await this.appendExchange("/garden", markdown);
+		if (!fixes.length && !legacyNote) return;
+		const row = root.createDiv({ cls: "lva-fixes" });
+		for (const fix of fixes) {
+			const btn = row.createEl("button", { cls: "lva-chip", text: fix.label });
+			if (fix.prompt) btn.setAttribute("aria-label", "Asks the model for a proposal; this one takes a while on a slow machine.");
+			btn.addEventListener("click", () => {
+				if (this.running || this.gardening) return;
+				btn.disabled = true;
+				// The findings are in the prompt already; attaching every note they name would
+				// hand the model tens of thousands of characters it then reads a second time.
+				if (fix.prompt) void this.send(fix.prompt, false);
+				else if (fix.action === "inboxes") void this.plugin.processDailyNotes(this);
+				else void this.runGardenAction(fix, report);
+			});
+		}
+		if (legacyNote) {
+			const btn = row.createEl("button", { cls: "lva-chip", text: "Delete the old Vault Suggestions note" });
+			btn.setAttribute("aria-label", "Earlier versions wrote this checklist note; its open checkboxes show up in task queries. Moves it to the trash.");
+			btn.addEventListener("click", () => {
+				btn.disabled = true;
+				void this.plugin.deleteLegacySuggestions().then((done) => new Notice(done ? "Vault Suggestions moved to the trash." : "Vault Suggestions is already gone."));
+			});
+		}
+		this.scrollToBottom();
+	}
+
+	/** A mechanical fix: the plugin plans the edits, shows each as a diff and reports. No model call. */
+	private async runGardenAction(fix: GardenFix, report: GardenReport): Promise<void> {
+		this.gardening = true;
+		try {
+			// The same turn number the changes are recorded under, so /undo-all takes back exactly this batch.
+			const result = await this.plugin.applyGardenAction(fix.action, report, this.conversation.messages.length);
+			if (result) await this.appendExchange(fix.label, result);
+		} catch (err) {
+			new Notice((err as Error).message ?? String(err), 8000);
+		} finally {
+			this.gardening = false;
+		}
+	}
+
 	private async submit(): Promise<void> {
 		const text = this.inputEl.value.trim();
-		if (!text || this.running) return;
+		const attach = this.attachNext;
+		this.attachNext = true;
+		if (!text || this.running || this.gardening) return;
 		const slash = parseSlash(text);
 		if (slash) {
 			this.inputEl.value = "";
@@ -340,7 +413,7 @@ export class AgentView extends ItemView {
 
 		const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
 		user.createDiv({ cls: "lva-bubble", text });
-		const { message, attached } = await attachMentions(text, this.plugin.vault, this.plugin.settings.maxToolResultChars * 2);
+		const { message, attached } = attach ? await attachMentions(text, this.plugin.vault, this.plugin.settings.maxToolResultChars * 2) : { message: text, attached: [] as string[] };
 		if (attached.length) {
 			user.createDiv({ cls: "lva-attached", text: `Attached: ${attached.map((p) => p.replace(/\.md$/i, "")).join(", ")}` });
 		}

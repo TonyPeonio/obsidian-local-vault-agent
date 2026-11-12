@@ -292,16 +292,41 @@ export interface AgentDeps {
 	dailyNote?: () => Promise<{ path: string; exists: boolean } | null> | { path: string; exists: boolean } | null;
 }
 
+/**
+ * What changes from one message to the next (the date, the open note, today's daily note), sent
+ * with the user's message rather than in the system prompt. Ollama reuses the evaluated prompt
+ * only up to the first token that differs, and the system prompt comes first: with these lines in
+ * it, opening another note between two messages meant re-reading the outline, the tool list and
+ * the whole conversation — about a minute on an integrated GPU — before the first new token.
+ */
+export function turnContext(vault: VaultAccess, now: Date, daily: { path: string; exists: boolean } | null = null): string {
+	const active = vault.getActiveNotePath();
+	return [
+		`Today is ${now.toISOString().slice(0, 10)}.`,
+		active ? `The user currently has this note open: ${active}` : "No note is currently open in the editor.",
+		daily ? `Today's daily note is ${daily.path}${daily.exists ? "" : " (it does not exist yet; create it if the user wants something added to today)"}.` : "",
+	]
+		.filter(Boolean)
+		.join(" ");
+}
+
+/** The message as the model sees it: a user message followed by its turn context. */
+export function withTurnContext(m: ChatMessage): ChatMessage {
+	return m.role === "user" && m.context ? { ...m, content: `${m.content}\n\n[State when this message was sent — ${m.context}]` } : m;
+}
+
+/**
+ * Everything here is the same from one message to the next unless the vault itself changed (a
+ * note added, renamed, or given new headings), so the prompt prefix Ollama cached stays valid
+ * across turns. What varies per message is in `turnContext`.
+ */
 export function buildSystemPrompt(
 	vault: VaultAccess,
 	cfg: AgentConfig,
-	now: Date,
 	conventions: string | null = null,
 	gist?: (path: string) => string | undefined,
-	daily: { path: string; exists: boolean } | null = null,
 ): string {
 	const notes = vault.listNotes();
-	const active = vault.getActiveNotePath();
 	const lines = [
 		"You are an autonomous assistant that lives inside the user's Obsidian vault and runs fully locally. You answer questions from the user's notes, compile information across notes, and edit, reformat, clean up or reorganise notes when asked.",
 		"",
@@ -334,9 +359,7 @@ export function buildSystemPrompt(
 		"- If the user rejects a change, stop, tell them what was rejected and ask what they want instead; never retry the same change.",
 		"- Tool arguments must be valid JSON matching the tool's parameters.",
 		"",
-		`Today is ${now.toISOString().slice(0, 10)}. The vault has ${notes.length} markdown notes.`,
-		active ? `The user currently has this note open: ${active}` : "No note is currently open in the editor.",
-		daily ? `Today's daily note is ${daily.path}${daily.exists ? "" : " (it does not exist yet; create it if the user wants something added to today)"}.` : "",
+		`The vault has ${notes.length} markdown notes. Each message from the user ends with a bracketed line giving today's date, the note open in the editor and today's daily note at that moment; the latest one is current.`,
 		"",
 		"Vault outline (every note, grouped by folder). Each line is `<file>.md — <gist or headings> <tags>`; a note's path is the folder plus the file name only, never the text after the dash:",
 		buildOutline(vault, { budgetChars: outlineBudget(cfg.numCtx, gist !== undefined), gist }),
@@ -366,7 +389,6 @@ export class Agent {
 
 		compactHistory(conversation.messages, cfg.numCtx);
 		const turn = conversation.messages.length;
-		conversation.messages.push({ role: "user", content: userText });
 		let conventions: string | null = null;
 		try {
 			conventions = (await this.deps.readConventions?.()) ?? null;
@@ -379,6 +401,7 @@ export class Agent {
 		} catch {
 			daily = null;
 		}
+		conversation.messages.push({ role: "user", content: userText, context: turnContext(vault, now, daily) });
 
 		let currentCall: ToolCall | null = null;
 		/** Paths the current mutating call wrote, so only reads of those are forgotten. */
@@ -432,7 +455,9 @@ export class Agent {
 		// Built once per turn, not per step: Ollama caches the KV state of the prompt prefix, so an
 		// identical system prompt makes every later step's prefill nearly free. Rebuilding it after
 		// a write (the outline would show the new note) invalidated that cache on every step.
-		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, now, conventions, this.deps.gist, daily) };
+		// It also holds nothing that varies per message (see turnContext), so the next turn starts
+		// from the same cached prefix unless the vault's outline changed in between.
+		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, conventions, this.deps.gist) };
 		const options = { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}) };
 		iterations: for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
@@ -449,7 +474,7 @@ export class Agent {
 			try {
 				response = await client.chat({
 					model: cfg.model,
-					messages: [system, ...history],
+					messages: [system, ...history.map(withTurnContext)],
 					tools: toOllamaTools(tools),
 					think,
 					options,
@@ -631,7 +656,7 @@ export class Agent {
 			model: cfg.model,
 			messages: [
 				system,
-				...trimHistory(conversation.messages, cfg.numCtx),
+				...trimHistory(conversation.messages, cfg.numCtx).map(withTurnContext),
 				{
 					role: "user",
 					content:
@@ -701,7 +726,7 @@ export function historyBudget(numCtx: number): number {
 }
 
 function messageSize(m: ChatMessage): number {
-	return m.content.length + (m.thinking?.length ?? 0) + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0);
+	return m.content.length + (m.context?.length ?? 0) + (m.thinking?.length ?? 0) + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0);
 }
 
 /**

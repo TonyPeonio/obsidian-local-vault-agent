@@ -69,7 +69,7 @@ Things to try:
 | Reformat the current note | Asks the agent to tidy the open note into clean markdown (diff-approved) |
 | Summarize the current note | Bullet-point summary of the open note |
 | Process my daily notes | Compiles the inbox sections of your daily notes into topic notes with source links and leaves a link behind (`/daily`) |
-| Suggest vault improvements | Writes the *Vault Suggestions* checklist note: broken links, full inboxes, unlinked mentions, duplicates, orphans, stubs (`/garden`) |
+| Suggest vault improvements | Reports in the chat, with a button per section: broken links, full inboxes, unlinked mentions, duplicates, orphans, stubs (`/garden`). Writes nothing itself; the mechanical fixes need no model |
 | Rebuild semantic index | Re-embeds every note from scratch |
 | Rebuild note gists | Regenerates the one-sentence gist of every note |
 | Undo the agent's last change | Reverts the most recent approved write (diff-approved) |
@@ -115,11 +115,29 @@ untouched. Every write is a diff you approve.
 **Edit the selected text.** Select a passage, run the command (or `/edit`), type what should
 change. The agent edits exactly that passage; you see a diff of it and nothing else.
 
-**Vault Suggestions.** *Suggest vault improvements* (`/garden`) needs no model: it reads the whole
-vault and writes a checklist note with broken links, daily inboxes that filled up, notes whose
-names appear in other notes without a wikilink, near-duplicate notes (by meaning, from the
-semantic index), orphans and stubs. Each section says what to ask the agent to fix it ("Turn the
-unlinked mentions in [[Vault Suggestions]] into wikilinks"). Run it again to refresh.
+**Vault suggestions.** *Suggest vault improvements* (`/garden`) reads the whole vault in under a
+second, without the model, and reports in the chat: broken links, daily inboxes that filled up,
+notes whose names appear in other notes without a wikilink, duplicate notes, orphans and stubs. It
+writes nothing to the vault and never creates tasks or checkboxes, so task queries over the vault
+stay clean. Under the report is one button per section, and each acts on the findings listed:
+
+- *Repoint moved links* — a link like `[[Old folder/Note]]` whose note now lives elsewhere is
+  rewritten to where it is (only when exactly one note or file has that name).
+- *Link mentions* — the first plain mention of a note's name becomes `[[path|the words as written]]`.
+- *Remove identical copies* — when the same text exists twice (a copied folder, a sync conflict),
+  links to the copy are repointed to the note that stays and the copy goes to the trash.
+- *Process daily inboxes* opens the daily-notes dialog.
+- *Review similar notes* and *Suggest links for orphans* ask the model for a proposal, which you
+  then accept in your own words; these two are the only ones that take model time.
+
+The first three are worked out by the plugin itself, not the model: you get the same diff dialog as
+for any agent edit (with *Approve all*), the result in the chat a moment later, and `/undo-all`
+takes the batch back. What counts as a finding is deliberately strict: a single ordinary word is
+never a "mention" (a note called *Classes* is not mentioned by every note that says classes), a
+capitalised name is matched as written, lectures that share a template and a slide deck are not
+duplicates, and a note that is one query block is not a stub. Folders another plugin fills with its
+own files (chat logs, skill definitions) are best added to *Excluded folders*. If an earlier
+version left a *Vault Suggestions* note behind, the report offers to move it to the trash.
 
 **Test connection and speed.** The settings button runs a short generation at your context size
 and asks Ollama how much of the model is on the GPU. You get a verdict in plain words and a
@@ -166,6 +184,14 @@ incrementally when you change notes. Search results merge semantic and keyword r
   (off by default since 0.5.3; it is the chat model once per note); or Ollama was started with
   another app's model still loaded. On a 12 GB RTX 5070 a 20-scenario benchmark run takes about
   three minutes with the defaults, roughly nine seconds per question with tool calls.
+- **On a laptop without a discrete GPU** — measured on a Ryzen 7940HS with its integrated Radeon
+  780M: `qwen3.5:9b` reads a prompt at about 170 tokens a second and writes about 6.5. The system
+  prompt, outline and tool list are about 8,000 tokens, so the first message after the model loads
+  spends close to a minute reading before it writes anything; after that Ollama reuses what it has
+  read and a new message starts in about a second, as long as the model stays loaded. So set **Keep
+  model loaded** well above the pauses between your messages (30m): an integrated GPU draws nothing
+  for a loaded, idle model, while every unload costs that minute again. Writing speed is the floor;
+  only a smaller model or a discrete GPU moves it.
 - **Temperature** — default 0.6, with top_p 0.9, top_k 20 and a small presence penalty always
   sent. That follows the Qwen3 model card, which warns that near-greedy decoding "can lead to
   performance degradation and endless repetitions": at 0.3 we watched a 9B model repeat the same

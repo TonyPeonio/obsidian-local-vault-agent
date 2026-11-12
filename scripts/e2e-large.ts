@@ -131,7 +131,7 @@ async function main() {
 		gist: GISTS ? (p) => gists.get(p) : undefined,
 	});
 
-	const sys = buildSystemPrompt(vault, cfg, new Date(), await vault.read("AGENT.md"), GISTS ? (p) => gists.get(p) : undefined);
+	const sys = buildSystemPrompt(vault, cfg, await vault.read("AGENT.md"), GISTS ? (p) => gists.get(p) : undefined);
 	console.log(`System prompt: ${sys.length} chars (~${Math.round(sys.length / 3.2)} tokens of ${cfg.numCtx})`);
 
 	interface Row {
