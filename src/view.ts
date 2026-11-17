@@ -6,6 +6,8 @@ import { ComposerSuggest } from "./composer-suggest";
 import type { GardenFix, GardenReport } from "./gardener";
 import { HELP_TEXT, attachMentions, matchCommands, matchNotes, parseSlash } from "./mentions";
 import { conversationToMarkdown } from "./transcript";
+import { QuizSession, isNonAnswer, parseQuizRequest, questionMarkdown, renderReview, resultMarkdown, reviewNotePath, selectQuizNotes } from "./quiz";
+import { VoiceRecorder } from "./voice";
 import type { ChangeRecord, ChatMessage, ToolCall, UsageInfo } from "./types";
 
 export const VIEW_TYPE = "local-vault-agent-view";
@@ -34,6 +36,12 @@ export class AgentView extends ItemView {
 	private unsubscribeGists: (() => void) | null = null;
 	private usage: UsageInfo | null = null;
 	private suggest: ComposerSuggest | null = null;
+	/** The quiz in progress: while set, the composer's messages are answers, graded instead of sent to the agent. */
+	private quiz: QuizSession | null = null;
+	private quizSources = new Map<string, string>();
+	private quizBusy = false;
+	private micBtn: HTMLButtonElement | null = null;
+	private recorder = new VoiceRecorder();
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -118,6 +126,12 @@ export class AgentView extends ItemView {
 			}
 		});
 		this.inputEl.addEventListener("input", () => this.autoGrow());
+		this.inputEl.addEventListener("focus", () => this.updateMic());
+		// Voice input goes through Lecture Companion's whisper server; without it there is no button.
+		this.micBtn = composer.createEl("button", { cls: "clickable-icon lva-mic", attr: { "aria-label": "Dictate (Lecture Companion transcribes it)" } });
+		setIcon(this.micBtn, "mic");
+		this.micBtn.addEventListener("click", () => void this.toggleMic());
+		this.updateMic();
 		this.sendBtn = composer.createEl("button", { cls: "mod-cta lva-send" });
 		this.setSendState(false);
 		this.sendBtn.addEventListener("click", () => {
@@ -133,6 +147,7 @@ export class AgentView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.stop();
+		this.recorder.cancel();
 		this.unsubscribeStatus?.();
 		this.unsubscribeStatus = null;
 		this.unsubscribeGists?.();
@@ -188,7 +203,7 @@ export class AgentView extends ItemView {
 	private async restoreChat(): Promise<void> {
 		const messages = await this.plugin.loadChat();
 		if (!messages || messages.length === 0 || this.conversation.messages.length > 0) return;
-		this.conversation = { messages, approveAll: false };
+		this.conversation = { id: this.plugin.lastChatId ?? newConversation().id, messages, approveAll: false };
 		this.messagesEl.querySelector(".lva-welcome")?.remove();
 		await this.renderHistory(messages);
 		this.scrollToBottom();
@@ -228,6 +243,8 @@ export class AgentView extends ItemView {
 
 	private resetConversation(): void {
 		this.stop();
+		this.quiz = null;
+		this.quizSources.clear();
 		void this.plugin.clearChat();
 		this.conversation = newConversation();
 		this.usage = null;
@@ -305,6 +322,18 @@ export class AgentView extends ItemView {
 			case "undo":
 				await this.plugin.undoLast();
 				break;
+			case "quiz":
+				await this.plugin.startQuiz(this);
+				break;
+			case "concepts":
+				await this.plugin.suggestConceptLinks();
+				break;
+			case "history":
+				this.plugin.showHistory();
+				break;
+			case "review":
+				await this.plugin.reviewPending();
+				break;
 			case "undo-all":
 				await this.plugin.undoLastTurn();
 				break;
@@ -340,7 +369,7 @@ export class AgentView extends ItemView {
 		await this.renderMarkdown(markdown, root.createDiv({ cls: "lva-bubble lva-markdown" }));
 		// History must start with a user message, hence the pair.
 		this.conversation.messages.push({ role: "user", content: userText }, { role: "assistant", content: markdown });
-		this.plugin.saveChat(this.conversation.messages);
+		this.plugin.saveChat(this.conversation.messages, this.conversation.id);
 		this.scrollToBottom();
 		return root;
 	}
@@ -387,7 +416,7 @@ export class AgentView extends ItemView {
 		this.gardening = true;
 		try {
 			// The same turn number the changes are recorded under, so /undo-all takes back exactly this batch.
-			const result = await this.plugin.applyGardenAction(fix.action, report, this.conversation.messages.length);
+			const result = await this.plugin.applyGardenAction(fix.action, report, this.conversation.messages.length, this.conversation.id);
 			if (result) await this.appendExchange(fix.label, result);
 		} catch (err) {
 			new Notice((err as Error).message ?? String(err), 8000);
@@ -400,11 +429,21 @@ export class AgentView extends ItemView {
 		const text = this.inputEl.value.trim();
 		const attach = this.attachNext;
 		this.attachNext = true;
-		if (!text || this.running || this.gardening) return;
+		if (!text || this.running || this.gardening || this.quizBusy) return;
 		const slash = parseSlash(text);
 		if (slash) {
 			this.inputEl.value = "";
 			await this.runSlash(slash.id);
+			return;
+		}
+		if (this.quiz) {
+			this.inputEl.value = "";
+			await this.answerQuiz(text);
+			return;
+		}
+		if (parseQuizRequest(text, new Date())) {
+			this.inputEl.value = "";
+			await this.startQuiz(text, this.plugin.settings.quizQuestions);
 			return;
 		}
 		this.messagesEl.querySelector(".lva-welcome")?.remove();
@@ -491,11 +530,195 @@ export class AgentView extends ItemView {
 			this.abort = null;
 			this.setSendState(false);
 			this.plugin.agentBusy = false;
-			this.plugin.saveChat(this.conversation.messages);
+			this.plugin.saveChat(this.conversation.messages, this.conversation.id);
 			void this.plugin.checkPlacementOnce();
 			this.updateStatus();
 			this.scrollToBottom();
 		}
+	}
+
+	/** Shows/hides the mic: it needs Lecture Companion's transcription. */
+	private updateMic(): void {
+		if (!this.micBtn) return;
+		this.micBtn.toggle(this.plugin.lectureCompanion() !== null);
+	}
+
+	private async toggleMic(): Promise<void> {
+		const btn = this.micBtn;
+		if (!btn) return;
+		const lc = this.plugin.lectureCompanion();
+		if (!lc) {
+			new Notice("Voice input uses Lecture Companion's transcription; install and enable Lecture Companion to dictate.", 8000);
+			this.updateMic();
+			return;
+		}
+		if (!this.recorder.recording) {
+			try {
+				await this.recorder.start();
+			} catch (err) {
+				new Notice(`Cannot use the microphone: ${(err as Error).message}`, 8000);
+				return;
+			}
+			btn.addClass("lva-mic-on");
+			btn.setAttribute("aria-label", "Stop and transcribe");
+			return;
+		}
+		btn.removeClass("lva-mic-on");
+		btn.addClass("lva-mic-busy");
+		btn.disabled = true;
+		btn.setAttribute("aria-label", "Transcribing…");
+		try {
+			const wav = await this.recorder.stop();
+			const text = (await lc.transcribe(wav)).trim();
+			if (text) {
+				const cur = this.inputEl.value;
+				this.inputEl.value = cur && !/\s$/.test(cur) ? `${cur} ${text}` : cur + text;
+				this.inputEl.focus();
+			} else new Notice("Heard nothing to transcribe.");
+		} catch (err) {
+			new Notice(`Transcription failed: ${(err as Error).message}`, 8000);
+		} finally {
+			btn.removeClass("lva-mic-busy");
+			btn.disabled = false;
+			btn.setAttribute("aria-label", "Dictate (Lecture Companion transcribes it)");
+		}
+	}
+
+	private addUser(text: string): void {
+		this.messagesEl.querySelector(".lva-welcome")?.remove();
+		this.messagesEl.createDiv({ cls: "lva-msg lva-user" }).createDiv({ cls: "lva-bubble", text });
+		this.scrollToBottom();
+	}
+
+	private async addAssistant(markdown: string): Promise<void> {
+		this.messagesEl.querySelector(".lva-welcome")?.remove();
+		const root = this.messagesEl.createDiv({ cls: "lva-msg lva-assistant" });
+		await this.renderMarkdown(markdown, root.createDiv({ cls: "lva-bubble lva-markdown" }));
+		this.scrollToBottom();
+	}
+
+	private remember(userText: string, markdown: string): void {
+		this.conversation.messages.push({ role: "user", content: userText }, { role: "assistant", content: markdown });
+		this.plugin.saveChat(this.conversation.messages, this.conversation.id);
+	}
+
+	/**
+	 * Starts a quiz from "Quiz me on <topic> since <date>": picks the notes (Lecture Companion's
+	 * lectures of that course when it is installed, else notes named after the topic, else a search),
+	 * has the model write questions from them, and asks the first.
+	 */
+	async startQuiz(text: string, count: number): Promise<void> {
+		if (this.running || this.gardening || this.quizBusy) {
+			new Notice("Wait for the current reply to finish, or stop it, first.");
+			return;
+		}
+		const req = parseQuizRequest(text, new Date()) ?? { topic: text };
+		this.addUser(text);
+		this.quizBusy = true;
+		this.setSendState(true);
+		this.updateStatus("Writing quiz questions…");
+		const started = Date.now();
+		try {
+			const lc = this.plugin.lectureCompanion();
+			let paths = selectQuizNotes(this.plugin.vault.listNotes(), req, lc?.lectures() ?? []);
+			if (paths.length === 0 && req.topic) {
+				const hits = await this.plugin.hybridSearch(req.topic, 10);
+				const since = req.since ?? "0000-00-00";
+				paths = hits.map((h) => h.path).filter((p) => {
+					const n = this.plugin.vault.listNotes().find((x) => x.path === p);
+					const date = /(\d{4}-\d{2}-\d{2})/.exec(p)?.[1] ?? (n ? new Date(n.mtime).toISOString().slice(0, 10) : "");
+					return date >= since;
+				});
+			}
+			if (paths.length === 0) {
+				const md = `I found no notes${req.topic ? ` on ${req.topic}` : ""}${req.since ? ` since ${req.since}` : ""} to quiz you on. Try a course or folder name, or an earlier date.`;
+				await this.addAssistant(md);
+				this.remember(text, md);
+				return;
+			}
+			this.quizSources.clear();
+			for (const p of paths) this.quizSources.set(p, await this.plugin.vault.read(p));
+			const questions = await this.plugin.quiz.questions(req.topic, Array.from(this.quizSources, ([path, content]) => ({ path, content })), count, this.abort?.signal);
+			if (questions.length === 0) {
+				const md = "The model did not write any questions I could check against your notes. Try again, or a narrower topic.";
+				await this.addAssistant(md);
+				this.remember(text, md);
+				return;
+			}
+			this.quiz = new QuizSession(req.topic, questions, req.since);
+			const from = paths.map((p) => `[[${p.replace(/\.md$/i, "")}]]`);
+			const md = [
+				`Quiz on ${req.topic || "your notes"}${req.since ? ` since ${req.since}` : ""}: ${questions.length} questions from ${paths.length} note${paths.length === 1 ? "" : "s"} (${from.slice(0, 6).join(", ")}${from.length > 6 ? ", …" : ""}). Answer in your own words; type *skip* to pass or *stop* to end. Written in ${Math.round((Date.now() - started) / 1000)} s.`,
+				"",
+				questionMarkdown(this.quiz),
+			].join("\n");
+			await this.addAssistant(md);
+			this.remember(text, md);
+		} catch (err) {
+			const message = (err as Error).message ?? String(err);
+			this.messagesEl.createDiv({ cls: "lva-msg lva-error" }).createDiv({ cls: "lva-bubble", text: message });
+		} finally {
+			this.quizBusy = false;
+			this.setSendState(false);
+			this.updateStatus();
+		}
+	}
+
+	/** Grades one answer against its source, shows the verdict with the citation, then the next question or the end. */
+	private async answerQuiz(text: string): Promise<void> {
+		const quiz = this.quiz;
+		const q = quiz?.current();
+		if (!quiz || !q) return;
+		this.addUser(text);
+		if (/^(stop|quit|end( the)? quiz|cancel|done)[.!]*$/i.test(text.trim())) {
+			await this.finishQuiz(text, "");
+			return;
+		}
+		this.quizBusy = true;
+		this.setSendState(true);
+		this.updateStatus("Grading…");
+		try {
+			const source = this.quizSources.get(q.source) ?? "";
+			const grade = isNonAnswer(text) ? { verdict: "wrong" as const, feedback: "Skipped." } : await this.plugin.quiz.grade(q, text, source.slice(0, 6000));
+			const result = quiz.record(text, grade.verdict, grade.feedback);
+			const md = resultMarkdown(result);
+			if (quiz.done()) {
+				await this.finishQuiz(text, md);
+				return;
+			}
+			const next = `${md}\n\n${questionMarkdown(quiz)}`;
+			await this.addAssistant(next);
+			this.remember(text, next);
+		} catch (err) {
+			new Notice(`Grading failed: ${(err as Error).message}`, 8000);
+		} finally {
+			this.quizBusy = false;
+			this.setSendState(false);
+			this.updateStatus();
+		}
+	}
+
+	/** The score, and the missed questions written (after a diff) to the topic's review note. */
+	private async finishQuiz(userText: string, lastResult: string): Promise<void> {
+		const quiz = this.quiz;
+		this.quiz = null;
+		if (!quiz) return;
+		const missed = quiz.missed();
+		const lines = [lastResult, lastResult ? "" : "", `**Quiz over: ${quiz.score()}.**`].filter((l, i) => l || i > 0);
+		if (missed.length) {
+			const path = reviewNotePath(this.plugin.settings.quizReviewFolder, quiz.topic);
+			const existing = this.plugin.vault.exists(path) ? await this.plugin.vault.read(path) : null;
+			const after = renderReview(existing, quiz.topic, new Date().toISOString().slice(0, 10), missed);
+			const written = await this.plugin.writeWithApproval(
+				{ tool: existing === null ? "create_note" : "append_to_note", path, before: existing ?? "", after, summary: `Add ${missed.length} missed question${missed.length === 1 ? "" : "s"} to ${path}` },
+				this.conversation.id ?? "plugin",
+				this.conversation.messages.length,
+			);
+			lines.push(written ? `The ${missed.length} question${missed.length === 1 ? "" : "s"} to review ${missed.length === 1 ? "is" : "are"} in [[${path.replace(/\.md$/i, "")}]].` : "The review note was not written.");
+		} else if (quiz.results.length) lines.push("Nothing to review.");
+		const md = lines.join("\n").trim();
+		await this.addAssistant(md);
+		this.remember(userText, md);
 	}
 
 	async renderMarkdown(markdown: string, el: HTMLElement): Promise<void> {

@@ -6,6 +6,7 @@ import type {
 	VaultAccess,
 } from "../types";
 import { applyTextEdit } from "../diff";
+import { imageEmbeds } from "../embeds";
 import { hasFrontmatter } from "../prompts";
 
 /**
@@ -627,6 +628,10 @@ export const readNote: ToolDefinition = {
 		if (offset > 0) body = `[…continuing from character ${offset}]\n` + body;
 		if (page.truncated) {
 			body += `\n\n[TRUNCATED at character ${offset + ctx.maxResultChars} of ${page.total}. Call read_note again with offset=${offset + ctx.maxResultChars} to continue.]`;
+		}
+		if (ctx.describeImage && offset === 0) {
+			const images = imageEmbeds(content);
+			if (images.length) body += `\n\n[This note embeds ${images.length} image${images.length === 1 ? "" : "s"} (${images.slice(0, 8).join(", ")}${images.length > 8 ? ", …" : ""}). Its text cannot see them; if what they show matters, read one with read_image.]`;
 		}
 		return `${header}\n---\n${body}`;
 	},
@@ -1282,9 +1287,14 @@ export const readFile: ToolDefinition = {
 		if (!ctx.readAttachmentText) throw new ToolError("Reading attachments is not available here.");
 		const offset = int(args, "offset", 0, 0, 50_000_000);
 		const text = await ctx.readAttachmentText(path);
-		if (!text.trim()) return `${path} contains no extractable text (it may be a scanned image or a binary file).`;
+		const scannable = !!ctx.describeImage && /\.pdf$/i.test(path);
+		if (!text.replace(/^--- Page \d+ ---$/gm, "").trim()) return `${path} contains no extractable text (it may be a scanned image or a binary file).${scannable ? " Read its pages with read_image (path, page)." : ""}`;
 		const page = truncate(text, ctx.maxResultChars, offset);
 		let out = `# ${path}\nlength: ${page.total} characters\n---\n${page.text}`;
+		if (scannable && offset === 0) {
+			const blank = Array.from(text.matchAll(/^--- Page (\d+) ---\n(?=\s*(?:--- Page|$))/gm), (m) => m[1]);
+			if (blank.length) out += `\n\n[Page${blank.length === 1 ? "" : "s"} ${blank.slice(0, 20).join(", ")} ha${blank.length === 1 ? "s" : "ve"} no text layer (scanned). read_image with the path and page reads a scanned page.]`;
+		}
 		if (page.truncated) out += `\n\n[TRUNCATED at character ${offset + ctx.maxResultChars} of ${page.total}. Call read_file again with offset=${offset + ctx.maxResultChars} to continue.]`;
 		return out;
 	},

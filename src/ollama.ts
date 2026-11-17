@@ -23,6 +23,8 @@ export interface ChatRequest {
 		num_predict?: number;
 	};
 	keep_alive?: string;
+	/** "json", or a JSON schema, to constrain the reply (structured output). */
+	format?: "json" | Record<string, unknown>;
 	signal?: AbortSignal;
 	onDelta?(delta: { content?: string; thinking?: string }): void;
 }
@@ -141,6 +143,7 @@ export class OllamaClient {
 		if (req.tools && req.tools.length > 0) body.tools = req.tools;
 		if (req.think !== undefined) body.think = req.think;
 		if (req.keep_alive) body.keep_alive = req.keep_alive;
+		if (req.format) body.format = req.format;
 
 		const url = `${this.baseUrl}/api/chat`;
 		let response: Response;
@@ -293,6 +296,7 @@ function toWireMessage(m: ChatMessage): Record<string, unknown> {
 	if (m.thinking) out.thinking = m.thinking;
 	if (m.tool_calls?.length) out.tool_calls = m.tool_calls;
 	if (m.role === "tool" && m.tool_name) out.tool_name = m.tool_name;
+	if (m.images?.length) out.images = m.images;
 	return out;
 }
 

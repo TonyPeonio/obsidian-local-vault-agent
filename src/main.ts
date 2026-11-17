@@ -7,13 +7,20 @@ import { SemanticIndex, type IndexData, type IndexStatus } from "./index";
 import { ObsidianVault } from "./obsidian-vault";
 import { OllamaClient, placementWarning, sameModel } from "./ollama";
 import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
+import { applyConceptLinks, conceptNames, isConceptNote, suggestConcepts } from "./concepts";
+import { ConceptModal, HistoryModal, QuizModal } from "./feature-modals";
+import { cosine } from "./index";
+import { LECTURE_TOOLS, lectureCompanionApi, type LectureCompanionApi, type LocalVaultAgentApi } from "./lecture-companion";
+import { QuizEngine } from "./quiz";
+import { JOB_NAMES, OverlayVault, PendingQueue, digestPath, digestPrompt, dueJobs, localDate, planPending, recentNotes, renderDigest, type JobId } from "./scheduler";
+import { ImageReader, readImage, type VisionData } from "./vision";
 import { editSelectionPrompt, processDailyNotesPrompt, reformatPrompt, summarizePrompt } from "./prompts";
 import { fuseRankings, keywordSearch } from "./search";
 import { DEFAULT_SETTINGS, SAMPLING, isExcluded, migrateSettings, type LocalVaultAgentSettings } from "./settings";
 import { LocalVaultAgentSettingTab } from "./settings-tab";
 import { ALL_TOOLS } from "./tools";
-import type { ChangeRecord, ChatMessage, SearchHit } from "./types";
-import { UndoStack, describeChange, planRevert } from "./undo";
+import type { ApprovalRequest, ChangeRecord, ChatMessage, SearchHit } from "./types";
+import { RevertError, UndoStack, describeChange, planRevert } from "./undo";
 import { AgentView, VIEW_TYPE } from "./view";
 
 export default class LocalVaultAgentPlugin extends Plugin {
@@ -25,8 +32,21 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	agent!: Agent;
 	/** True while a chat turn is running; background gist generation pauses. */
 	agentBusy = false;
-	/** Every approved write this session, newest last; survives "New chat". */
+	/** Every approved write, newest last; saved to history.json, so it survives "New chat" and restarts. */
 	readonly undo = new UndoStack();
+	/** Changes scheduled jobs produced, waiting for the user's approval (pending.json). */
+	readonly pending = new PendingQueue();
+	vision!: ImageReader;
+	quiz!: QuizEngine;
+	/** True when a vision model can read images (read_image is offered to the model). */
+	visionAvailable = false;
+	/** This plugin's public API (see the README): other plugins open the chat about a note and share the Ollama settings. */
+	api!: LocalVaultAgentApi;
+	private statusBar: HTMLElement | null = null;
+	/** Last time the user typed or clicked in Obsidian (ms), to know they are present. */
+	private lastActivity = Date.now();
+	private jobRunning = false;
+	private pendingNotified = 0;
 	private statusListeners = new Set<(s: IndexStatus) => void>();
 	private gistListeners = new Set<(s: GistStatus) => void>();
 
@@ -98,6 +118,54 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			},
 		);
 
+		const historyPath = `${pluginDir}/history.json`;
+		const pendingPath = `${pluginDir}/pending.json`;
+		const visionPath = `${pluginDir}/image-cache.json`;
+		const readJson = async (path: string): Promise<unknown> => {
+			try {
+				if (!(await this.app.vault.adapter.exists(path))) return null;
+				return JSON.parse(await this.app.vault.adapter.read(path)) as unknown;
+			} catch {
+				return null;
+			}
+		};
+		this.undo.load(await readJson(historyPath));
+		this.pending.load(await readJson(pendingPath));
+		let historyTimer: number | null = null;
+		this.register(
+			this.undo.onChange(() => {
+				if (historyTimer !== null) window.clearTimeout(historyTimer);
+				historyTimer = window.setTimeout(() => {
+					historyTimer = null;
+					void this.app.vault.adapter.write(historyPath, JSON.stringify(this.undo.toJSON()));
+				}, 1000);
+			}),
+		);
+		this.register(
+			this.pending.onChange(() => {
+				void this.app.vault.adapter.write(pendingPath, JSON.stringify(this.pending.toJSON()));
+				this.updateStatusBar();
+			}),
+		);
+
+		this.vision = new ImageReader({
+			client: this.client,
+			getVisionModel: () => this.settings.visionModel,
+			getChatModel: () => this.settings.model,
+			keepAlive: () => this.settings.keepAlive,
+			readBinary: async (path) => {
+				const file = this.app.vault.getFileByPath(normalizePath(path));
+				if (!file) throw new Error(`File not found: ${path}`);
+				return this.app.vault.readBinary(file);
+			},
+			renderPdfPage: (path, page) => this.renderPdfPage(path, page),
+			load: async () => (await readJson(visionPath)) as VisionData | null,
+			save: async (data) => {
+				await this.app.vault.adapter.write(visionPath, JSON.stringify(data));
+			},
+		});
+		this.quiz = new QuizEngine(this.client, () => ({ model: this.settings.model, numCtx: this.settings.numCtx, keepAlive: this.settings.keepAlive }));
+
 		this.agent = new Agent({
 			client: this.client,
 			vault: this.vault,
@@ -121,6 +189,9 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			undo: this.undo,
 			gist: (path) => (this.settings.gists ? this.gists.get(path) : undefined),
 			readAttachmentText: (path) => this.readAttachmentText(path),
+			extraTools: () => this.extraTools(),
+			lectures: () => this.lectureCompanion() ?? undefined,
+			describeImage: () => (this.visionAvailable ? (path, opts) => this.vision.describe(path, opts) : undefined),
 			dailyNote: async () => {
 				await this.loadDailyNoteSettings();
 				return this.dailyNote();
@@ -205,6 +276,44 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			},
 		});
 		this.addCommand({
+			id: "change-history",
+			name: "Show change history (undo any approved change)",
+			callback: () => this.showHistory(),
+		});
+		this.addCommand({
+			id: "quiz-me",
+			name: "Quiz me on a topic or course",
+			callback: () => void this.startQuiz(),
+		});
+		this.addCommand({
+			id: "suggest-concept-links",
+			name: "Suggest concept links for this note",
+			checkCallback: (checking) => {
+				if (!this.activeNote()) return false;
+				if (!checking) void this.suggestConceptLinks();
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "review-scheduled-changes",
+			name: "Review changes from scheduled jobs",
+			checkCallback: (checking) => {
+				if (this.pending.size === 0) return false;
+				if (!checking) void this.reviewPending();
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "run-nightly-job",
+			name: "Run the nightly daily-notes job now (changes wait for review)",
+			callback: () => void this.runJob("daily", true),
+		});
+		this.addCommand({
+			id: "run-digest-job",
+			name: "Write this week's digest now (waits for review)",
+			callback: () => void this.runJob("digest", true),
+		});
+		this.addCommand({
 			id: "rebuild-gists",
 			name: "Rebuild note gists",
 			callback: async () => {
@@ -269,7 +378,29 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				if (this.settings.semanticSearch) await this.index.syncAll();
 				if (this.settings.gists) await this.gists.syncAll();
 			})();
+			void this.refreshVision();
+			this.updateStatusBar();
+			void this.tick();
 		});
+
+		this.api = {
+			version: 1,
+			openChatAbout: (path) => this.openChatAbout(path),
+			ollama: () => ({ url: this.settings.ollamaUrl, model: this.settings.model }),
+		};
+
+		// Scheduled jobs: checked every minute while Obsidian is open; the user's presence is a key or click.
+		this.statusBar = this.addStatusBarItem();
+		this.statusBar.addClass("lva-pending-badge");
+		this.registerDomEvent(this.statusBar, "click", () => void this.reviewPending());
+		const seen = () => {
+			const away = Date.now() - this.lastActivity > 5 * 60_000;
+			this.lastActivity = Date.now();
+			if (away) this.notifyPending();
+		};
+		this.registerDomEvent(activeDocument, "keydown", seen);
+		this.registerDomEvent(activeDocument, "pointerdown", seen);
+		this.registerInterval(window.setInterval(() => void this.tick(), 60_000));
 	}
 
 	onunload(): void {
@@ -286,21 +417,25 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	async loadChat(): Promise<ChatMessage[] | null> {
 		try {
 			if (!this.chatPath || !(await this.app.vault.adapter.exists(this.chatPath))) return null;
-			const data = JSON.parse(await this.app.vault.adapter.read(this.chatPath)) as { messages?: ChatMessage[] };
+			const data = JSON.parse(await this.app.vault.adapter.read(this.chatPath)) as { messages?: ChatMessage[]; id?: string };
+			if (typeof data.id === "string") this.lastChatId = data.id;
 			return Array.isArray(data.messages) ? data.messages : null;
 		} catch {
 			return null;
 		}
 	}
 
-	saveChat(messages: ChatMessage[]): void {
+	/** The id of the chat restored from chat.json, so its changes stay grouped in the history. */
+	lastChatId: string | null = null;
+
+	saveChat(messages: ChatMessage[], id?: string): void {
 		if (!this.chatPath) return;
 		if (this.chatSaveTimer !== null) window.clearTimeout(this.chatSaveTimer);
 		this.chatSaveTimer = window.setTimeout(() => {
 			this.chatSaveTimer = null;
 			// Thinking is dropped: it is large and never shown again.
-			const slim = messages.map((m) => (m.thinking ? { ...m, thinking: undefined } : m));
-			void this.app.vault.adapter.write(this.chatPath, JSON.stringify({ messages: slim }));
+			const slim = messages.map((m) => (m.thinking || m.images ? { ...m, thinking: undefined, images: undefined } : m));
+			void this.app.vault.adapter.write(this.chatPath, JSON.stringify({ id, messages: slim }));
 		}, 500);
 	}
 
@@ -403,7 +538,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		throw new Error(`Cannot extract text from .${ext} files.`);
 	}
 
-	private activeNote(): TFile | null {
+	activeNote(): TFile | null {
 		const file = this.app.workspace.getActiveFile();
 		return file && file.extension === "md" ? file : null;
 	}
@@ -495,7 +630,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	 * each is shown as a diff and recorded for undo under `turn`, exactly like an agent edit. Returns
 	 * the report for the chat, or null when the action is not a mechanical one.
 	 */
-	async applyGardenAction(action: GardenAction, report: GardenReport, turn: number): Promise<string | null> {
+	async applyGardenAction(action: GardenAction, report: GardenReport, turn: number, chat?: string): Promise<string | null> {
 		const plan = await planGardenAction(this.vault, action, report);
 		if (!plan) return null;
 		const applied: PlannedChange[] = [];
@@ -514,7 +649,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			}
 			if (change.tool === "delete_file") await this.vault.trash(change.path);
 			else await this.vault.modify(change.path, change.after);
-			this.undo.push({ tool: change.tool, path: change.path, before: change.before, after: change.after, time: Date.now(), turn });
+			this.undo.push({ tool: change.tool, path: change.path, before: change.before, after: change.after, time: Date.now(), turn, chat, summary: change.summary });
 			applied.push(change);
 		}
 		return renderPlanResult(applied, plan, stopped);
@@ -554,20 +689,22 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			new Notice("Nothing to undo.");
 			return;
 		}
-		await this.revertTurn(latest.turn);
+		await this.revertTurn(latest.turn, latest.chat);
 	}
 
 	/**
 	 * Undo one recorded change. The restore is shown as a diff (current → restored) and only
-	 * applied when approved, exactly like the change itself was.
+	 * applied when approved, exactly like the change itself was. A note edited since is restored
+	 * only where the change was, keeping the later edits; when they overlap it, the undo is refused.
+	 * The undo is itself recorded, so it can be undone in turn.
 	 */
 	async revert(change: ChangeRecord): Promise<boolean> {
 		let plan;
 		try {
 			plan = await planRevert(change, this.vault);
 		} catch (err) {
-			new Notice((err as Error).message, 6000);
-			this.undo.remove(change.id);
+			new Notice((err as Error).message, 8000);
+			if (err instanceof RevertError && err.kind === "nothing") this.undo.markUndone(change.id);
 			return false;
 		}
 		const modal = new ApprovalModal(this.app, plan);
@@ -580,14 +717,20 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			new Notice(`Undo failed: ${(err as Error).message}`, 8000);
 			return false;
 		}
-		this.undo.remove(change.id);
+		this.undo.markUndone(change.id);
+		const base = { time: Date.now(), turn: change.turn, chat: change.chat, summary: plan.summary };
+		if (change.tool === "create_note") this.undo.push({ ...base, tool: "delete_file", path: change.path, before: plan.before, after: "" });
+		else if (change.tool === "delete_file") {
+			if (/\.md$/i.test(change.path)) this.undo.push({ ...base, tool: "create_note", path: change.path, before: "", after: change.before });
+		} else if (change.tool === "move_note") this.undo.push({ ...base, tool: "move_note", path: change.before, before: change.after, after: change.before });
+		else this.undo.push({ ...base, tool: "undo", path: change.path, before: plan.before, after: plan.after });
 		new Notice(`Undone: ${describeChange(change)}.`);
 		return true;
 	}
 
 	/** Undo every change of one agent turn, newest first, stopping at the first rejection. */
-	async revertTurn(turn: number): Promise<void> {
-		const changes = this.undo.forTurn(turn);
+	async revertTurn(turn: number, chat?: string): Promise<void> {
+		const changes = this.undo.forTurn(turn, chat);
 		if (changes.length === 0) {
 			new Notice("Nothing to undo.");
 			return;
@@ -598,6 +741,324 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			done++;
 		}
 		if (changes.length > 1) new Notice(`Undid ${done} of ${changes.length} changes.`);
+	}
+
+	/** Lecture Companion's API (version 1), or null when it is not installed or enabled. */
+	lectureCompanion(): LectureCompanionApi | null {
+		return lectureCompanionApi(this.app);
+	}
+
+	/** Tools that depend on other plugins and models: Lecture Companion's lectures, the vision model. */
+	extraTools() {
+		return [...(this.lectureCompanion() ? LECTURE_TOOLS : []), ...(this.visionAvailable ? [readImage] : [])];
+	}
+
+	/** Re-checks whether a vision model is available (after settings change and on load). */
+	async refreshVision(): Promise<void> {
+		this.vision.reset();
+		this.visionAvailable = (await this.vision.model()) !== null;
+	}
+
+	/** Copies Lecture Companion's Ollama URL and model into these settings. */
+	async useLectureCompanionOllama(): Promise<boolean> {
+		const lc = this.lectureCompanion();
+		if (!lc) return false;
+		const { url, model } = lc.ollama();
+		if (url) this.settings.ollamaUrl = url;
+		if (model) this.settings.model = model;
+		await this.saveSettings();
+		return true;
+	}
+
+	/** The public API's openChatAbout: the chat with the note attached and a prompt to ask about it. */
+	async openChatAbout(path: string): Promise<void> {
+		const resolved = this.vault.resolve(path);
+		if (!resolved) {
+			new Notice(`Local Vault Agent: no note ${path}.`);
+			return;
+		}
+		const view = await this.activateView();
+		view?.prefill(`About [[${resolved.replace(/\.md$/i, "")}]]: `);
+	}
+
+	/** Shows the diff, writes on approval, records the change. Returns whether it was written. */
+	async writeWithApproval(req: ApprovalRequest, chat = "plugin", turn = 0): Promise<boolean> {
+		if (!this.settings.autoApproveEdits) {
+			const modal = new ApprovalModal(this.app, req);
+			modal.open();
+			if ((await modal.result) === "reject") return false;
+		}
+		const existed = this.vault.exists(req.path);
+		if (existed) {
+			if ((await this.vault.read(req.path)) !== req.before) {
+				new Notice(`${req.path} changed while the diff was open; nothing written.`, 8000);
+				return false;
+			}
+			await this.vault.modify(req.path, req.after);
+		} else {
+			const folder = req.path.includes("/") ? req.path.slice(0, req.path.lastIndexOf("/")) : "";
+			if (folder && !this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
+			await this.vault.create(req.path, req.after);
+		}
+		this.undo.push({ tool: existed ? req.tool : "create_note", path: req.path, before: existed ? req.before : "", after: req.after, time: Date.now(), turn, chat, summary: req.summary });
+		return true;
+	}
+
+	showHistory(): void {
+		new HistoryModal(
+			this.app,
+			() => this.undo.list(),
+			(c) => this.revert(c),
+			(path) => void this.app.workspace.openLinkText(path, "", false),
+			(l) => this.undo.onChange(l),
+		).open();
+	}
+
+	/** "Quiz me": asks for the topic and starts the quiz in the chat. */
+	async startQuiz(view?: AgentView | null): Promise<void> {
+		const lc = this.lectureCompanion();
+		const modal = new QuizModal(this.app, lc?.courses() ?? [], this.settings.quizQuestions);
+		modal.open();
+		const opts = await modal.result;
+		if (!opts) return;
+		const target = view ?? (await this.activateView());
+		const text = `Quiz me${opts.topic ? ` on ${opts.topic}` : ""}${opts.since ? ` since ${opts.since}` : ""}`;
+		await target?.startQuiz(text, opts.count);
+	}
+
+	/** "Suggest concept links for this note": concept notes it mentions or is close to, as one diff. */
+	async suggestConceptLinks(): Promise<void> {
+		const file = this.activeNote();
+		if (!file) {
+			new Notice("Open a note first.");
+			return;
+		}
+		const content = await this.app.vault.read(file);
+		const folders = this.settings.conceptFolders;
+		const concepts = this.vault
+			.listNotes()
+			.filter((n) => n.path !== file.path)
+			.map((n) => ({ n, meta: this.vault.getMetadata(n.path) }))
+			.filter(({ n, meta }) => isConceptNote(n, folders, meta))
+			.map(({ n, meta }) => ({ note: n, names: conceptNames(n, meta.frontmatter.aliases) }));
+		if (concepts.length === 0) {
+			new Notice(`No concept notes found. Put them in ${folders.join(" or ") || "a concept folder"} (Settings → Concept folders), or tag them #concept.`, 10000);
+			return;
+		}
+		let related: { path: string; score: number }[] = [];
+		if (this.settings.semanticSearch && this.index.ready) {
+			const vectors = this.index.noteVectors();
+			const mine = vectors.get(file.path);
+			if (mine) {
+				const conceptPaths = new Set(concepts.map((c) => c.note.path));
+				related = Array.from(vectors)
+					.filter(([p]) => conceptPaths.has(p))
+					.map(([p, v]) => ({ path: p, score: cosine(mine, v) }))
+					.filter((r) => r.score >= 0.6);
+			}
+		}
+		const suggestions = suggestConcepts({ path: file.path, content }, concepts, related);
+		if (suggestions.length === 0) {
+			new Notice(`${file.basename} mentions none of your ${concepts.length} concept notes that it does not already link.`, 8000);
+			return;
+		}
+		const modal = new ConceptModal(this.app, file.path, suggestions);
+		modal.open();
+		const picked = await modal.result;
+		if (!picked) return;
+		const current = await this.app.vault.read(file);
+		const after = applyConceptLinks(current, picked.chosen, picked.property);
+		if (after === current) {
+			new Notice("Nothing to change.");
+			return;
+		}
+		const n = picked.chosen.length;
+		const ok = await this.writeWithApproval({ tool: "edit_note", path: file.path, before: current, after, summary: `Link ${n} concept${n === 1 ? "" : "s"} in ${file.basename}` });
+		if (ok) new Notice(`Linked ${n} concept${n === 1 ? "" : "s"}.`);
+	}
+
+	/** Runs due scheduled jobs (at most one at a time) and reminds a present user of waiting changes. */
+	private async tick(): Promise<void> {
+		if (!this.jobRunning && !this.agentBusy) {
+			const due = dueJobs(new Date(), this.settings, this.settings.jobRuns);
+			for (const job of due) await this.runJob(job, false);
+		}
+		this.notifyPending();
+	}
+
+	/**
+	 * Runs one scheduled job against an overlay of the vault: whatever it would write is queued for
+	 * review, nothing is written. `manual` when the user ran it from the command palette.
+	 */
+	async runJob(job: JobId, manual: boolean): Promise<void> {
+		if (this.jobRunning) {
+			if (manual) new Notice("A scheduled job is already running.");
+			return;
+		}
+		this.jobRunning = true;
+		this.settings.jobRuns[job] = Date.now();
+		await this.saveSettings();
+		if (manual) new Notice(`${JOB_NAMES[job]}: running in the background; the changes will wait for your review.`);
+		try {
+			const changes = job === "daily" ? await this.runDailyJob() : await this.runDigestJob();
+			const added = this.pending.add(job, changes);
+			if (added.length) {
+				this.pendingNotified = 0;
+				this.notifyPending(manual);
+			} else if (manual) new Notice(`${JOB_NAMES[job]}: nothing to change.`);
+		} catch (err) {
+			new Notice(`${JOB_NAMES[job]} failed: ${(err as Error).message}`, 10000);
+		} finally {
+			this.jobRunning = false;
+		}
+	}
+
+	private async runDailyJob() {
+		await this.loadDailyNoteSettings();
+		const overlay = new OverlayVault(this.vault);
+		const since = localDate(new Date(Date.now() - 2 * 86_400_000));
+		const agent = new Agent({
+			client: this.client,
+			vault: overlay,
+			tools: ALL_TOOLS.filter((t) => t.name !== "move_note" && t.name !== "delete_file"),
+			search: (q, limit) => this.hybridSearch(q, limit),
+			approve: async () => "approve",
+			getConfig: () => ({ ...this.agentConfig(), autoApprove: true, autoContinue: true, citations: "off" }),
+			configDir: this.app.vault.configDir,
+			readConventions: async () => {
+				const path = this.vault.resolve(this.settings.conventionsNote);
+				return path ? this.vault.read(path) : null;
+			},
+		});
+		const s = this.settings;
+		const prompt = processDailyNotesPrompt({ folder: this.dailyFolder, heading: s.dailyInboxHeading, destination: s.dailyTopicsFolder, move: s.dailyMoveItems, since });
+		this.agentBusy = true;
+		try {
+			await agent.run({ id: "scheduled", messages: [], approveAll: true }, prompt, {});
+		} finally {
+			this.agentBusy = false;
+		}
+		return overlay.changes();
+	}
+
+	private async runDigestJob() {
+		const now = new Date();
+		const weekOf = localDate(now);
+		const path = digestPath(this.settings.digestFolder, weekOf);
+		const notes = recentNotes(this.vault.listNotes(), now, 7).filter((n) => !n.path.startsWith(this.settings.digestFolder.replace(/\/+$/, "") + "/"));
+		if (notes.length === 0) return [];
+		const texts: { path: string; text: string }[] = [];
+		let budget = 40000;
+		for (const n of notes.slice(0, 40)) {
+			if (budget <= 500) break;
+			const text = (await this.vault.read(n.path)).slice(0, Math.min(4000, budget));
+			budget -= text.length;
+			texts.push({ path: n.path, text });
+		}
+		const res = await this.client.chat({
+			model: this.settings.model,
+			messages: [{ role: "user", content: digestPrompt(weekOf, texts) }],
+			think: false,
+			options: { num_ctx: this.settings.numCtx, temperature: 0.4 },
+			keep_alive: this.settings.keepAlive,
+		});
+		const content = renderDigest(weekOf, res.message.content, notes);
+		if (this.vault.exists(path)) return [{ path, tool: "edit_note" as const, before: await this.vault.read(path), after: content }];
+		return [{ path, tool: "create_note" as const, before: "", after: content }];
+	}
+
+	/** A notice (once per batch, when the user is at the keyboard) and the status-bar badge for waiting changes. */
+	private notifyPending(force = false): void {
+		this.updateStatusBar();
+		const n = this.pending.size;
+		if (n === 0) return;
+		const present = Date.now() - this.lastActivity < 2 * 60_000;
+		if (!force && (!present || this.pendingNotified === n)) return;
+		this.pendingNotified = n;
+		const frag = createFragment();
+		frag.createSpan({ text: `Local Vault Agent: ${n} change${n === 1 ? "" : "s"} from scheduled jobs wait for your review. ` });
+		const btn = frag.createEl("button", { text: "Review now" });
+		btn.addEventListener("click", () => void this.reviewPending());
+		new Notice(frag, 15000);
+	}
+
+	private updateStatusBar(): void {
+		if (!this.statusBar) return;
+		const n = this.pending.size;
+		this.statusBar.setText(n ? `🤖 ${n} to review` : "");
+		this.statusBar.toggle(n > 0);
+		this.statusBar.setAttribute("aria-label", n ? `${n} change${n === 1 ? "" : "s"} from scheduled jobs: click to review` : "");
+	}
+
+	/** Walks the queued changes as diffs: approve writes, reject drops, a change that no longer fits is dropped with a notice. */
+	async reviewPending(): Promise<void> {
+		if (this.pending.size === 0) {
+			new Notice("No scheduled changes waiting.");
+			return;
+		}
+		let approveAll = false;
+		let applied = 0;
+		for (const item of [...this.pending.list()]) {
+			const plan = await planPending(item, this.vault);
+			if (!plan.ok) {
+				new Notice(`Skipped: ${plan.reason}`, 8000);
+				this.pending.remove(item.id);
+				continue;
+			}
+			if (!approveAll) {
+				const modal = new ApprovalModal(this.app, { tool: item.tool, path: item.path, before: plan.before, after: plan.after, summary: `${item.summary} (${new Date(item.time).toLocaleString()})` });
+				modal.open();
+				const decision = await modal.result;
+				if (decision === "reject") {
+					this.pending.remove(item.id);
+					continue;
+				}
+				if (decision === "approve-all") approveAll = true;
+			}
+			try {
+				if (item.tool === "create_note") {
+					const folder = item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "";
+					if (folder && !this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
+					await this.vault.create(item.path, plan.after);
+				} else await this.vault.modify(item.path, plan.after);
+				this.undo.push({ tool: item.tool, path: item.path, before: plan.before, after: plan.after, time: Date.now(), turn: item.time, chat: "scheduled", summary: item.summary });
+				applied++;
+			} catch (err) {
+				new Notice(`Could not write ${item.path}: ${(err as Error).message}`, 8000);
+			}
+			this.pending.remove(item.id);
+		}
+		if (applied) new Notice(`Applied ${applied} scheduled change${applied === 1 ? "" : "s"}.`);
+	}
+
+	/** One page of a PDF as a PNG, for the vision model (scanned pages have no text layer). */
+	private async renderPdfPage(path: string, pageNumber: number): Promise<ArrayBuffer> {
+		const file = this.app.vault.getFileByPath(normalizePath(path));
+		if (!file) throw new Error(`File not found: ${path}`);
+		const pdfjs = (await loadPdfJs()) as {
+			getDocument(src: { data: ArrayBuffer }): {
+				promise: Promise<{
+					numPages: number;
+					getPage(n: number): Promise<{
+						getViewport(o: { scale: number }): { width: number; height: number };
+						render(o: { canvasContext: CanvasRenderingContext2D; viewport: unknown }): { promise: Promise<void> };
+					}>;
+				}>;
+			};
+		};
+		const doc = await pdfjs.getDocument({ data: await this.app.vault.readBinary(file) }).promise;
+		if (pageNumber > doc.numPages) throw new Error(`${path} has ${doc.numPages} pages.`);
+		const page = await doc.getPage(pageNumber);
+		const viewport = page.getViewport({ scale: 2 });
+		const canvas = createEl("canvas");
+		canvas.width = Math.ceil(viewport.width);
+		canvas.height = Math.ceil(viewport.height);
+		const ctx = canvas.getContext("2d");
+		if (!ctx) throw new Error("Cannot render the PDF page here.");
+		await page.render({ canvasContext: ctx, viewport }).promise;
+		const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/png"));
+		if (!blob) throw new Error("Cannot render the PDF page here.");
+		return blob.arrayBuffer();
 	}
 
 	/** Subscribe to gist generation status. Returns an unsubscribe function. */
@@ -626,6 +1087,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			autoApprove: s.autoApproveEdits,
 			autoContinue: s.autoContinue,
 			extraSystemPrompt: s.extraSystemPrompt,
+			citations: s.citations,
 		};
 	}
 

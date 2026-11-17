@@ -25,6 +25,8 @@ export interface ChatMessage {
 	context?: string;
 	/** For role === "tool": the agent's repeated-call cache key for this result (not sent to the model). */
 	cacheKey?: string;
+	/** Base64 images sent with the message (vision models only; never saved with the chat). */
+	images?: string[];
 }
 
 /** JSON-schema subset that Ollama accepts for tool parameters. */
@@ -155,6 +157,12 @@ export interface ChangeRecord {
 	time: number;
 	/** Identifies the agent turn (user message) the change belongs to. */
 	turn: number;
+	/** The chat the change was made in ("scheduled" for queued jobs, "plugin" for mechanical fixes). */
+	chat?: string;
+	/** When the change was undone (ms), if it was. */
+	undone?: number;
+	/** One line for the history list, e.g. "Add 2 block ids for citations". */
+	summary?: string;
 }
 
 export interface ToolContext {
@@ -174,6 +182,33 @@ export interface ToolContext {
 	readLog?: Map<string, string>;
 	/** Extracts text from an attachment (PDF, plain text); absent when unsupported. */
 	readAttachmentText?: (path: string) => Promise<string>;
+	/** Lecture Companion's structured lectures and transcripts; absent when it is not installed. */
+	lectures?: LectureSource;
+	/** Describes an image (or a PDF page) with the local vision model; absent when there is none. */
+	describeImage?: (path: string, opts: { page?: number; question?: string }) => Promise<string>;
+}
+
+/** One lecture or meeting recorded by Lecture Companion. */
+export interface LectureInfo {
+	path: string;
+	course: string;
+	date: string;
+	kind: "lecture" | "meeting";
+	/** One-sentence summary, when Lecture Companion has written one. */
+	sentence: string | null;
+}
+
+/** One transcript paragraph: `start` seconds into the recording. */
+export interface TranscriptParagraph {
+	start: number;
+	text: string;
+}
+
+/** What the lecture tools need from Lecture Companion (its public API, version 1). */
+export interface LectureSource {
+	courses(): string[];
+	lectures(course?: string): LectureInfo[];
+	transcript(path: string): Promise<TranscriptParagraph[]>;
 }
 
 export interface ToolDefinition {

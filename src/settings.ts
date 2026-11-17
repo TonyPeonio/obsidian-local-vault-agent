@@ -1,3 +1,7 @@
+import type { CitationMode } from "./citations";
+import { DEFAULT_CONCEPT_FOLDERS } from "./concepts";
+import type { JobId } from "./scheduler";
+
 export interface LocalVaultAgentSettings {
 	ollamaUrl: string;
 	model: string;
@@ -29,6 +33,25 @@ export interface LocalVaultAgentSettings {
 	dailyTopicsFolder: string;
 	/** "Process my daily notes": replace a compiled inbox with a link to its topic note. */
 	dailyMoveItems: boolean;
+	/** Paragraph citations under answers: off, heading links (never writes), or block ids written on approval. */
+	citations: CitationMode;
+	/** Ollama model that reads images and scanned pages; "" = the chat model when it can see. */
+	visionModel: string;
+	/** Folders whose notes are concept/topic notes, for "Suggest concept links". */
+	conceptFolders: string[];
+	/** Quiz: questions per quiz. */
+	quizQuestions: number;
+	/** Quiz: folder of the review notes the missed questions go to. */
+	quizReviewFolder: string;
+	/** Scheduled jobs (run when Obsidian is open at or after the time; changes wait for approval). */
+	nightlyDaily: boolean;
+	nightlyTime: string;
+	weeklyDigest: boolean;
+	digestDay: number;
+	digestTime: string;
+	digestFolder: string;
+	/** When each scheduled job last ran (ms). */
+	jobRuns: Partial<Record<JobId, number>>;
 }
 
 /** The current settings schema; `migrateSettings` brings older saved data up to it. */
@@ -69,6 +92,18 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	dailyInboxHeading: "Capture",
 	dailyTopicsFolder: "Topics",
 	dailyMoveItems: true,
+	citations: "blocks",
+	visionModel: "",
+	conceptFolders: [...DEFAULT_CONCEPT_FOLDERS],
+	quizQuestions: 5,
+	quizReviewFolder: "Quiz reviews",
+	nightlyDaily: false,
+	nightlyTime: "02:00",
+	weeklyDigest: false,
+	digestDay: 0,
+	digestTime: "18:00",
+	digestFolder: "Digests",
+	jobRuns: {},
 };
 
 /**
@@ -85,7 +120,7 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 export function migrateSettings(data: Partial<LocalVaultAgentSettings> | null): LocalVaultAgentSettings {
 	const saved = data ?? {};
 	const version = typeof saved.settingsVersion === "number" ? saved.settingsVersion : 1;
-	const settings: LocalVaultAgentSettings = { ...DEFAULT_SETTINGS, ...saved };
+	const settings: LocalVaultAgentSettings = { ...DEFAULT_SETTINGS, ...saved, jobRuns: { ...(saved.jobRuns ?? {}) } };
 	if (version < 2 && saved.temperature === 0.3) settings.temperature = DEFAULT_SETTINGS.temperature;
 	if (version < 3 && saved.thinking === "auto") settings.thinking = "off";
 	if (version < 4) {

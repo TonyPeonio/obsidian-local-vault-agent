@@ -427,3 +427,69 @@
 	opacity: 0.5;
 	cursor: default;
 }
+
+/* Voice input (through Lecture Companion) */
+.lva-mic {
+	flex: none;
+	height: 36px;
+	width: 36px;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.lva-mic.lva-mic-on {
+	color: var(--text-on-accent);
+	background: var(--color-red);
+}
+.lva-mic.lva-mic-busy {
+	opacity: 0.6;
+}
+
+/* Change history */
+.lva-history-modal {
+	width: min(900px, 95vw);
+}
+.lva-history-modal .lva-modal-help {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+.lva-history-row {
+	border-bottom: 1px solid var(--background-modifier-border);
+	padding: var(--size-4-2) 0;
+}
+.lva-history-row.lva-history-undone .lva-history-what {
+	text-decoration: line-through;
+	color: var(--text-muted);
+}
+.lva-history-head {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	flex-wrap: wrap;
+}
+.lva-history-time,
+.lva-history-src {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	white-space: nowrap;
+}
+.lva-history-what {
+	flex: 1 1 200px;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+.lva-history-buttons {
+	display: flex;
+	gap: var(--size-4-1);
+	margin-left: auto;
+}
+.lva-history-row .lva-diff {
+	margin-top: var(--size-4-2);
+	max-height: 40vh;
+}
+
+/* Scheduled changes waiting for review */
+.lva-pending-badge {
+	cursor: pointer;
+}

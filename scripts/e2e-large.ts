@@ -7,6 +7,7 @@
  *   GISTS=1 → also generate note gists first (slow) and use them in the outline.
  */
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
+import { deflateSync } from "zlib";
 import { basename, join, relative, resolve } from "path";
 import { Agent, buildSystemPrompt, looksLikePermissionQuestion, newConversation, type AgentConfig } from "../src/agent";
 import { DEFAULT_SETTINGS, SAMPLING } from "../src/settings";
@@ -15,10 +16,15 @@ import { SemanticIndex, type IndexData } from "../src/index";
 import { attachMentions } from "../src/mentions";
 import { OllamaClient } from "../src/ollama";
 import { fuseRankings, keywordSearch } from "../src/search";
-import { SUGGESTIONS_NOTE, gardenVault, renderGardenReport } from "../src/gardener";
+import { LEGACY_SUGGESTIONS_NOTE as SUGGESTIONS_NOTE, gardenVault, renderGardenChat } from "../src/gardener";
 import { editSelectionPrompt, processDailyNotesPrompt } from "../src/prompts";
 import { ALL_TOOLS, extractSection } from "../src/tools";
 import { UndoStack, planRevert } from "../src/undo";
+import { LECTURE_TOOLS } from "../src/lecture-companion";
+import { QuizEngine } from "../src/quiz";
+import { OverlayVault } from "../src/scheduler";
+import { ImageReader, readImage } from "../src/vision";
+import type { LectureInfo, LectureSource, ToolDefinition } from "../src/types";
 import { FakeVault } from "../tests/fakes";
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
@@ -70,8 +76,8 @@ async function main() {
 	const facts = JSON.parse(readFileSync(factsFile, "utf8")) as Facts;
 	const vault = loadVault(root);
 	for (const a of facts.attachments) vault.seedFile(a.path, a.size);
-	// The gardener's note, as the plugin's command would write it, so a scenario can act on it.
-	vault.seed(SUGGESTIONS_NOTE, renderGardenReport(await gardenVault(vault, { dailyFolder: "Daily", exclude: (p) => p.startsWith("Templates/") })));
+	// The gardener's report saved as a note (as 0.5 wrote it; 0.6 shows it in the chat), so a scenario can act on it.
+	vault.seed(SUGGESTIONS_NOTE, renderGardenChat(await gardenVault(vault, { dailyFolder: "Daily", exclude: (p) => p.startsWith("Templates/") })));
 	const original = new Map<string, string>();
 	for (const n of vault.listNotes()) original.set(n.path, await vault.read(n.path));
 	const client = new OllamaClient(() => OLLAMA_URL);
@@ -116,6 +122,19 @@ async function main() {
 		extraSystemPrompt: "",
 	};
 	const undo = new UndoStack();
+	/** Lecture Companion and the vision model are switched on only for the scenarios that test them. */
+	let lectureSource: LectureSource | undefined;
+	let visionOn = false;
+	const vision = new ImageReader({
+		client,
+		getVisionModel: () => process.env.VISION_MODEL ?? "",
+		getChatModel: () => MODEL,
+		keepAlive: () => "10m",
+		readBinary: (p) => vault.readBinary(p),
+		load: async () => null,
+		save: async () => {},
+	});
+	const extraTools = (): ToolDefinition[] => [...(lectureSource ? LECTURE_TOOLS : []), ...(visionOn ? [readImage] : [])];
 	/** What the approval dialog answers; the rejection scenario flips it to "reject". */
 	let approveMode: "approve" | "reject" = "approve";
 	const agent = new Agent({
@@ -129,6 +148,9 @@ async function main() {
 		undo,
 		readConventions: async () => (vault.exists("AGENT.md") ? vault.read("AGENT.md") : null),
 		gist: GISTS ? (p) => gists.get(p) : undefined,
+		extraTools,
+		lectures: () => lectureSource,
+		describeImage: () => (visionOn ? (p, o) => vision.describe(p, o) : undefined),
 	});
 
 	const sys = buildSystemPrompt(vault, cfg, await vault.read("AGENT.md"), GISTS ? (p) => gists.get(p) : undefined);
@@ -257,6 +279,7 @@ async function main() {
 		["gives the value 0.05", /0\.05\b/.test(a)],
 		[`gives the timestamp ${said.at}`, timestamp.test(a)],
 		["links the lecture note", /\[\[[^\]]*Lectures - CSCI 470[^\]]*\]\]/.test(a)],
+		["links the exact paragraph (#^block or #heading)", /\[\[[^\]]*Lectures - CSCI 470#[^\]]+\]\]/.test(a)],
 		["used ≤ 4 tool calls", tools.length <= 4],
 	]);
 
@@ -532,6 +555,168 @@ async function main() {
 		}
 	}
 
+	// --- 0.7.0: Lecture Companion's API, paragraph citations, quiz, scheduled jobs, images ---
+
+	// Lecture Companion writes one note per lecture. Three of the CSCI 470 lectures are copied into
+	// that shape, and a fake of its API (version 1) serves them, as the real plugin would.
+	const lcNotes: string[] = [];
+	const lcLectures: LectureInfo[] = [];
+	{
+		const csci = facts.lectures.filter((l) => l.course === iso.course).sort((a, b) => a.date.localeCompare(b.date));
+		const at = csci.findIndex((l) => l.date === iso.date);
+		for (const l of csci.slice(Math.max(0, at - 2), at + 1)) {
+			const section = extractSection(await vault.read(l.note), l.date);
+			if (!section) continue;
+			const body = section.text.replace(/^## .*\n/, "").replace(/^###/gm, "##");
+			const path = `Courses/${l.course}/${l.date}.md`;
+			vault.seed(path, `# ${l.course} ${l.date}: ${l.topic}\n${body}\n`);
+			lcNotes.push(path);
+			lcLectures.push({ path, course: l.course, date: l.date, kind: "lecture", sentence: `${l.topic}: ${l.term}.` });
+		}
+	}
+	const lcSource: LectureSource = {
+		courses: () => [iso.course],
+		lectures: (course) => lcLectures.filter((l) => !course || l.course === course),
+		transcript: async (path) => {
+			const text = vault.exists(path) ? await vault.read(path) : "";
+			const out: { start: number; text: string }[] = [];
+			for (const m of text.matchAll(/^\*\*\[(\d+):(\d{2})\]\*\*\s*(.+)$/gm)) out.push({ start: Number(m[1]) * 60 + Number(m[2]), text: m[3].replace(/\s+\^[\w-]+$/, "") });
+			return out;
+		},
+	};
+	lectureSource = lcSource;
+	const lcFile = `Courses/${iso.course}/${iso.date}.md`;
+	await scenario("lecture-tools", "Lecture Companion's API: transcript by tool", "What did the professor say about contamination in the isolation forest lecture, and at what time in the recording?", (a, tools) => [
+		["gives the value 0.05", /0\.05\b/.test(a)],
+		[`gives the timestamp ${said.at}`, timestamp.test(a)],
+		["links the lecture note", a.includes(`[[Courses/${iso.course}/${iso.date}`) || /\[\[[^\]]*Lectures - CSCI 470[^\]]*\]\]/.test(a)],
+		["used lecture_transcript", tools.includes("lecture_transcript")],
+		["links the exact paragraph (block id)", /\[\[[^\]]*#\^t\d+-\d{2}/.test(a)],
+		["used ≤ 4 tool calls", tools.length <= 4],
+	]);
+	{
+		const row = rows[rows.length - 1];
+		if (!row.skipped) {
+			const body = vault.exists(lcFile) ? await vault.read(lcFile) : "";
+			const id = `^t${said.at.replace(":", "-")}`;
+			const ok = body.includes(`${id}`) && body.split("\n").some((l) => l.includes(said.said.slice(0, 40)) && l.trimEnd().endsWith(id));
+			console.log(`  ${ok ? "PASS" : "FAIL"}  the block id ${id} was added to the quoted paragraph`);
+			if (ok) row.pass++;
+			else {
+				row.fail++;
+				failures++;
+			}
+		}
+	}
+	lectureSource = undefined;
+
+	// Quiz: questions from the three lecture notes, graded against them. No tools, two model calls per answer at most.
+	if (!ONLY || ONLY.split(",").includes("quiz")) {
+		console.log("\n=== [quiz] Quiz me on CSCI 470 (questions and grading)");
+		const start = Date.now();
+		const engine = new QuizEngine(client, () => ({ model: MODEL, numCtx: NUM_CTX, keepAlive: "10m" }));
+		const notes = await Promise.all(lcNotes.map(async (path) => ({ path, content: await vault.read(path) })));
+		const qs = await engine.questions(iso.course, notes, 5).catch((err: Error) => (console.log(`  [error] ${err.message}`), []));
+		for (const q of qs) console.log(`  Q: ${q.question}\n     A: ${q.answer}  ${q.cite}`);
+		const right = qs[0] ? await engine.grade(qs[0], qs[0].answer, notes.find((n) => n.path === qs[0].source)?.content.slice(0, 6000) ?? "") : null;
+		const wrong = qs[0] ? await engine.grade(qs[0], "Something about cooking pasta in salted water.", notes.find((n) => n.path === qs[0].source)?.content.slice(0, 6000) ?? "") : null;
+		console.log(`  grade of the right answer: ${JSON.stringify(right)}\n  grade of a wrong answer: ${JSON.stringify(wrong)}`);
+		const checks: [string, boolean][] = [
+			[`wrote ≥ 3 checkable questions (${qs.length})`, qs.length >= 3],
+			["every question cites a paragraph of a lecture note", qs.length > 0 && qs.every((q) => lcNotes.includes(q.source) && /\[\[Courses\/.+#/.test(q.cite))],
+			["questions span ≥ 2 lectures", new Set(qs.map((q) => q.source)).size >= 2],
+			["grades the expected answer correct", right?.verdict === "correct"],
+			["grades an unrelated answer wrong", wrong?.verdict === "wrong"],
+		];
+		let pass = 0;
+		let fail = 0;
+		for (const [label, ok] of checks) {
+			console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
+			if (ok) pass++;
+			else {
+				fail++;
+				failures++;
+			}
+		}
+		rows.push({ id: "quiz", ms: Date.now() - start, calls: 0, prompt: 0, errors: 0, misses: 0, repeats: 0, steps: 3, promptMs: 0, evalMs: 0, pass, fail });
+	}
+	for (const p of lcNotes) {
+		for (const c of undo.list().filter((c) => c.path === p)) undo.remove(c.id);
+		await vault.trash(p);
+	}
+
+	// A scheduled nightly run: the same daily-notes job against an overlay, so nothing is written
+	// and what it would write comes back as changes to queue for review.
+	if (!ONLY || ONLY.split(",").includes("scheduled-daily")) {
+		const dates = messy.map((m) => m.date).sort();
+		const since = dates[Math.max(0, dates.length - 3)];
+		const expected = messy.filter((m) => m.date >= since);
+		console.log(`\n=== [scheduled-daily] Nightly job in an overlay since ${since} (${expected.length} messy notes)`);
+		const before = new Map<string, string>();
+		for (const n of vault.listNotes()) before.set(n.path, await vault.read(n.path));
+		const overlay = new OverlayVault(vault);
+		const nightly = new Agent({
+			client,
+			vault: overlay,
+			tools: ALL_TOOLS.filter((t) => t.name !== "move_note" && t.name !== "delete_file"),
+			search: async (q, limit) => fuseRankings([await index.search(q, limit * 2), await keywordSearch(vault, q, limit * 2)], limit),
+			searchPassages: (q, limit) => index.searchPassages(q, limit),
+			approve: async () => "approve",
+			getConfig: () => ({ ...cfg, autoApprove: true, citations: "off" }),
+			readConventions: async () => (vault.exists("AGENT.md") ? vault.read("AGENT.md") : null),
+		});
+		const start = Date.now();
+		let calls = 0;
+		let steps = 0;
+		await nightly
+			.run({ id: "scheduled", messages: [], approveAll: true }, processDailyNotesPrompt({ folder: "Daily", heading: "Capture", destination: "Topics", move: true, since }), {
+				onToolStart: (c) => console.log(`  [tool] ${c.function.name} ${JSON.stringify(c.function.arguments).slice(0, 110)}`),
+				onToolDone: () => calls++,
+				onUsage: () => steps++,
+			})
+			.catch((err: Error) => console.log(`  [error] ${err.message}`));
+		const changes = await overlay.changes();
+		for (const c of changes) console.log(`  [queued] ${c.tool} ${c.path} (${c.after.length} chars)`);
+		let untouched = true;
+		for (const [path, content] of before) if (!vault.exists(path) || (await vault.read(path)) !== content) untouched = false;
+		const created = changes.filter((c) => c.tool === "create_note");
+		const edited = changes.filter((c) => c.tool === "edit_note" && c.path.startsWith("Daily/"));
+		const checks: [string, boolean][] = [
+			["the real vault is untouched", untouched && vault.listNotes().length === before.size],
+			[`queued ≥ 1 topic note (${created.length})`, created.length >= 1],
+			["every queued topic note has a Sources section", created.length > 0 && created.every((c) => /## Sources/.test(c.after))],
+			[`queued the inbox edits of ≥ ${Math.min(2, expected.length)} daily notes (${edited.length})`, edited.length >= Math.min(2, expected.length)],
+			["touched no daily note before the since date", edited.every((c) => (/(\d{4}-\d{2}-\d{2})/.exec(c.path)?.[1] ?? "") >= since)],
+		];
+		let pass = 0;
+		let fail = 0;
+		for (const [label, ok] of checks) {
+			console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}`);
+			if (ok) pass++;
+			else {
+				fail++;
+				failures++;
+			}
+		}
+		rows.push({ id: "scheduled-daily", ms: Date.now() - start, calls, prompt: 0, errors: 0, misses: 0, repeats: 0, steps, promptMs: 0, evalMs: 0, pass, fail });
+	}
+
+	// Reading an image a note embeds, with the chat model's own vision (qwen3.5 can see).
+	visionOn = (await vision.model()) !== null;
+	if (!visionOn) console.log("\n=== [read-image] skipped: no vision model");
+	else {
+		vault.seedFile("Attachments/whiteboard.png", 0, undefined, whiteboardPng("47"));
+		vault.seed("Inbox/Whiteboard photo.md", "# Whiteboard photo\n\nPhoto of the whiteboard after the robot meeting:\n\n![[Attachments/whiteboard.png]]\n");
+		await scenario("read-image", "Read an embedded image", "What number is written on the whiteboard in [[Inbox/Whiteboard photo]]?", (a, tools) => [
+			["used read_image", tools.includes("read_image")],
+			["reads the number 47", /\b47\b/.test(a)],
+			["used ≤ 3 tool calls", tools.length <= 3],
+		], { attach: true });
+		await vault.trash("Inbox/Whiteboard photo.md");
+		await vault.trash("Attachments/whiteboard.png");
+		visionOn = false;
+	}
+
 	// Undo everything, newest first, and compare with the original snapshot.
 	{
 		console.log(`\n=== [undo] revert all ${undo.size} recorded changes`);
@@ -612,6 +797,69 @@ async function main() {
 	}
 	console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 	process.exit(failures === 0 ? 0 : 1);
+}
+
+/** Seven-segment-ish 5×7 digits, enough to draw a number a vision model can read. */
+const DIGITS: Record<string, string[]> = {
+	"0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+	"1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+	"2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+	"3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+	"4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+	"5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
+	"6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
+	"7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+	"8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+	"9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"],
+};
+
+/** A white PNG with `text` (digits) drawn in black, large: a stand-in for a whiteboard photo. */
+function whiteboardPng(text: string): ArrayBuffer {
+	const scale = 16;
+	const pad = 32;
+	const w = pad * 2 + text.length * 6 * scale;
+	const h = pad * 2 + 7 * scale;
+	const raw = Buffer.alloc((w * 3 + 1) * h, 255);
+	for (let y = 0; y < h; y++) raw[y * (w * 3 + 1)] = 0;
+	[...text].forEach((ch, i) => {
+		const rows = DIGITS[ch] ?? [];
+		rows.forEach((row, ry) => {
+			[...row].forEach((bit, rx) => {
+				if (bit !== "1") return;
+				for (let dy = 0; dy < scale; dy++)
+					for (let dx = 0; dx < scale; dx++) {
+						const x = pad + (i * 6 + rx) * scale + dx;
+						const y = pad + ry * scale + dy;
+						raw.fill(20, y * (w * 3 + 1) + 1 + x * 3, y * (w * 3 + 1) + 1 + x * 3 + 3);
+					}
+			});
+		});
+	});
+	const crcTable = Array.from({ length: 256 }, (_, n) => {
+		let c = n;
+		for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+		return c >>> 0;
+	});
+	const crc = (b: Buffer) => {
+		let c = 0xffffffff;
+		for (const x of b) c = crcTable[(c ^ x) & 0xff] ^ (c >>> 8);
+		return (c ^ 0xffffffff) >>> 0;
+	};
+	const chunk = (type: string, data: Buffer) => {
+		const len = Buffer.alloc(4);
+		len.writeUInt32BE(data.length);
+		const td = Buffer.concat([Buffer.from(type), data]);
+		const c = Buffer.alloc(4);
+		c.writeUInt32BE(crc(td));
+		return Buffer.concat([len, td, c]);
+	};
+	const ihdr = Buffer.alloc(13);
+	ihdr.writeUInt32BE(w, 0);
+	ihdr.writeUInt32BE(h, 4);
+	ihdr[8] = 8;
+	ihdr[9] = 2;
+	const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+	return png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
 }
 
 main().catch((err) => {

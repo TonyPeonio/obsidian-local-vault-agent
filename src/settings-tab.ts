@@ -73,6 +73,22 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 				}),
 			);
 
+		const lc = this.plugin.lectureCompanion();
+		if (lc) {
+			const shared = lc.ollama();
+			new Setting(containerEl)
+				.setName("Use Lecture Companion's Ollama settings")
+				.setDesc(`Lecture Companion is installed and uses ${shared.url} with ${shared.model}. Copy them here so both plugins share one Ollama and one model in memory.`)
+				.addButton((b) =>
+					b.setButtonText("Use Lecture Companion's Ollama settings").onClick(async () => {
+						await this.plugin.useLectureCompanionOllama();
+						new Notice(`Now using ${this.plugin.settings.ollamaUrl} with ${this.plugin.settings.model}.`);
+						void this.plugin.refreshVision();
+						this.display();
+					}),
+				);
+		}
+
 		const modelSetting = new Setting(containerEl)
 			.setName("Chat model")
 			.setDesc("Must support tool calling. Recommended: qwen3.5:9b (12 GB GPUs), qwen3:14b, llama3.1:8b.");
@@ -92,6 +108,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 			d.onChange(async (v) => {
 				s.model = v;
 				await this.plugin.saveSettings();
+				void this.plugin.refreshVision();
 			});
 		});
 		modelSetting.addText((t) =>
@@ -154,6 +171,24 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 				t.setValue(s.keepAlive).onChange(async (v) => {
 					s.keepAlive = v.trim() || DEFAULT_SETTINGS.keepAlive;
 					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Vision model")
+			.setDesc("Reads images notes embed and scanned PDF pages (the read_image tool), e.g. qwen2.5vl:7b. Empty: the chat model, when it can see (qwen3.5 can). Without one the agent simply is not offered the tool. Readings are cached by the image's content hash.")
+			.addText((t) =>
+				t.setPlaceholder("(the chat model)").setValue(s.visionModel).onChange(async (v) => {
+					s.visionModel = v.trim();
+					await this.plugin.saveSettings();
+					void this.plugin.refreshVision();
+				}),
+			)
+			.addButton((b) =>
+				b.setButtonText("Check").onClick(async () => {
+					await this.plugin.refreshVision();
+					const model = await this.plugin.vision.model();
+					new Notice(model ? `Images will be read with ${model}.` : "No vision model: the chat model cannot see and none is set. Install one, e.g. ollama pull qwen2.5vl:7b.", 8000);
 				}),
 			);
 
@@ -324,6 +359,19 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Paragraph citations")
+			.setDesc("Answers end with links to the exact paragraphs they used. 'Block ids' links by ^id; a paragraph without one gets an id added, shown as one diff per note for you to approve (rejecting falls back to the heading). 'Headings' never writes and links the paragraph's heading.")
+			.addDropdown((d) =>
+				d
+					.addOptions({ blocks: "Block ids (added on approval)", headings: "Headings only (no writes)", off: "Off" })
+					.setValue(s.citations)
+					.onChange(async (v) => {
+						s.citations = v as typeof s.citations;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
 			.setName("Extra instructions")
 			.setDesc("Appended to the system prompt. Tell the agent about your vault's conventions, preferred tone, note templates, etc.")
 			.addTextArea((t) => {
@@ -334,5 +382,119 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 				t.inputEl.rows = 5;
 				t.inputEl.addClass("lva-settings-textarea");
 			});
+
+		new Setting(containerEl).setName("Study").setHeading();
+
+		new Setting(containerEl)
+			.setName("Concept folders")
+			.setDesc("For 'Suggest concept links': folders whose notes are concept or topic notes, one per line. Notes tagged #concept or #topic, or with type: concept, count too.")
+			.addTextArea((t) => {
+				t.setValue(s.conceptFolders.join("\n")).onChange(async (v) => {
+					s.conceptFolders = v.split("\n").map((l) => l.trim()).filter(Boolean);
+					await this.plugin.saveSettings();
+				});
+				t.inputEl.rows = 3;
+			});
+
+		new Setting(containerEl)
+			.setName("Quiz questions")
+			.setDesc("How many questions 'Quiz me' asks by default.")
+			.addSlider((sl) =>
+				sl
+					.setLimits(3, 15, 1)
+					.setValue(s.quizQuestions)
+					.onChange(async (v) => {
+						s.quizQuestions = v;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Quiz review folder")
+			.setDesc("Missed questions go to 'Quiz review - <topic>' here, after you approve the diff.")
+			.addText((t) =>
+				t.setPlaceholder(DEFAULT_SETTINGS.quizReviewFolder).setValue(s.quizReviewFolder).onChange(async (v) => {
+					s.quizReviewFolder = v.trim();
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Lecture Companion")
+			.setDesc(
+				lc
+					? "Installed: the agent lists lectures and reads timestamped transcripts from it directly (list_lectures, lecture_transcript), quizzes draw on its courses, and the chat has a mic button that transcribes through its whisper server."
+					: "Not installed. With Lecture Companion the agent reads lectures and transcripts as structured data, quizzes know your courses, and the chat gets voice input (it transcribes through Lecture Companion's whisper server).",
+			);
+
+		new Setting(containerEl).setName("Scheduled jobs").setHeading();
+		containerEl.createEl("p", {
+			cls: "setting-item-description",
+			text: "Obsidian has no background service, so a job runs when Obsidian is open at or after its time. A job never writes: what it would change waits until you review it (a notice when you are back, and a badge in the status bar), as ordinary diffs.",
+		});
+
+		const timeSetting = (name: string, desc: string, get: () => string, set: (v: string) => void) =>
+			new Setting(containerEl)
+				.setName(name)
+				.setDesc(desc)
+				.addText((t) => {
+					t.inputEl.type = "time";
+					t.setValue(get()).onChange(async (v) => {
+						if (!/^\d{1,2}:\d{2}$/.test(v)) return;
+						set(v);
+						await this.plugin.saveSettings();
+					});
+				});
+
+		new Setting(containerEl)
+			.setName("Nightly: process my daily notes")
+			.setDesc("Compiles the last two days' daily inboxes into topic notes, as the command does, and queues the changes for your review.")
+			.addToggle((t) =>
+				t.setValue(s.nightlyDaily).onChange(async (v) => {
+					s.nightlyDaily = v;
+					if (v) s.jobRuns.daily = Date.now();
+					await this.plugin.saveSettings();
+				}),
+			);
+		timeSetting("Nightly time", "When the nightly job runs (local time).", () => s.nightlyTime, (v) => (s.nightlyTime = v));
+
+		new Setting(containerEl)
+			.setName("Weekly digest")
+			.setDesc("A note summarising the notes you created or changed that week, with links, queued for your review.")
+			.addToggle((t) =>
+				t.setValue(s.weeklyDigest).onChange(async (v) => {
+					s.weeklyDigest = v;
+					if (v) s.jobRuns.digest = Date.now();
+					await this.plugin.saveSettings();
+				}),
+			);
+		new Setting(containerEl).setName("Digest day").addDropdown((d) =>
+			d
+				.addOptions({ "0": "Sunday", "1": "Monday", "2": "Tuesday", "3": "Wednesday", "4": "Thursday", "5": "Friday", "6": "Saturday" })
+				.setValue(String(s.digestDay))
+				.onChange(async (v) => {
+					s.digestDay = Number(v);
+					await this.plugin.saveSettings();
+				}),
+		);
+		timeSetting("Digest time", "When on that day the digest is written (local time).", () => s.digestTime, (v) => (s.digestTime = v));
+		new Setting(containerEl)
+			.setName("Digest folder")
+			.addText((t) =>
+				t.setPlaceholder(DEFAULT_SETTINGS.digestFolder).setValue(s.digestFolder).onChange(async (v) => {
+					s.digestFolder = v.trim();
+					await this.plugin.saveSettings();
+				}),
+			);
+		const waiting = this.plugin.pending.size;
+		new Setting(containerEl)
+			.setName("Waiting for review")
+			.setDesc(waiting ? `${waiting} change${waiting === 1 ? "" : "s"} from scheduled jobs.` : "Nothing waiting.")
+			.addButton((b) =>
+				b
+					.setButtonText("Review now")
+					.setDisabled(waiting === 0)
+					.onClick(() => void this.plugin.reviewPending()),
+			);
 	}
 }

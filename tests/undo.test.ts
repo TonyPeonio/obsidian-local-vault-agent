@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Agent, newConversation, type AgentConfig } from "../src/agent";
 import { keywordSearch } from "../src/search";
 import { ALL_TOOLS } from "../src/tools";
-import { UndoStack, describeChange, planRevert } from "../src/undo";
+import { RevertError, UndoStack, carryOnto, describeChange, planRevert, reverseOnto } from "../src/undo";
 import type { ChangeRecord } from "../src/types";
 import { FakeOllama, FakeVault } from "./fakes";
 
@@ -128,5 +128,83 @@ describe("planRevert for moves", () => {
 		expect(vault.exists("Projects/A.md")).toBe(true);
 		expect(vault.exists("Archive/A.md")).toBe(false);
 		await expect(planRevert(change({ tool: "move_note", path: "Archive/A.md", before: "Projects/A.md", after: "Archive/A.md" }), vault)).rejects.toThrow(/no longer there/);
+	});
+});
+
+describe("change history", () => {
+	it("keeps undone changes marked, skips them for latest/forTurn, filters by chat and caps its size", () => {
+		const stack = new UndoStack(3);
+		const a = stack.push({ tool: "edit_note", path: "A.md", before: "1", after: "2", time: 0, turn: 1, chat: "c1" });
+		stack.push({ tool: "edit_note", path: "B.md", before: "1", after: "2", time: 0, turn: 1, chat: "c2" });
+		const c = stack.push({ tool: "edit_note", path: "C.md", before: "1", after: "2", time: 0, turn: 1, chat: "c1" });
+		expect(stack.forTurn(1, "c1").map((x) => x.path)).toEqual(["C.md", "A.md"]);
+		stack.markUndone(c.id, 99);
+		expect(stack.latest()?.path).toBe("B.md");
+		expect(stack.byId(c.id)?.undone).toBe(99);
+		expect(stack.forTurn(1, "c1").map((x) => x.path)).toEqual(["A.md"]);
+		stack.push({ tool: "edit_note", path: "D.md", before: "", after: "", time: 0, turn: 2 });
+		expect(stack.list().map((x) => x.path)).toEqual(["B.md", "C.md", "D.md"]);
+		expect(stack.byId(a.id)).toBeUndefined();
+	});
+
+	it("round-trips through JSON without attachment bytes, and continues the ids", () => {
+		const stack = new UndoStack();
+		stack.push({ tool: "delete_file", path: "rec.webm", before: "(attachment)", after: "", binary: new ArrayBuffer(4), time: 5, turn: 0 });
+		stack.push({ tool: "edit_note", path: "A.md", before: "1", after: "2", time: 6, turn: 0, summary: "Edit A" });
+		const saved = JSON.parse(JSON.stringify(stack.toJSON())) as unknown;
+		const loaded = new UndoStack();
+		loaded.load(saved);
+		loaded.load("garbage");
+		expect(loaded.list().map((c) => [c.id, c.path, c.binary, c.summary])).toEqual([
+			[1, "rec.webm", undefined, undefined],
+			[2, "A.md", undefined, "Edit A"],
+		]);
+		expect(loaded.push({ tool: "edit_note", path: "B.md", before: "", after: "", time: 0, turn: 0 }).id).toBe(3);
+	});
+});
+
+describe("reverseOnto / carryOnto", () => {
+	const before = "# Note\n\nalpha\nbeta\ngamma\n\n## Later\none\ntwo\n";
+	const after = "# Note\n\nalpha\nBETA\ngamma\n\n## Later\none\ntwo\n";
+
+	it("restores directly when nothing changed since", () => {
+		expect(reverseOnto(after, before, after)).toBe(before);
+		expect(carryOnto(before, before, after)).toBe(after);
+	});
+
+	it("keeps later edits elsewhere in the note", () => {
+		const current = after.replace("two\n", "two\nthree\n");
+		expect(reverseOnto(current, before, after)).toBe(before.replace("two\n", "two\nthree\n"));
+	});
+
+	it("refuses when later edits overlap the change", () => {
+		expect(reverseOnto(after.replace("BETA", "BETA!"), before, after)).toBeNull();
+	});
+});
+
+describe("planRevert conflicts", () => {
+	it("undoes only the change in a note edited since, and refuses overlaps", async () => {
+		const vault = new FakeVault({ "A.md": "a\nB\nc\nd\ne\nf\nextra\n" });
+		const plan = await planRevert(change({ tool: "edit_note", path: "A.md", before: "a\nb\nc\nd\ne\nf\n", after: "a\nB\nc\nd\ne\nf\n" }), vault);
+		expect(plan.after).toBe("a\nb\nc\nd\ne\nf\nextra\n");
+		expect(plan.summary).toMatch(/later edits kept/);
+		await plan.apply();
+		expect(await vault.read("A.md")).toBe("a\nb\nc\nd\ne\nf\nextra\n");
+
+		await vault.modify("A.md", "a\nX\nc\n");
+		await expect(planRevert(change({ tool: "edit_note", path: "A.md", before: "a\nb\nc\n", after: "a\nB\nc\n" }), vault)).rejects.toMatchObject({ kind: "conflict" });
+	});
+
+	it("will not delete a created note that was written to since", async () => {
+		const vault = new FakeVault({ "New.md": "hello\nmy own words" });
+		await expect(planRevert(change({ tool: "create_note", path: "New.md", after: "hello" }), vault)).rejects.toMatchObject({ kind: "conflict" });
+		await expect(planRevert(change({ tool: "create_note", path: "Gone.md", after: "x" }), vault)).rejects.toBeInstanceOf(RevertError);
+	});
+
+	it("refuses to apply when the note changed while the diff was open", async () => {
+		const vault = new FakeVault({ "A.md": "new" });
+		const plan = await planRevert(change({ tool: "edit_note", path: "A.md", before: "old", after: "new" }), vault);
+		await vault.modify("A.md", "newer");
+		await expect(plan.apply()).rejects.toThrow(/changed while/);
 	});
 });

@@ -22,9 +22,14 @@ Companion (local-model rubric grading with verbatim evidence) and Branching Tabl
 
 - **Agentic.** The model decides which notes to search, read and edit using a small set of
   tools, and keeps going until it has an answer. It is not a one-shot "chat with a prompt".
-- **Grounded.** Answers cite the notes they came from as wikilinks you can click.
+- **Grounded.** Answers cite the notes they came from as wikilinks you can click, and link the
+  exact paragraph they used (`[[note#^block]]`; for a lecture transcript, the `[m:ss]` paragraph).
 - **Safe.** Every write to your vault goes through a diff-approval dialog. You can approve
-  one change, approve everything in the current chat, or reject.
+  one change, approve everything in the current chat, or reject. Every approved change is kept in
+  a change history with its own Undo.
+- **For studying.** *Quiz me on a course since a date*, concept links that tie lectures from
+  different courses to the same concept notes, and, with Lecture Companion, lecture transcripts as
+  structured data and voice input.
 - **Semantic + keyword search.** Notes are embedded locally with an Ollama embedding model
   and kept in sync as you edit. Keyword search always works as a fallback.
 - **Free and open source.** MIT licensed. No accounts, no API keys, no telemetry.
@@ -58,6 +63,11 @@ Things to try:
   the daily notes stay timelines.
 - Run **Suggest vault improvements** for a checklist of broken links, unlinked mentions,
   duplicates, orphans and full inboxes, then ask the agent to work through a section.
+- *"Quiz me on CSCI 470 since October 1"*: questions from those lectures, one at a time, each
+  answer graded against the paragraph it came from; the missed ones go to a review note.
+- Open a lecture and run **Suggest concept links for this note**.
+- *"What does the whiteboard photo in [[Robot meeting]] say?"* — images are read with a local
+  vision model.
 
 ### Commands
 
@@ -74,6 +84,12 @@ Things to try:
 | Rebuild note gists | Regenerates the one-sentence gist of every note |
 | Undo the agent's last change | Reverts the most recent approved write (diff-approved) |
 | Undo every change from the agent's last message | Reverts that message's writes, newest first |
+| Show change history | Every approved change, newest first, with its diff and an Undo button (`/history`) |
+| Quiz me on a topic or course | Topic, since when, how many questions; the quiz runs in the chat (`/quiz`, or type *quiz me on … since …*) |
+| Suggest concept links for this note | Concept notes the open note mentions or is close to, linked in one diff, optionally as `parent`/`child` properties (`/concepts`) |
+| Review changes from scheduled jobs | Walks the changes the nightly and weekly jobs queued, as diffs (`/review`) |
+| Run the nightly daily-notes job now | Runs the scheduled job immediately; its changes wait for review |
+| Write this week's digest now | Runs the weekly digest immediately; the note waits for review |
 
 ### How it works
 
@@ -85,7 +101,9 @@ tag, name, size, modified dates), `list_files`, `read_file` (text of PDFs and te
 `vault_overview`, `get_active_note`. Writing: `create_note`, `edit_note`, `edit_notes` (many edits
 across notes in one call, one approval per note), `append_to_note`, `replace_section` (rewrite or
 empty everything under a heading), `replace_note`, `move_note` (links are updated) and
-`delete_file` (notes *or* attachments, to the trash). It calls
+`delete_file` (notes *or* attachments, to the trash). Three more are offered when they can work:
+`list_lectures` and `lecture_transcript` when Lecture Companion is installed, `read_image` when a
+vision model is available. It calls
 them in a loop until the task is done, then reports. Every write opens an approval dialog with a
 line diff before touching the vault (Enter approves, A approves all in this chat, Esc rejects).
 
@@ -151,13 +169,75 @@ with a wrap-up answer at the third repeat. A path that does not exist comes back
 that do exist in that folder, `list_notes` shows every note's size, and a regex sent as literal
 text is recognised and searched as a regex.
 
-**Undo.** Every approved write is recorded with what it replaced. *Undo the agent's last change* and
-*Undo every change from the agent's last message* are commands (also `/undo`, `/undo-all`), and each
-tool card has an **Undo** button. A revert is shown as a diff and applied only when approved.
+**Undo and the change history.** Every approved write is recorded with what it replaced, the
+time, and the chat and message it came from, in `history.json` in the plugin's folder (the last 300
+changes; it survives restarts). *Show change history* (`/history`) lists them newest first with the
+diff and an **Undo** button; *Undo the agent's last change* and *Undo every change from the agent's
+last message* are commands (also `/undo`, `/undo-all`), and each tool card has an **Undo** button
+too. A revert is shown as a diff and applied only when approved. If the note was edited after the
+change, only the change is taken back and the later edits stay; if the later edits overlap it, the
+undo is refused rather than overwriting them. An undo is itself in the history and can be undone.
+
+**Paragraph citations.** Under an answer drawn from notes, a *Passages* line links the exact
+paragraphs it used: the ones it quotes, the transcript paragraphs whose `[m:ss]` it names, or the
+ones it paraphrases closely. A paragraph that already has a block id is linked as
+`[[note#^id]]`. One that has none gets an id proposed, `^t21-29` for a transcript paragraph at
+21:29, otherwise a short hash, and since that is a write, all of one answer's ids for a note are a
+single diff you approve; reject it and the link points at the paragraph's heading instead
+(`[[note#Transcript|note › 21:29]]`), which needs no write. *Settings → Paragraph citations* can
+make it headings only (never writes) or turn it off.
+
+**Quiz me.** *"Quiz me on CSCI 470 since October 1"* (or the command, or `/quiz`) picks the notes:
+the course's lectures from Lecture Companion when it is installed, otherwise notes whose path has
+the topic's words, otherwise a search. Dates can be written as `2026-10-01`, `last week`,
+`the last 2 weeks`, `monday`, `Oct 3`. The chat model writes the questions with the notes in front
+of it (a question whose source is not one of those notes is dropped), the chat asks them one at a
+time, and each answer is graded against the source passage, with the answer and a link to the
+paragraph. *skip* passes, *stop* ends. At the end the missed ones are added to
+`Quiz reviews/Quiz review - <topic>.md` as a dated section, after you approve the diff; no
+checkboxes, so task queries stay clean.
+
+**Concept links.** *Suggest concept links for this note* (`/concepts`) looks for your concept or
+topic notes (in the *Concept folders*, `Concepts` and `Topics` by default, or tagged `#concept`,
+or `type: concept`) that the open note mentions, by name or alias, and, with the semantic index,
+the ones it is close to without naming. You tick which to use; the first plain mention of each
+becomes a wikilink, the related ones go under `## Related concepts`, and optionally all of them are
+recorded as `parent` (or `child`) link properties, the shape Branching Table of Contents reads,
+so a concept collects the lectures of every course that discusses it. One diff for the whole change.
+
+**Scheduled jobs.** In settings, a nightly *Process my daily notes* and a weekly digest note
+(the notes you created or changed that week, summarised by theme with links, plus the full list).
+Obsidian has no background service, so a job runs when Obsidian is open at or after its time,
+checked at start-up and every minute. A job never writes: it runs against an in-memory overlay of
+the vault, and what it would have written waits in `pending.json` until you are back at the
+keyboard, when a notice and a status-bar badge (*🤖 3 to review*) offer the review. Each change is
+then an ordinary diff; one whose note you edited in the meantime is carried over when the edits do
+not overlap and skipped when they do. The commands *Run the nightly daily-notes job now* and
+*Write this week's digest now* run them on demand.
+
+**Images and scans.** With a vision model the agent gets `read_image`: it transcribes the text in
+an image (printed or handwritten) and describes diagrams, charts and photos, and it reads scanned
+PDF pages that have no text layer (rendered with Obsidian's PDF viewer). `read_note` tells the model
+which images a note embeds, and `read_file` which PDF pages are scans. The picture is sent to Ollama
+base64 in the message's `images`; readings are cached by the file's content hash in
+`image-cache.json`, so an image is read once. *Settings → Vision model*: empty uses the chat model
+when it can see (`qwen3.5` can), or set one such as `qwen2.5vl:7b`. Without one the tool is simply
+not offered.
+
+**Lecture Companion.** When [Lecture Companion](https://github.com/TonyPeonio) is installed and
+enabled, the agent reads its records through its API instead of relying on the conventions it
+appends to `AGENT.md`: `list_lectures` (course, date, kind, one-sentence summary) and
+`lecture_transcript` (the paragraphs that match a query, with their `[m:ss]` and neighbours). So
+"when did the professor say X" is answered from structured data, and the citation links the
+transcript paragraph. Without it, the search path and the `AGENT.md` conventions work as before.
+The chat also gets a **mic button**: it records, converts to 16 kHz mono WAV and transcribes through
+Lecture Companion's whisper server into the message box. Without Lecture Companion there is no mic
+button. Settings show a button to use Lecture Companion's Ollama URL and model, so both plugins
+share one Ollama and one model in memory.
 
 **Composer.** `@` picks a note to attach to your message (its content is included, so no tool call
 is needed); `/` lists commands (`/reformat`, `/summarize`, `/undo`, `/undo-all`, `/new`, `/gists`,
-`/index`, `/help`). The header has a **Copy conversation** button that copies the whole chat,
+`/index`, `/quiz`, `/concepts`, `/history`, `/review`, `/help`). The header has a **Copy conversation** button that copies the whole chat,
 including tool calls and results, as markdown. The footer shows index and gist status, the tool-call count and elapsed time while a turn
 runs, and the context used by the last model call. The chat is saved and restored when you reopen
 the panel or restart Obsidian; **New chat** clears it.
@@ -211,6 +291,14 @@ incrementally when you change notes. Search results merge semantic and keyword r
   calls per note; raise it if the agent reports it ran out.
 - **Excluded folders** — folders the agent never searches, indexes or edits (templates, etc.).
 - **Extra instructions** — appended to the system prompt. Tell it about your vault's conventions.
+- **Paragraph citations** — *Block ids* (default: ids added on approval), *Headings only* (never
+  writes) or *Off*.
+- **Vision model** — empty: the chat model when it can see; or e.g. `qwen2.5vl:7b`. *Check* says
+  which model will read images.
+- **Concept folders**, **Quiz questions** (5), **Quiz review folder** (`Quiz reviews`).
+- **Scheduled jobs** — nightly daily-notes processing (02:00), weekly digest (Sunday 18:00, into
+  `Digests/`), both off by default; *Review now* when changes are waiting.
+- **Use Lecture Companion's Ollama settings** — shown when Lecture Companion is installed.
 
 ### Ollama from a different machine or on mobile
 
@@ -220,7 +308,7 @@ see a CORS/network error, set `OLLAMA_ORIGINS=app://obsidian.md*` on the Ollama 
 
 ## Benchmarks
 
-Every release is run through a scored benchmark: 20 scenarios on a generated 339-note vault
+Every release is run through a scored benchmark: 24 scenarios on a generated 339-note vault
 (questions across notes, a follow-up turn that must use the conversation, a question with no
 answer in the vault, quoting a lecture transcript with its `[m:ss]` timestamp through the
 Lecture Companion block in `AGENT.md`, enumeration, a clean-up over 40 lecture sections, moving finished projects,
@@ -305,8 +393,54 @@ the size itself costs little once the outline keeps every folder. Reproduce with
 `SCALE=3 OUT=test-vault-x3 node scripts/make-vault.mjs` and
 `VAULT_DIR=test-vault-x3 TAG=scale3 npm run e2e:large`; results are in `bench/0.5.1-scale3*`.
 
+**0.7.0 scenarios.** Four new scenarios and one new check cover the new features: `lecture-tools` (the same transcript
+question answered through a fake of Lecture Companion's API, which must use `lecture_transcript`
+and link the paragraph by its new `^t21-29` block id), `quiz` (five questions from three lectures,
+each citing a paragraph; the expected answer graded correct and an unrelated one wrong),
+`scheduled-daily` (the nightly job in an overlay: the real vault must stay untouched while the
+topic notes and inbox edits come back as queued changes), `read-image` (a number drawn in a PNG
+that a note embeds, read with `qwen3.5:9b`'s own vision) and a passage-link check added to
+`lecture-timestamp`. Run with `ONLY=lecture-timestamp,lecture-tools,quiz,scheduled-daily,read-image`
+on 2026-11-17 (Ollama 0.40, `qwen3.5:9b`, on a machine reading prompts at about 170 tokens a second,
+so the times are far above the RTX 5070 rows): 32 of 34 checks. `lecture-timestamp` 8/8 and
+`lecture-tools` 10/10 (the block id was written to the quoted paragraph), `quiz` 5/5, `scheduled-daily`
+4/5 (three topic notes and three inbox edits queued, vault untouched; the model left out the
+*Sources* section the prompt asks for), `read-image` 5/6 (the tool was used, but the model read the
+blocky "47" as "41"). The full 24-scenario run was not repeated for this release.
+
 Run it yourself with `npm run make-vault && npm run e2e:large` (see Development); results land
 in `bench/`.
+
+## API for other plugins
+
+Local Vault Agent exposes `app.plugins.plugins["local-vault-agent"].api`:
+
+```ts
+interface LocalVaultAgentApi {
+  version: 1;
+  /** Opens the chat with the note attached (as an @-mention) and the cursor ready for a question. */
+  openChatAbout(path: string): Promise<void>;
+  /** The Ollama URL and chat model this plugin uses, for sharing one setup. */
+  ollama(): { url: string; model: string };
+}
+```
+
+It uses Lecture Companion's API (`app.plugins.plugins["lecture-companion"].api`, `version: 1`)
+when present:
+
+```ts
+interface LectureCompanionApi {
+  version: 1;
+  courses(): string[];
+  lectures(course?: string): { path: string; course: string; date: string; kind: "lecture" | "meeting"; sentence: string | null }[];
+  transcript(path: string): Promise<{ start: number; text: string }[]>; // start in seconds
+  transcribe(wav16kMono: ArrayBuffer): Promise<string>;
+  ollama(): { url: string; model: string };
+}
+```
+
+Check `version === 1` before use; a later version may change the shape. Both are read on use, so
+enabling or disabling a plugin takes effect without a restart.
 
 ## Privacy and network use
 
@@ -320,7 +454,14 @@ What it touches in your vault, and why:
   *Excluded folders* are skipped.
 - **Reads notes** the agent chooses to open, and **writes** only after you approve a diff.
 - **Writes to the clipboard** only when you click *Copy* on a reply. It never reads the clipboard.
-- Stores the search index in the plugin's own folder inside your vault's config directory.
+- **Uses the microphone** only while the mic button is on (it exists only with Lecture Companion).
+  The recording goes to Lecture Companion's `transcribe`, which sends it to the whisper server
+  configured there; this plugin sends it nowhere else and keeps no copy.
+- **Reads images** a note embeds, and PDFs, only when the agent calls `read_image`; they go to the
+  same Ollama server.
+- Stores the search index, the chat, the change history (`history.json`, with the text each change
+  replaced), queued scheduled changes (`pending.json`) and image readings (`image-cache.json`) in
+  the plugin's own folder inside your vault's config directory.
 
 Releases are built by GitHub Actions from the committed lockfile and carry
 [artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds),
@@ -337,11 +478,11 @@ npm run make-vault && npm run e2e:large   # the scored benchmark (see Benchmarks
 npm run build   # type-check + Obsidian review lint + production bundle
 ```
 
-The benchmark (`scripts/e2e-large.ts`) runs 20 scenarios on a generated 339-note vault
+The benchmark (`scripts/e2e-large.ts`) runs 24 scenarios on a generated 339-note vault
 (`scripts/make-vault.mjs`, with `scripts/large-facts.json` recording the facts the checks look
 for) and saves per-scenario seconds, tool calls, errors, guessed paths, repeated calls and
 pass/fail to `bench/<version>[-tag].json`. `MODEL=`, `NUM_CTX=`, `THINK=on|off`, `TEMPERATURE=`,
-`PRESENCE=`, `GISTS=1`, `TAG=` and `ONLY=id,id` select what runs; `VAULT_DIR=` points it at a
+`PRESENCE=`, `GISTS=1`, `VISION_MODEL=`, `TAG=` and `ONLY=id,id` select what runs; `VAULT_DIR=` points it at a
 vault generated with `SCALE=3 OUT=test-vault-x3 node scripts/make-vault.mjs` (the same 339
 notes plus 660 filler notes in their own folders, facts in `scripts/large-facts-test-vault-x3.json`). `npm run bench-matrix` runs
 several configurations back to back (`RUNS=2` for variance) and prints one table;

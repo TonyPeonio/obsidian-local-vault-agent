@@ -1,6 +1,6 @@
 import type { OllamaClient } from "./ollama";
 import { OllamaError } from "./ollama";
-import { splitSentences } from "./chunker";
+import { blockIdEdits, linkedTargets, planCitations, plainText, quotable, withPassages, type CitationMode } from "./citations";
 import { buildOutline, outlineBudget } from "./outline";
 import { ToolError, toOllamaTools } from "./tools";
 import type { UndoStack } from "./undo";
@@ -30,6 +30,8 @@ export interface AgentConfig {
 	/** Answer the model's "shall I proceed?" with "yes, continue" instead of returning to the user. */
 	autoContinue: boolean;
 	extraSystemPrompt: string;
+	/** Paragraph citations under answers: off, heading links only, or block ids (written on approval). Default "blocks". */
+	citations?: CitationMode;
 }
 
 /** How many times per turn the agent answers a permission question on the user's behalf. */
@@ -87,6 +89,9 @@ export const REPEATED_CALLS_WRAP_UP =
 
 export const AUTO_CONTINUE_TEXT =
 	"Yes. Continue without asking again: carry out everything you proposed, for every note involved, in this turn. Reading needs no permission and each change goes through the approval dialog. Report when you are done.";
+
+export const LECTURE_TOOLS_HINT =
+	"Lecture Companion is installed: for questions about lectures or meetings (what was said about X, and when; which lecture covered Y), use list_lectures to find the lecture and lecture_transcript with a query to get the timestamped paragraphs, then quote the paragraph and give its [m:ss] time with a wikilink to the lecture note.";
 
 export const GROUNDING_PREFIX = "Grounding check:";
 
@@ -155,27 +160,6 @@ export function pickSources(answer: string, hits: string[], texts?: Map<string, 
 	);
 	if (mentioned.length) return mentioned;
 	return hits.length <= 3 ? hits : [];
-}
-
-/** Markdown emphasis, quote marks and blockquote markers removed, whitespace collapsed, lower case. */
-function plainText(s: string): string {
-	return s
-		.replace(/^\s*>\s?/gm, "")
-		.replace(/\*\*|__|[*_`"“”]/g, "")
-		.replace(/\s+/g, " ")
-		.trim()
-		.toLowerCase();
-}
-
-/** The answer's quoted spans of 20+ and sentences of 30+ characters, in the same plain form, for matching against hit text. */
-function quotable(answer: string): string[] {
-	const out: string[] = [];
-	for (const m of answer.matchAll(/["“]([^"”\n]{20,})["”]/g)) out.push(plainText(m[1]));
-	for (const line of answer.split("\n")) {
-		const plain = plainText(line.replace(/^\s*(?:[-*+]|\d+\.)\s+/, ""));
-		for (const sentence of splitSentences(plain)) if (sentence.length >= 30) out.push(sentence);
-	}
-	return out;
 }
 
 /** Appends "Sources: [[A]], [[B]]" (at most six) to an answer that cited nothing. */
@@ -260,13 +244,15 @@ export function looksLikePermissionQuestion(text: string): boolean {
 }
 
 export interface Conversation {
+	/** Identifies the chat in the change history, so "undo this message" never reaches another chat's changes. */
+	id?: string;
 	messages: ChatMessage[];
 	/** Set when the user picks "approve all" for this chat. */
 	approveAll: boolean;
 }
 
 export function newConversation(): Conversation {
-	return { messages: [], approveAll: false };
+	return { id: `chat-${Date.now().toString(36)}`, messages: [], approveAll: false };
 }
 
 export interface AgentDeps {
@@ -290,6 +276,12 @@ export interface AgentDeps {
 	readAttachmentText?: ToolContext["readAttachmentText"];
 	/** Today's daily note, per the user's daily-notes settings (re-read on every run). */
 	dailyNote?: () => Promise<{ path: string; exists: boolean } | null> | { path: string; exists: boolean } | null;
+	/** Tools that come and go with other plugins (Lecture Companion's), added to `tools` on every run. */
+	extraTools?: () => ToolDefinition[];
+	/** Lecture Companion's lectures and transcripts, when it is installed. */
+	lectures?: () => ToolContext["lectures"];
+	/** Describes an image with the local vision model, when there is one (undefined otherwise). */
+	describeImage?: () => ToolContext["describeImage"];
 }
 
 /**
@@ -383,7 +375,8 @@ export class Agent {
 		signal?: AbortSignal,
 	): Promise<void> {
 		const cfg = this.deps.getConfig();
-		const { client, vault, tools } = this.deps;
+		const { client, vault } = this.deps;
+		const tools = [...this.deps.tools, ...(this.deps.extraTools?.() ?? [])];
 		const now = this.deps.now ? this.deps.now() : new Date();
 		const toolByName = new Map(tools.map((t) => [t.name, t]));
 
@@ -415,10 +408,12 @@ export class Agent {
 			signal,
 			readLog: new Map(),
 			readAttachmentText: this.deps.readAttachmentText,
+			lectures: this.deps.lectures?.(),
+			describeImage: this.deps.describeImage?.(),
 			recordChange: (change) => {
 				changedPaths.add(change.path);
 				if (!this.deps.undo || !currentCall) return;
-				const record = this.deps.undo.push({ ...change, time: now.getTime(), turn });
+				const record = this.deps.undo.push({ ...change, time: now.getTime(), turn, chat: conversation.id });
 				callbacks.onChange?.(record, currentCall);
 			},
 			approve: async (req) => {
@@ -458,6 +453,10 @@ export class Agent {
 		// It also holds nothing that varies per message (see turnContext), so the next turn starts
 		// from the same cached prefix unless the vault's outline changed in between.
 		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, conventions, this.deps.gist) };
+		// Lecture Companion's records answer "what was said, and when" better than searching transcripts.
+		if (toolByName.has("lecture_transcript")) system.content += `
+
+${LECTURE_TOOLS_HINT}`;
 		const options = { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}) };
 		iterations: for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
@@ -513,6 +512,10 @@ export class Agent {
 			}
 			// A rejected change ends with the user's decision, whatever the model wrote.
 			if (!assistant.tool_calls?.length && rejected && assistant.content.trim()) assistant.content = withRejectionQuestion(assistant.content);
+			// An answer from notes links the exact paragraphs it used (block ids are written on approval).
+			if (!assistant.tool_calls?.length && writes === 0 && !rejected && assistant.content.trim() && (cfg.citations ?? "blocks") !== "off" && unresolvedLinks(assistant.content, vault).length === 0) {
+				assistant.content = await this.citePassages(assistant.content, [...readPaths, ...hitPaths], cfg, conversation, turn, now);
+			}
 			conversation.messages.push(assistant);
 			callbacks.onAssistantDone?.(assistant);
 			if (response.promptTokens !== undefined) {
@@ -632,7 +635,10 @@ export class Agent {
 				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name, ...(cached ? { cacheKey: key } : {}) });
 				if (ok) {
 					if (tool?.mutates) writes++;
-					if (READ_TOOLS.has(call.function.name)) {
+					if (call.function.name === "lecture_transcript") {
+						const m = /^# (.+?\.md) \(transcript/m.exec(result);
+						if (m && !readPaths.includes(m[1])) readPaths.push(m[1]);
+					} else if (READ_TOOLS.has(call.function.name)) {
 						const header = /^# (.+?)(?: \(lines [^)]*\))?$/m.exec(result);
 						if (header && !readPaths.includes(header[1].trim())) readPaths.push(header[1].trim());
 					} else if (call.function.name === "grep_vault") {
@@ -675,6 +681,53 @@ export class Agent {
 		});
 		conversation.messages.push(response.message);
 		callbacks.onAssistantDone?.(response.message);
+	}
+
+	/**
+	 * Adds a "Passages:" line linking the paragraphs the answer used in the notes it cites (only
+	 * notes read or found this turn). Paragraphs without a block id get one proposed; in "blocks"
+	 * mode the ids for each note are one diff the user approves, and a note whose diff is rejected
+	 * (or "headings" mode) is linked by heading instead.
+	 */
+	private async citePassages(answer: string, grounded: string[], cfg: AgentConfig, conversation: Conversation, turn: number, now: Date): Promise<string> {
+		const { vault } = this.deps;
+		if (/\[\[[^\]]*#\^/.test(answer)) return answer;
+		const cited = linkedTargets(answer)
+			.map((t) => vault.resolve(t))
+			.filter((p): p is string => p !== null && grounded.includes(p));
+		const paths = Array.from(new Set(cited)).slice(0, 4);
+		if (paths.length === 0) return answer;
+		const contents = new Map<string, string>();
+		for (const p of paths) {
+			try {
+				contents.set(p, await vault.read(p));
+			} catch {
+				// gone since it was read
+			}
+		}
+		const citations = planCitations(answer, Array.from(contents, ([path, content]) => ({ path, content })));
+		if (citations.length === 0) return answer;
+		const written = new Set<string>();
+		if ((cfg.citations ?? "blocks") === "blocks") {
+			for (const [path, after] of blockIdEdits(citations, contents)) {
+				const before = contents.get(path) ?? "";
+				const n = citations.filter((c) => c.path === path && c.isNew).length;
+				const req: ApprovalRequest = { tool: "add_block_ids", path, before, after, summary: `Add ${n} block id${n === 1 ? "" : "s"} to ${path} so the answer can link the exact paragraph${n === 1 ? "" : "s"}` };
+				let decision: ApprovalDecision = "approve";
+				if (!cfg.autoApprove && !conversation.approveAll) decision = await this.deps.approve(req);
+				if (decision === "approve-all") conversation.approveAll = true;
+				if (decision === "reject") continue;
+				try {
+					if ((await vault.read(path)) !== before) continue;
+					await vault.modify(path, after);
+				} catch {
+					continue;
+				}
+				written.add(path);
+				this.deps.undo?.push({ tool: "add_block_ids", path, before, after, time: now.getTime(), turn, chat: conversation.id, summary: req.summary });
+			}
+		}
+		return withPassages(answer, citations, written);
 	}
 
 	private async executeTool(
