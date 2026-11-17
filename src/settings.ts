@@ -1,9 +1,24 @@
 import type { CitationMode } from "./citations";
 import { DEFAULT_CONCEPT_FOLDERS } from "./concepts";
 import type { JobId } from "./scheduler";
+import type { Provider } from "./openai";
 
 export interface LocalVaultAgentSettings {
+	/** "ollama" (default) or an OpenAI-compatible server (LM Studio, llama.cpp, Jan, vLLM). */
+	provider: Provider;
 	ollamaUrl: string;
+	/** Base URL of the OpenAI-compatible API, ending in /v1. */
+	openaiUrl: string;
+	/** Bearer token for the OpenAI-compatible server, if it wants one. Never put in a problem report. */
+	openaiKey: string;
+	/** Language answers are written in; "" = the language of the question. */
+	answerLanguage: string;
+	/** The setup checklist has been shown once (first open of the chat). */
+	setupShown: boolean;
+	/** The one-question feedback survey: "ask" until answered or dismissed. */
+	survey: "ask" | "done";
+	/** Answers given so far, to ask the survey only after the agent has been used a little. */
+	answeredTurns: number;
 	model: string;
 	embeddingModel: string;
 	semanticSearch: boolean;
@@ -67,7 +82,14 @@ export const SETTINGS_VERSION = 4;
 export const SAMPLING = { top_p: 0.9, top_k: 20, presence_penalty: 0.5 } as const;
 
 export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
+	provider: "ollama",
 	ollamaUrl: "http://localhost:11434",
+	openaiUrl: "http://localhost:1234/v1",
+	openaiKey: "",
+	answerLanguage: "",
+	setupShown: false,
+	survey: "ask",
+	answeredTurns: 0,
 	model: "qwen3.5:9b",
 	embeddingModel: "nomic-embed-text",
 	semanticSearch: true,

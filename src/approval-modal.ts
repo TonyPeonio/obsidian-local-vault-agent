@@ -1,5 +1,6 @@
 import { App, Modal } from "obsidian";
 import { computeDiff } from "./diff";
+import { t } from "./i18n";
 import type { ApprovalDecision, ApprovalRequest } from "./types";
 
 /** Shows a line diff of a proposed change and resolves with the user's decision. */
@@ -26,22 +27,23 @@ export class ApprovalModal extends Modal {
 		meta.createSpan({ text: this.req.path, cls: "lva-approval-path" });
 		meta.createSpan({ text: `+${diff.added} −${diff.removed}`, cls: "lva-approval-stats" });
 
-		const pre = contentEl.createEl("pre", { cls: "lva-diff" });
+		// The diff is focusable and labelled, so it can be scrolled with the keyboard and is announced as a region.
+		const pre = contentEl.createEl("pre", { cls: "lva-diff", attr: { tabindex: "0", role: "region", "aria-label": `${t("approve.diff")}: ${this.req.path}, +${diff.added} −${diff.removed}` } });
 		for (const line of diff.lines) {
 			const row = pre.createDiv({ cls: `lva-diff-line lva-diff-${line.type}` });
-			row.createSpan({ cls: "lva-diff-gutter", text: line.type === "add" ? "+" : line.type === "remove" ? "−" : " " });
+			row.createSpan({ cls: "lva-diff-gutter", text: line.type === "add" ? "+" : line.type === "remove" ? "−" : " ", attr: { "aria-label": line.type === "add" ? "added" : line.type === "remove" ? "removed" : "unchanged" } });
 			row.createSpan({ cls: "lva-diff-text", text: line.text });
 		}
 
 		const buttons = contentEl.createDiv({ cls: "lva-approval-buttons" });
-		const reject = buttons.createEl("button", { text: "Reject" });
+		const reject = buttons.createEl("button", { text: t("approve.reject") });
 		reject.addEventListener("click", () => this.finish("reject"));
-		const approveAll = buttons.createEl("button", { text: "Approve all in this chat" });
+		const approveAll = buttons.createEl("button", { text: t("approve.all") });
 		approveAll.addEventListener("click", () => this.finish("approve-all"));
-		const approve = buttons.createEl("button", { text: "Approve", cls: "mod-cta" });
+		const approve = buttons.createEl("button", { text: t("approve.approve"), cls: "mod-cta" });
 		approve.addEventListener("click", () => this.finish("approve"));
 		approve.focus();
-		contentEl.createDiv({ cls: "lva-approval-hint", text: "Enter approves · A approves all in this chat · Esc rejects" });
+		contentEl.createDiv({ cls: "lva-approval-hint", text: t("approve.hint") });
 		this.scope.register([], "Enter", (e) => {
 			// A button the user tabbed to keeps its own Enter behaviour.
 			const focused = activeDocument.activeElement;

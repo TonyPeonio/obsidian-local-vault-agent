@@ -1,0 +1,56 @@
+{
+  "date": "2026-11-17T20:19:05.707Z",
+  "node": "v24.13.1",
+  "rows": [
+    {
+      "notes": 10000,
+      "generateMs": 200,
+      "buildMs": 1703,
+      "chunks": 30000,
+      "indexFileMB": 125,
+      "largestFileMB": 4,
+      "resyncMs": 18,
+      "editOneNoteMs": 60,
+      "editWritesMB": 4.2,
+      "loadMs": 569,
+      "heapMB": 140,
+      "arrayBuffersMB": 88,
+      "semanticQueryMs": 62,
+      "passageQueryMs": 77,
+      "keywordQueryMs": 131,
+      "keywordFromIndexMs": 110,
+      "systemPromptMs": 55,
+      "systemPromptChars": 7693,
+      "grepMs": 97,
+      "gardenMs": 33277
+    },
+    {
+      "notes": 50000,
+      "generateMs": 980,
+      "buildMs": 13460,
+      "chunks": 150000,
+      "indexFileMB": 627,
+      "largestFileMB": 21,
+      "resyncMs": 221,
+      "editOneNoteMs": 436,
+      "editWritesMB": 19.8,
+      "loadMs": 4479,
+      "heapMB": 700,
+      "arrayBuffersMB": 439,
+      "semanticQueryMs": 325,
+      "passageQueryMs": 390,
+      "keywordQueryMs": 602,
+      "keywordFromIndexMs": 549,
+      "systemPromptMs": 374,
+      "systemPromptChars": 7711,
+      "grepMs": 512
+    }
+  ],
+  "realEmbedding": {
+    "model": "nomic-embed-text",
+    "notes": 300,
+    "chunks": 900,
+    "seconds": 32.8,
+    "chunksPerSecond": 27
+  }
+}

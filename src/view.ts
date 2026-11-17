@@ -8,16 +8,14 @@ import { HELP_TEXT, attachMentions, matchCommands, matchNotes, parseSlash } from
 import { conversationToMarkdown } from "./transcript";
 import { QuizSession, isNonAnswer, parseQuizRequest, questionMarkdown, renderReview, resultMarkdown, reviewNotePath, selectQuizNotes } from "./quiz";
 import { VoiceRecorder } from "./voice";
+import { t, type I18nKey } from "./i18n";
+import { log } from "./log";
+import { SAMPLE_QUESTIONS } from "./sample";
 import type { ChangeRecord, ChatMessage, ToolCall, UsageInfo } from "./types";
 
 export const VIEW_TYPE = "local-vault-agent-view";
 
-const SUGGESTIONS = [
-	"What have I written about …?",
-	"Compile everything about … into a new note",
-	"Clean up every note that …",
-	"Reformat the current note",
-];
+const SUGGESTIONS: I18nKey[] = ["view.chip.written", "view.chip.compile", "view.chip.cleanup", "view.chip.reformat"];
 
 export class AgentView extends ItemView {
 	private conversation: Conversation = newConversation();
@@ -54,7 +52,7 @@ export class AgentView extends ItemView {
 		return VIEW_TYPE;
 	}
 	getDisplayText(): string {
-		return "Local Vault Agent";
+		return t("view.title");
 	}
 	getIcon(): string {
 		return "bot";
@@ -67,16 +65,16 @@ export class AgentView extends ItemView {
 
 		// Header
 		const header = root.createDiv({ cls: "lva-header" });
-		this.modelSelect = header.createEl("select", { cls: "dropdown lva-model-select" });
+		this.modelSelect = header.createEl("select", { cls: "dropdown lva-model-select", attr: { "aria-label": t("view.modelSelect") } });
 		this.modelSelect.addEventListener("change", () => {
 			this.plugin.settings.model = this.modelSelect.value;
 			void this.plugin.saveSettings();
 		});
 		void this.populateModels();
-		const newChat = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": "New chat" } });
+		const newChat = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.newChat") } });
 		setIcon(newChat, "plus");
 		newChat.addEventListener("click", () => this.resetConversation());
-		const copyChat = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": "Copy conversation as markdown" } });
+		const copyChat = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.copyChat") } });
 		setIcon(copyChat, "clipboard-copy");
 		copyChat.addEventListener("click", () => {
 			const md = conversationToMarkdown(this.conversation.messages);
@@ -87,12 +85,13 @@ export class AgentView extends ItemView {
 			void navigator.clipboard.writeText(md);
 			new Notice("Conversation copied as markdown.");
 		});
-		const refresh = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": "Refresh model list" } });
+		const refresh = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.refreshModels") } });
 		setIcon(refresh, "refresh-cw");
 		refresh.addEventListener("click", () => void this.populateModels(true));
 
 		// Messages
-		this.messagesEl = root.createDiv({ cls: "lva-messages" });
+		// A live region: screen readers announce new messages as they arrive.
+		this.messagesEl = root.createDiv({ cls: "lva-messages", attr: { role: "log", "aria-live": "polite", "aria-label": t("view.messages") } });
 		this.renderWelcome();
 		void this.restoreChat();
 
@@ -100,7 +99,7 @@ export class AgentView extends ItemView {
 		const composer = root.createDiv({ cls: "lva-composer" });
 		this.inputEl = composer.createEl("textarea", {
 			cls: "lva-input",
-			attr: { placeholder: "Ask about your notes… (@ to attach a note, / for commands, Shift+Enter for a new line)", rows: "2" },
+			attr: { placeholder: t("view.input.placeholder"), rows: "2", "aria-label": t("view.input.label") },
 		});
 		// Registered before the Enter-to-send handler so picking a suggestion wins.
 		this.suggest = new ComposerSuggest(this.inputEl, composer, [
@@ -128,7 +127,7 @@ export class AgentView extends ItemView {
 		this.inputEl.addEventListener("input", () => this.autoGrow());
 		this.inputEl.addEventListener("focus", () => this.updateMic());
 		// Voice input goes through Lecture Companion's whisper server; without it there is no button.
-		this.micBtn = composer.createEl("button", { cls: "clickable-icon lva-mic", attr: { "aria-label": "Dictate (Lecture Companion transcribes it)" } });
+		this.micBtn = composer.createEl("button", { cls: "clickable-icon lva-mic", attr: { "aria-label": t("view.mic") } });
 		setIcon(this.micBtn, "mic");
 		this.micBtn.addEventListener("click", () => void this.toggleMic());
 		this.updateMic();
@@ -139,7 +138,13 @@ export class AgentView extends ItemView {
 			else void this.submit();
 		});
 
-		this.statusEl = root.createDiv({ cls: "lva-status" });
+		this.statusEl = root.createDiv({ cls: "lva-status", attr: { role: "status" } });
+		// First open of the chat: the setup checklist, once.
+		if (!this.plugin.settings.setupShown) {
+			this.plugin.settings.setupShown = true;
+			void this.plugin.saveSettings();
+			this.plugin.openSetup();
+		}
 		this.unsubscribeStatus = this.plugin.onIndexStatus(() => this.updateStatus());
 		this.unsubscribeGists = this.plugin.onGistStatus(() => this.updateStatus());
 		this.updateStatus();
@@ -190,13 +195,19 @@ export class AgentView extends ItemView {
 
 	private renderWelcome(): void {
 		const el = this.messagesEl.createDiv({ cls: "lva-welcome" });
-		el.createEl("p", { text: "Ask questions about your notes, compile topics, or ask for edits across many notes. Every change is shown as a diff before it is written and can be undone." });
-		el.createEl("p", { cls: "lva-welcome-hint", text: "@ attaches a note to your message · / lists commands · Shift+Enter for a new line" });
+		el.createEl("p", { text: t("view.welcome") });
+		el.createEl("p", { cls: "lva-welcome-hint", text: t("view.welcome.hint") });
 		const list = el.createDiv({ cls: "lva-suggestions" });
-		for (const s of SUGGESTIONS) {
+		for (const key of SUGGESTIONS) {
+			const s = t(key);
 			const chip = list.createEl("button", { cls: "lva-chip", text: s });
 			chip.addEventListener("click", () => this.prefill(s.endsWith("…?") || s.endsWith("…") ? s.replace(/…\??$/, "") : s));
 		}
+		const start = el.createDiv({ cls: "lva-suggestions lva-start" });
+		const sample = start.createEl("button", { cls: "lva-chip mod-cta", text: t("view.welcome.sample") });
+		sample.addEventListener("click", () => void this.plugin.trySample());
+		const setup = start.createEl("button", { cls: "lva-chip", text: t("view.welcome.setup") });
+		setup.addEventListener("click", () => this.plugin.openSetup());
 	}
 
 	/** Re-renders the saved conversation (if any) when the panel opens. */
@@ -238,7 +249,7 @@ export class AgentView extends ItemView {
 				}
 			}
 		}
-		this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: "Restored from the previous session." });
+		this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.restored") });
 	}
 
 	private resetConversation(): void {
@@ -262,7 +273,7 @@ export class AgentView extends ItemView {
 		this.running = running;
 		this.sendBtn.empty();
 		setIcon(this.sendBtn, running ? "square" : "send-horizontal");
-		this.sendBtn.setAttribute("aria-label", running ? "Stop" : "Send");
+		this.sendBtn.setAttribute("aria-label", running ? t("view.stop") : t("view.send"));
 		this.sendBtn.toggleClass("lva-stop", running);
 	}
 
@@ -275,10 +286,10 @@ export class AgentView extends ItemView {
 		const s = this.plugin.index.status();
 		const parts: string[] = [];
 		if (extra) parts.push(extra);
-		if (!s.enabled) parts.push("Keyword search only");
-		else if (s.building) parts.push(`Indexing… ${s.indexedFiles} notes (${s.pending} left)`);
-		else if (s.lastError) parts.push(`Index: ${s.lastError}`);
-		else parts.push(`Index: ${s.indexedFiles} notes, ${s.totalChunks} chunks`);
+		if (!s.enabled) parts.push(t("view.status.keyword"));
+		else if (s.building) parts.push(t("view.status.indexing", { done: s.indexedFiles, pending: s.pending }));
+		else if (s.lastError) parts.push(t("view.status.indexError", { error: s.lastError }));
+		else parts.push(t("view.status.index", { notes: s.indexedFiles, chunks: s.totalChunks }));
 		const g = this.plugin.gists.status();
 		if (g.enabled) {
 			if (g.lastError) parts.push(`Gists: ${g.lastError}`);
@@ -290,7 +301,7 @@ export class AgentView extends ItemView {
 			const used = this.usage.promptTokens + this.usage.completionTokens;
 			const pct = Math.round((used / this.usage.numCtx) * 100);
 			warn = pct >= 85;
-			parts.push(`Context ${fmtK(used)} / ${fmtK(this.usage.numCtx)} (${pct}%)`);
+			parts.push(t("view.status.context", { used: fmtK(used), total: fmtK(this.usage.numCtx), pct }));
 		}
 		this.statusEl.setText(parts.join(" · "));
 		this.statusEl.toggleClass("lva-ctx-warn", warn);
@@ -381,7 +392,7 @@ export class AgentView extends ItemView {
 	 */
 	async showGardenReport(markdown: string, fixes: GardenFix[], report: GardenReport, legacyNote: boolean): Promise<void> {
 		if (this.running || this.gardening) {
-			new Notice("Wait for the current reply to finish, or stop it, first.");
+			new Notice(t("notice.wait"));
 			return;
 		}
 		const root = await this.appendExchange("/garden", markdown);
@@ -461,10 +472,12 @@ export class AgentView extends ItemView {
 		this.abort = new AbortController();
 		this.setSendState(true);
 		this.plugin.agentBusy = true;
+		/** The turn number the agent records this message's changes under (the index of the user message). */
+		const turnIndex = this.conversation.messages.length;
 		let turn: TurnRenderer | null = null;
 		const started = Date.now();
 		let calls = 0;
-		const progress = () => this.updateStatus(`Working… ${calls} tool call${calls === 1 ? "" : "s"} · ${Math.round((Date.now() - started) / 1000)} s`);
+		const progress = () => this.updateStatus(t("view.status.working", { calls, secs: Math.round((Date.now() - started) / 1000) }));
 		const ticker = window.setInterval(progress, 1000);
 
 		try {
@@ -506,26 +519,29 @@ export class AgentView extends ItemView {
 					onAutoContinue: (nudge) => {
 						this.messagesEl.createDiv({
 							cls: "lva-msg lva-note",
-							text: nudge.startsWith(GROUNDING_PREFIX)
-								? "The reply cited notes that do not exist — sent it back to search the vault first."
-								: "The model asked whether to continue — answered yes automatically.",
+							text: nudge.startsWith(GROUNDING_PREFIX) ? t("view.groundingNudge") : t("view.autoContinued"),
 						});
 						this.scrollToBottom();
 					},
 				},
 				this.abort.signal,
 			);
+			if (!this.abort?.signal.aborted && (await this.plugin.countAnswer())) this.showSurvey();
 		} catch (err) {
 			if (!this.abort?.signal.aborted) {
 				const message = (err as Error).message ?? String(err);
-				const errEl = this.messagesEl.createDiv({ cls: "lva-msg lva-error" });
+				log.error(`Chat turn failed: ${message}`);
+				const errEl = this.messagesEl.createDiv({ cls: "lva-msg lva-error", attr: { role: "alert" } });
 				errEl.createDiv({ cls: "lva-bubble", text: message });
-				new Notice(message, 8000);
+				const report = errEl.createEl("button", { cls: "lva-chip", text: t("view.report") });
+				report.addEventListener("click", () => this.plugin.reportProblem(message));
 			}
+			this.offerPartialUndo(turnIndex);
 		} finally {
 			window.clearInterval(ticker);
 			if (this.abort?.signal.aborted) {
-				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: "Stopped." });
+				this.offerPartialUndo(turnIndex);
+				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.stopped") });
 			}
 			this.abort = null;
 			this.setSendState(false);
@@ -560,13 +576,13 @@ export class AgentView extends ItemView {
 				return;
 			}
 			btn.addClass("lva-mic-on");
-			btn.setAttribute("aria-label", "Stop and transcribe");
+			btn.setAttribute("aria-label", t("view.mic.stop"));
 			return;
 		}
 		btn.removeClass("lva-mic-on");
 		btn.addClass("lva-mic-busy");
 		btn.disabled = true;
-		btn.setAttribute("aria-label", "Transcribing…");
+		btn.setAttribute("aria-label", t("view.mic.busy"));
 		try {
 			const wav = await this.recorder.stop();
 			const text = (await lc.transcribe(wav)).trim();
@@ -580,8 +596,58 @@ export class AgentView extends ItemView {
 		} finally {
 			btn.removeClass("lva-mic-busy");
 			btn.disabled = false;
-			btn.setAttribute("aria-label", "Dictate (Lecture Companion transcribes it)");
+			btn.setAttribute("aria-label", t("view.mic"));
 		}
+	}
+
+	/**
+	 * After a turn that failed or was stopped: the changes it had already made are complete (each was
+	 * one approved diff), but the task is half done, so offer to take them all back.
+	 */
+	private offerPartialUndo(turn: number): void {
+		const changes = this.plugin.undo.forTurn(turn, this.conversation.id);
+		if (changes.length === 0 || this.messagesEl.querySelector(`[data-partial-turn="${turn}"]`)) return;
+		const note = this.messagesEl.createDiv({ cls: "lva-msg lva-note", attr: { "data-partial-turn": String(turn) } });
+		note.createSpan({ text: `${t("view.partial", { n: changes.length })} ` });
+		const btn = note.createEl("button", { cls: "lva-chip", text: t("view.partial.undo") });
+		btn.addEventListener("click", () => {
+			btn.disabled = true;
+			void this.plugin.revertTurn(turn, this.conversation.id);
+		});
+	}
+
+	/** The three sample questions as buttons, after "Try it on sample notes". */
+	showSampleQuestions(): void {
+		this.messagesEl.querySelector(".lva-welcome")?.remove();
+		const root = this.messagesEl.createDiv({ cls: "lva-msg lva-assistant" });
+		root.createDiv({ cls: "lva-bubble", text: "The sample notes are ready. Ask one of these; the answer cites the notes and links the paragraph:" });
+		const row = root.createDiv({ cls: "lva-fixes" });
+		for (const q of SAMPLE_QUESTIONS) {
+			const chip = row.createEl("button", { cls: "lva-chip", text: q });
+			chip.addEventListener("click", () => {
+				if (this.running) return;
+				void this.send(q);
+			});
+		}
+		this.scrollToBottom();
+	}
+
+	/** The one-question survey, shown once after a few answers. Its buttons only open a GitHub page. */
+	private showSurvey(): void {
+		const card = this.messagesEl.createDiv({ cls: "lva-msg lva-note lva-survey", attr: { role: "group", "aria-label": t("survey.question") } });
+		card.createDiv({ text: t("survey.question") });
+		const row = card.createDiv({ cls: "lva-fixes" });
+		const answer = (label: string | null, problem = false) => {
+			card.empty();
+			card.createDiv({ text: label ? t("survey.thanks") : "" });
+			if (problem) this.plugin.reportProblem();
+			void this.plugin.finishSurvey(problem ? null : label);
+		};
+		row.createEl("button", { cls: "lva-chip", text: t("survey.great") }).addEventListener("click", () => answer(t("survey.great")));
+		row.createEl("button", { cls: "lva-chip", text: t("survey.problems") }).addEventListener("click", () => answer(t("survey.problems"), true));
+		row.createEl("button", { cls: "lva-chip", text: t("survey.notUseful") }).addEventListener("click", () => answer(t("survey.notUseful")));
+		row.createEl("button", { cls: "lva-chip", text: t("survey.dismiss") }).addEventListener("click", () => answer(null));
+		this.scrollToBottom();
 	}
 
 	private addUser(text: string): void {
@@ -609,7 +675,7 @@ export class AgentView extends ItemView {
 	 */
 	async startQuiz(text: string, count: number): Promise<void> {
 		if (this.running || this.gardening || this.quizBusy) {
-			new Notice("Wait for the current reply to finish, or stop it, first.");
+			new Notice(t("notice.wait"));
 			return;
 		}
 		const req = parseQuizRequest(text, new Date()) ?? { topic: text };
@@ -800,13 +866,13 @@ class TurnRenderer {
 		if (this.content.trim()) {
 			await this.view.renderMarkdown(this.content, this.contentEl);
 			const actions = this.root.createDiv({ cls: "lva-actions" });
-			const copy = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": "Copy" } });
+			const copy = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.copy") } });
 			setIcon(copy, "copy");
 			copy.addEventListener("click", () => {
 				void navigator.clipboard.writeText(this.content);
 				new Notice("Copied.");
 			});
-			const insert = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": "Insert at cursor" } });
+			const insert = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.insert") } });
 			setIcon(insert, "file-input");
 			insert.addEventListener("click", () => this.view.insertAtCursor(this.content));
 		} else {
@@ -833,14 +899,14 @@ class TurnRenderer {
 		if (!card) return;
 		const summary = card.querySelector("summary");
 		if (!summary) return;
-		const btn = summary.createEl("button", { cls: "lva-undo-btn", text: "Undo" });
+		const btn = summary.createEl("button", { cls: "lva-undo-btn", text: t("view.undo"), attr: { "aria-label": `${t("view.undo")}: ${change.path}` } });
 		btn.addEventListener("click", (e) => {
 			e.preventDefault();
 			e.stopPropagation();
 			void this.plugin.revert(change).then((done) => {
 				if (done) {
 					btn.disabled = true;
-					btn.setText("Undone");
+					btn.setText(t("view.undone"));
 				}
 			});
 		});

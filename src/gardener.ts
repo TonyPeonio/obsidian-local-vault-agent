@@ -66,6 +66,9 @@ export const LEGACY_SUGGESTIONS_NOTE = "Vault Suggestions.md";
 /** Findings shown per section in the chat; a button acts on the ones shown, so nothing is changed that was not listed. */
 export const CHAT_CAP = 15;
 
+/** Up to this many notes, near-duplicate detection compares every pair; above it, only notes that share a line. */
+export const EXHAUSTIVE_PAIRS = 1500;
+
 /** Two notes the index calls similar are reported only when they share at least this share of their lines. */
 const MIN_LINE_OVERLAP = 0.5;
 
@@ -239,11 +242,39 @@ export async function gardenVault(vault: VaultAccess, opts: GardenOptions = {}):
 	const names = notes
 		.map((n) => ({ path: n.path, m: mentionName(basenameOf(n.path)) }))
 		.filter((x): x is { path: string; m: { name: string; exact: boolean } } => x.m !== null && nameCount.get(x.m.name.toLowerCase()) === 1);
+	// Each name is filed under its rarest word (the one fewest names contain), so a note is only
+	// checked against the names whose rarest word it contains: checking every note against every
+	// name was hours of work at 50,000 notes, and filing by first word still was when many names
+	// start alike ("Lecture 1", "Lecture 2", ...).
+	const nameWords = new Map<string, string[]>();
+	const wordUse = new Map<string, number>();
+	for (const x of names) {
+		const ws = Array.from(new Set(x.m.name.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []));
+		nameWords.set(x.path, ws);
+		for (const w of ws) wordUse.set(w, (wordUse.get(w) ?? 0) + 1);
+	}
+	const namesByWord = new Map<string, typeof names>();
+	for (const x of names) {
+		const ws = nameWords.get(x.path) ?? [];
+		if (ws.length === 0) continue;
+		const key = ws.reduce((best, w) => ((wordUse.get(w) ?? 0) < (wordUse.get(best) ?? 0) ? w : best), ws[0]);
+		const list = namesByWord.get(key);
+		if (list) list.push(x);
+		else namesByWord.set(key, [x]);
+	}
 	for (const n of notes) {
 		const masked = maskProse(texts.get(n.path) ?? "");
 		if (!masked.trim()) continue;
 		const maskedLower = masked.toLowerCase();
-		for (const other of names) {
+		const words = new Set(maskedLower.match(/[\p{L}\p{N}_]+/gu) ?? []);
+		const candidates: typeof names = [];
+		for (const w of words) {
+			const list = namesByWord.get(w);
+			if (!list) continue;
+			// Every word of the name has to be in the note before the text is searched for it.
+			for (const x of list) if ((nameWords.get(x.path) ?? []).every((nw) => words.has(nw))) candidates.push(x);
+		}
+		for (const other of candidates) {
 			if (other.path === n.path || linked.get(n.path)?.has(other.path)) continue;
 			if (n.path.toLowerCase().startsWith(noMd(other.path).toLowerCase() + "/")) continue;
 			const count = countMentions(masked, maskedLower, other.m);
@@ -313,8 +344,33 @@ export async function gardenVault(vault: VaultAccess, opts: GardenOptions = {}):
 			return s;
 		};
 		const similar: DuplicatePair[] = [];
+		// Which pairs to compare. A small vault compares every pair. A large one only pairs that share
+		// a substantial line that is not everywhere (a line in more than 50 notes is a template):
+		// every pair is 1.2 billion vector comparisons at 50,000 notes, and a near-duplicate has to
+		// share lines anyway.
+		let pairsOf: (i: number) => Iterable<number>;
+		if (candidates.length <= EXHAUSTIVE_PAIRS) {
+			pairsOf = function* (i) {
+				for (let j = i + 1; j < candidates.length; j++) yield j;
+			};
+		} else {
+			const byLine = new Map<string, number[]>();
+			candidates.forEach((c, i) => {
+				for (const l of linesOf(c.path)) {
+					const list = byLine.get(l);
+					if (list) list.push(i);
+					else byLine.set(l, [i]);
+				}
+			});
+			const partners = candidates.map(() => new Set<number>());
+			for (const list of byLine.values()) {
+				if (list.length < 2 || list.length > 50) continue;
+				for (let a = 0; a < list.length; a++) for (let b = a + 1; b < list.length; b++) partners[list[a]].add(list[b]);
+			}
+			pairsOf = (i) => partners[i];
+		}
 		for (let i = 0; i < candidates.length; i++) {
-			for (let j = i + 1; j < candidates.length; j++) {
+			for (const j of pairsOf(i)) {
 				if (cosine(opts.noteVectors.get(candidates[i].path)!, opts.noteVectors.get(candidates[j].path)!) < threshold) continue;
 				const [x, y] = [linesOf(candidates[i].path), linesOf(candidates[j].path)];
 				const [small, large] = x.size <= y.size ? [x, y] : [y, x];

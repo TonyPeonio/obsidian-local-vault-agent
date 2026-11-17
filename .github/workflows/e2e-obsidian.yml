@@ -1,0 +1,37 @@
+name: E2E in Obsidian
+
+# Drives the built plugin inside a real Obsidian (wdio-obsidian-service) under a virtual display.
+# Separate from CI and Release on purpose: it downloads Obsidian and opens a window, so a hiccup
+# here must never block a release. Run on pushes that touch the plugin, and on demand.
+
+on:
+  push:
+    branches: [main, "e2e/**"]
+    paths: ["src/**", "styles.css", "manifest.json", "e2e-obsidian/**", ".github/workflows/e2e-obsidian.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Install the test runner
+        working-directory: e2e-obsidian
+        run: npm install --no-audit --no-fund
+      - uses: actions/cache@v4
+        with:
+          path: e2e-obsidian/.obsidian-cache
+          key: obsidian-cache-${{ runner.os }}
+      - name: Run the tests in Obsidian
+        working-directory: e2e-obsidian
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" npx wdio run ./wdio.conf.mts

@@ -1,9 +1,9 @@
-import { MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf, loadPdfJs, moment, normalizePath, requestUrl } from "obsidian";
+import { FileSystemAdapter, MarkdownView, Notice, Platform, Plugin, TFile, WorkspaceLeaf, apiVersion, loadPdfJs, moment, normalizePath, requestUrl } from "obsidian";
 import { Agent, type AgentConfig } from "./agent";
 import { ApprovalModal } from "./approval-modal";
 import { LEGACY_SUGGESTIONS_NOTE, gardenFixes, gardenVault, planGardenAction, renderGardenChat, renderPlanResult, type GardenAction, type GardenReport, type PlannedChange } from "./gardener";
 import { GistCache, type GistData, type GistStatus } from "./gists";
-import { SemanticIndex, type IndexData, type IndexStatus } from "./index";
+import { SemanticIndex, type IndexData, type IndexManifest, type IndexStatus, type StoredFile } from "./index";
 import { ObsidianVault } from "./obsidian-vault";
 import { OllamaClient, placementWarning, sameModel } from "./ollama";
 import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
@@ -14,6 +14,12 @@ import { LECTURE_TOOLS, lectureCompanionApi, type LectureCompanionApi, type Loca
 import { QuizEngine } from "./quiz";
 import { JOB_NAMES, OverlayVault, PendingQueue, digestPath, digestPrompt, dueJobs, localDate, planPending, recentNotes, renderDigest, type JobId } from "./scheduler";
 import { ImageReader, readImage, type VisionData } from "./vision";
+import { ReportModal, SetupModal } from "./help-modals";
+import { setLocale, t } from "./i18n";
+import { log } from "./log";
+import { buildReport, chatTranscript, surveyUrl, type ReportInfo } from "./report";
+import { SAMPLE_FOLDER, sampleNotes } from "./sample";
+import { evaluateSetup, guessTier, type MachineTier } from "./setup";
 import { editSelectionPrompt, processDailyNotesPrompt, reformatPrompt, summarizePrompt } from "./prompts";
 import { fuseRankings, keywordSearch } from "./search";
 import { DEFAULT_SETTINGS, SAMPLING, isExcluded, migrateSettings, type LocalVaultAgentSettings } from "./settings";
@@ -52,12 +58,13 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		setLocale((moment as unknown as { locale(): string }).locale());
+		log.info(`Local Vault Agent ${this.manifest.version} loaded (Obsidian ${apiVersion}, ${this.settings.provider})`);
 
 		this.client = new OllamaClient(
-			() => this.settings.ollamaUrl,
-			// `fetch` is deliberate: `requestUrl` cannot stream, and streaming tokens from a slow
-			// local model is the whole experience. `requestUrl` is used as the CORS-free fallback.
-			(input, init) => fetch(input, init),
+			() => (this.settings.provider === "openai" ? this.settings.openaiUrl : this.settings.ollamaUrl),
+			// Streaming chat uses the client's own `fetch`; every other request goes through `requestUrl`.
+			undefined,
 			async (url, body) => {
 				// CORS-free fallback through Obsidian's request layer (no streaming).
 				const res = await requestUrl({
@@ -69,21 +76,41 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				});
 				return { status: res.status, text: res.text };
 			},
+			async (url, method, body, headers) => {
+				const res = await requestUrl({ url, method, body, headers, contentType: body ? "application/json" : undefined, throw: false });
+				return { status: res.status, text: res.text };
+			},
+			() => ({ kind: this.settings.provider, apiKey: this.settings.openaiKey }),
 		);
 		this.vault = new ObsidianVault(this.app, (p) => isExcluded(p, this.settings.excludedFolders));
 
 		const pluginDir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
 		const indexPath = `${pluginDir}/index.json`;
+		const shardDir = `${pluginDir}/index-shards`;
 		this.index = new SemanticIndex(
 			this.client,
 			this.vault,
 			{
 				load: async () => {
 					if (!(await this.app.vault.adapter.exists(indexPath))) return null;
-					return JSON.parse(await this.app.vault.adapter.read(indexPath)) as IndexData;
+					return JSON.parse(await this.app.vault.adapter.read(indexPath)) as IndexData | IndexManifest;
 				},
 				save: async (data) => {
 					await this.app.vault.adapter.write(indexPath, JSON.stringify(data));
+				},
+				// The index lives in index-shards/NN.json plus the manifest in index.json: an edited note
+				// rewrites one shard, and no single file has to hold every vector of a large vault.
+				loadShard: async (i) => {
+					const p = `${shardDir}/${String(i).padStart(2, "0")}.json`;
+					if (!(await this.app.vault.adapter.exists(p))) return null;
+					return JSON.parse(await this.app.vault.adapter.read(p)) as Record<string, StoredFile>;
+				},
+				saveShard: async (i, files) => {
+					if (!(await this.app.vault.adapter.exists(shardDir))) await this.app.vault.adapter.mkdir(shardDir);
+					await this.app.vault.adapter.write(`${shardDir}/${String(i).padStart(2, "0")}.json`, JSON.stringify(files));
+				},
+				saveManifest: async (m) => {
+					await this.app.vault.adapter.write(indexPath, JSON.stringify(m));
 				},
 			},
 			{
@@ -203,17 +230,17 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 
 		this.registerView(VIEW_TYPE, (leaf) => new AgentView(leaf, this));
-		this.addRibbonIcon("bot", "Open Local Vault Agent", () => void this.activateView());
+		this.addRibbonIcon("bot", t("ribbon.open"), () => void this.activateView());
 		this.addSettingTab(new LocalVaultAgentSettingTab(this.app, this));
 
 		this.addCommand({
 			id: "open-chat",
-			name: "Open chat",
+			name: t("cmd.openChat"),
 			callback: () => void this.activateView(),
 		});
 		this.addCommand({
 			id: "ask-about-selection",
-			name: "Ask about the selected text",
+			name: t("cmd.askSelection"),
 			editorCallback: async (editor) => {
 				const sel = editor.getSelection();
 				const view = await this.activateView();
@@ -222,7 +249,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "reformat-current-note",
-			name: "Reformat the current note",
+			name: t("cmd.reformat"),
 			checkCallback: (checking) => {
 				if (!this.activeNote()) return false;
 				if (!checking) void this.reformatCurrentNote();
@@ -231,7 +258,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "summarize-current-note",
-			name: "Summarize the current note",
+			name: t("cmd.summarize"),
 			checkCallback: (checking) => {
 				if (!this.activeNote()) return false;
 				if (!checking) void this.summarizeCurrentNote();
@@ -240,7 +267,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "edit-selection",
-			name: "Edit the selected text with an instruction",
+			name: t("cmd.editSelection"),
 			editorCheckCallback: (checking, editor) => {
 				if (!editor.getSelection().trim()) return false;
 				if (!checking) void this.editSelection();
@@ -249,17 +276,17 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "process-daily-notes",
-			name: "Process my daily notes (compile inboxes into topic notes)",
+			name: t("cmd.daily"),
 			callback: () => void this.processDailyNotes(),
 		});
 		this.addCommand({
 			id: "suggest-improvements",
-			name: "Suggest vault improvements (report in the chat)",
+			name: t("cmd.garden"),
 			callback: () => void this.suggestImprovements(),
 		});
 		this.addCommand({
 			id: "undo-last-change",
-			name: "Undo the agent's last change",
+			name: t("cmd.undoLast"),
 			checkCallback: (checking) => {
 				if (!this.undo.latest()) return false;
 				if (!checking) void this.undoLast();
@@ -268,7 +295,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "undo-last-message",
-			name: "Undo every change from the agent's last message",
+			name: t("cmd.undoTurn"),
 			checkCallback: (checking) => {
 				if (!this.undo.latest()) return false;
 				if (!checking) void this.undoLastTurn();
@@ -276,18 +303,33 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			},
 		});
 		this.addCommand({
+			id: "report-problem",
+			name: t("cmd.report"),
+			callback: () => this.reportProblem(),
+		});
+		this.addCommand({
+			id: "setup-checklist",
+			name: t("cmd.setup"),
+			callback: () => this.openSetup(),
+		});
+		this.addCommand({
+			id: "try-sample",
+			name: t("cmd.sample"),
+			callback: () => void this.trySample(),
+		});
+		this.addCommand({
 			id: "change-history",
-			name: "Show change history (undo any approved change)",
+			name: t("cmd.history"),
 			callback: () => this.showHistory(),
 		});
 		this.addCommand({
 			id: "quiz-me",
-			name: "Quiz me on a topic or course",
+			name: t("cmd.quiz"),
 			callback: () => void this.startQuiz(),
 		});
 		this.addCommand({
 			id: "suggest-concept-links",
-			name: "Suggest concept links for this note",
+			name: t("cmd.concepts"),
 			checkCallback: (checking) => {
 				if (!this.activeNote()) return false;
 				if (!checking) void this.suggestConceptLinks();
@@ -296,7 +338,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "review-scheduled-changes",
-			name: "Review changes from scheduled jobs",
+			name: t("cmd.review"),
 			checkCallback: (checking) => {
 				if (this.pending.size === 0) return false;
 				if (!checking) void this.reviewPending();
@@ -305,17 +347,17 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "run-nightly-job",
-			name: "Run the nightly daily-notes job now (changes wait for review)",
+			name: t("cmd.runNightly"),
 			callback: () => void this.runJob("daily", true),
 		});
 		this.addCommand({
 			id: "run-digest-job",
-			name: "Write this week's digest now (waits for review)",
+			name: t("cmd.runDigest"),
 			callback: () => void this.runJob("digest", true),
 		});
 		this.addCommand({
 			id: "rebuild-gists",
-			name: "Rebuild note gists",
+			name: t("cmd.gists"),
 			callback: async () => {
 				new Notice("Regenerating gists for every note in the background…");
 				await this.gists.syncAll(true);
@@ -325,7 +367,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "rebuild-index",
-			name: "Rebuild semantic index",
+			name: t("cmd.index"),
 			callback: async () => {
 				new Notice("Rebuilding the semantic index…");
 				await this.index.syncAll(true);
@@ -386,7 +428,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		this.api = {
 			version: 1,
 			openChatAbout: (path) => this.openChatAbout(path),
-			ollama: () => ({ url: this.settings.ollamaUrl, model: this.settings.model }),
+			// `provider` was added in 0.8.0; `url` and `model` keep their meaning for Ollama users.
+			ollama: () => ({ url: this.settings.provider === "openai" ? this.settings.openaiUrl : this.settings.ollamaUrl, model: this.settings.model, provider: this.settings.provider }),
 		};
 
 		// Scheduled jobs: checked every minute while Obsidian is open; the user's presence is a key or click.
@@ -487,10 +530,12 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			if (!models.some((m) => sameModel(m.name, this.settings.model))) missing.push(this.settings.model);
 			if (this.settings.semanticSearch && !models.some((m) => sameModel(m.name, this.settings.embeddingModel))) missing.push(this.settings.embeddingModel);
 			if (missing.length) {
-				new Notice(`Local Vault Agent: model${missing.length === 1 ? "" : "s"} not installed: ${missing.join(", ")}. Run \`ollama pull ${missing[0]}\` or pick another model in settings.`, 12000);
+				log.warn(`Models not installed: ${missing.join(", ")}`);
+				this.notifyError(`Local Vault Agent: model${missing.length === 1 ? "" : "s"} not installed: ${missing.join(", ")}. Open the setup checklist to download ${missing.length === 1 ? "it" : "them"}, or pick another model in settings.`, { setup: true });
 			}
 		} catch (err) {
-			new Notice(`Local Vault Agent cannot reach Ollama at ${this.settings.ollamaUrl} (${(err as Error).message}). Start Ollama or fix the URL in settings.`, 12000);
+			log.error(`Server unreachable at load: ${(err as Error).message}`);
+			this.notifyError(`Local Vault Agent cannot reach ${this.settings.provider === "ollama" ? "Ollama" : "the model server"} at ${this.client.baseUrl} (${(err as Error).message}). Start it or fix the URL in settings.`, { setup: true });
 		}
 	}
 
@@ -714,7 +759,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		try {
 			await plan.apply();
 		} catch (err) {
-			new Notice(`Undo failed: ${(err as Error).message}`, 8000);
+			log.error(`Undo failed for ${change.path}: ${(err as Error).message}`);
+			this.notifyError(`Undo failed: ${(err as Error).message}`);
 			return false;
 		}
 		this.undo.markUndone(change.id);
@@ -724,6 +770,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			if (/\.md$/i.test(change.path)) this.undo.push({ ...base, tool: "create_note", path: change.path, before: "", after: change.before });
 		} else if (change.tool === "move_note") this.undo.push({ ...base, tool: "move_note", path: change.before, before: change.after, after: change.before });
 		else this.undo.push({ ...base, tool: "undo", path: change.path, before: plan.before, after: plan.after });
+		log.info(`Undone: ${describeChange(change)}`);
 		new Notice(`Undone: ${describeChange(change)}.`);
 		return true;
 	}
@@ -741,6 +788,157 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			done++;
 		}
 		if (changes.length > 1) new Notice(`Undid ${done} of ${changes.length} changes.`);
+	}
+
+	/** Records an error in the log the problem report shows. */
+	logError(message: string): void {
+		log.error(message);
+	}
+
+	/** A notice for something that went wrong, with a "Report" link (and "Setup checklist" when that is the likely fix). */
+	notifyError(message: string, opts: { setup?: boolean } = {}): void {
+		const frag = createFragment();
+		frag.createSpan({ text: `${message} ` });
+		if (opts.setup) {
+			const setup = frag.createEl("a", { text: t("cmd.setup"), href: "#" });
+			setup.addEventListener("click", (e) => {
+				e.preventDefault();
+				this.openSetup();
+			});
+			frag.createSpan({ text: " · " });
+		}
+		const report = frag.createEl("a", { text: t("view.report"), href: "#" });
+		report.addEventListener("click", (e) => {
+			e.preventDefault();
+			this.reportProblem(message);
+		});
+		new Notice(frag, 15000);
+	}
+
+	/** Absolute vault folder and home folder, so the report can replace them by <vault> and ~. */
+	private reportPaths(): { vault?: string; home?: string } {
+		const adapter = this.app.vault.adapter;
+		const vault = adapter instanceof FileSystemAdapter ? adapter.getBasePath() : undefined;
+		const home = vault ? /^(?:[A-Za-z]:[\\/]Users[\\/][^\\/]+|\/(?:Users|home)\/[^/]+)/.exec(vault)?.[0] : undefined;
+		return { vault, home };
+	}
+
+	/** Everything the report needs that is not secret, collected live (the model list only when the server answers). */
+	private async reportInfo(): Promise<ReportInfo> {
+		const s = this.settings;
+		let serverVersion: string | null = null;
+		let installed: string[] | null = null;
+		try {
+			serverVersion = await this.client.version();
+			installed = (await this.client.listModels()).map((m) => m.name);
+		} catch (err) {
+			log.warn(`Report: server not reachable (${(err as Error).message})`);
+		}
+		const idx = this.index.status();
+		const plugins = (this.app as unknown as { plugins?: { enabledPlugins?: Set<string> } }).plugins?.enabledPlugins;
+		return {
+			pluginVersion: this.manifest.version,
+			obsidianVersion: apiVersion,
+			platform: Platform.isWin ? "Windows" : Platform.isMacOS ? "macOS" : Platform.isLinux ? "Linux" : Platform.isAndroidApp ? "Android" : Platform.isIosApp ? "iOS" : "unknown",
+			mobile: Platform.isMobile,
+			provider: s.provider === "ollama" ? "Ollama" : "OpenAI-compatible",
+			serverVersion,
+			chatModel: s.model,
+			embeddingModel: s.embeddingModel,
+			visionModel: s.visionModel,
+			installedModels: installed,
+			notes: this.vault.listNotes().length,
+			index: !s.semanticSearch ? "semantic search off" : idx.building ? `building (${idx.indexedFiles} done, ${idx.pending} pending)` : idx.lastError ? `error: ${idx.lastError}` : `${idx.indexedFiles} notes, ${idx.totalChunks} chunks`,
+			otherPlugins: plugins ? Array.from(plugins).filter((id) => id !== this.manifest.id).sort() : [],
+			settings: { ...s } as unknown as Record<string, unknown>,
+			log: log.tail(50),
+		};
+	}
+
+	/** Opens the "Report a problem" dialog; `description` pre-fills what happened (e.g. the error message). */
+	reportProblem(description = ""): void {
+		void (async () => {
+			const info = await this.reportInfo();
+			const paths = this.reportPaths();
+			const chat = (await this.loadChat()) ?? [];
+			new ReportModal(this.app, (desc, includeChat) => buildReport(info, desc, { paths, chat: includeChat ? chatTranscript(chat) : undefined }), log.lastError()?.message, description).open();
+		})();
+	}
+
+	/** The setup checklist: server, models, index, each with a fix. */
+	openSetup(): void {
+		const deviceMemory = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+		new SetupModal(this.app, {
+			initialTier: guessTier(deviceMemory),
+			evaluate: async (tier: MachineTier) => {
+				let models = null;
+				let serverError: string | undefined;
+				try {
+					models = await this.client.listModels();
+				} catch (err) {
+					serverError = (err as Error).message;
+					log.warn(`Setup: ${serverError}`);
+				}
+				return evaluateSetup({ provider: this.settings.provider, models, serverError, chatModel: this.settings.model, embeddingModel: this.settings.embeddingModel, semanticSearch: this.settings.semanticSearch, index: this.index.status(), notes: this.vault.listNotes().length, tier });
+			},
+			pull: async (model, onProgress) => {
+				log.info(`Pulling ${model}`);
+				await this.client.pull(model, onProgress);
+				log.info(`Pulled ${model}`);
+			},
+			use: async (model, role) => {
+				if (role === "chat") this.settings.model = model;
+				else this.settings.embeddingModel = model;
+				await this.saveSettings();
+				void this.refreshVision();
+				if (role === "embed" && this.settings.semanticSearch) void this.index.syncAll();
+			},
+			buildIndex: async () => {
+				await this.index.syncAll();
+			},
+			openSettings: () => {
+				const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+				setting?.open();
+				setting?.openTabById(this.manifest.id);
+			},
+			trySample: () => this.trySample(),
+		}).open();
+	}
+
+	/**
+	 * Creates the sample notes (once) and opens the chat with three questions to try. The notes are
+	 * the user's own request, so they are written without a diff, and recorded in the change history.
+	 */
+	async trySample(): Promise<void> {
+		const notes = sampleNotes(SAMPLE_FOLDER);
+		let created = 0;
+		for (const n of notes) {
+			if (this.vault.exists(n.path)) continue;
+			const folder = n.path.slice(0, n.path.lastIndexOf("/"));
+			if (!this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
+			await this.vault.create(n.path, n.content);
+			this.undo.push({ tool: "create_note", path: n.path, before: "", after: n.content, time: Date.now(), turn: 0, chat: "plugin", summary: `Sample note ${n.path}` });
+			this.index.enqueue(n.path);
+			created++;
+		}
+		new Notice(created ? t("notice.sampleCreated", { n: created, folder: SAMPLE_FOLDER }) : t("notice.sampleExists", { folder: SAMPLE_FOLDER }));
+		log.info(`Sample notes: ${created} created`);
+		const view = await this.activateView();
+		view?.showSampleQuestions();
+	}
+
+	/** Called after each answered message: shows the one-question survey once, after the fifth answer. */
+	async countAnswer(): Promise<boolean> {
+		this.settings.answeredTurns++;
+		await this.saveSettings();
+		return this.settings.survey === "ask" && this.settings.answeredTurns >= 5;
+	}
+
+	/** The survey was answered or dismissed: never asked again. `answer` opens a prefilled discussion. */
+	async finishSurvey(answer: string | null): Promise<void> {
+		this.settings.survey = "done";
+		await this.saveSettings();
+		if (answer) window.open(surveyUrl(answer, this.manifest.version));
 	}
 
 	/** Lecture Companion's API (version 1), or null when it is not installed or enabled. */
@@ -907,7 +1105,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				this.notifyPending(manual);
 			} else if (manual) new Notice(`${JOB_NAMES[job]}: nothing to change.`);
 		} catch (err) {
-			new Notice(`${JOB_NAMES[job]} failed: ${(err as Error).message}`, 10000);
+			log.error(`${JOB_NAMES[job]} failed: ${(err as Error).message}`);
+			this.notifyError(`${JOB_NAMES[job]} failed: ${(err as Error).message}`);
 		} finally {
 			this.jobRunning = false;
 		}
@@ -1088,11 +1287,16 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			autoContinue: s.autoContinue,
 			extraSystemPrompt: s.extraSystemPrompt,
 			citations: s.citations,
+			answerLanguage: s.answerLanguage,
 		};
 	}
 
 	async hybridSearch(query: string, limit: number): Promise<SearchHit[]> {
-		const keyword = await keywordSearch(this.vault, query, limit * 2);
+		// Bodies come from the index's memory when the note is indexed and unchanged: at tens of
+		// thousands of notes, reading every file from disk for each search is what made it slow.
+		const notes = this.vault.listNotes();
+		// (Below 2,000 notes the files are read as before, frontmatter included, which is what the accuracy benchmark measures.)
+		const keyword = await keywordSearch(this.vault, query, limit * 2, notes, notes.length > 2000 ? (n) => this.index.textFor(n.path, n.mtime) : undefined);
 		if (!this.index.ready) return keyword.slice(0, limit);
 		try {
 			const semantic = await this.index.search(query, limit * 2);

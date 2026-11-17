@@ -1,0 +1,22 @@
+{
+  "name": "local-vault-agent-e2e-obsidian",
+  "private": true,
+  "description": "End-to-end tests that drive the built plugin inside a real, sandboxed Obsidian (wdio-obsidian-service). Kept apart from the plugin's own package so its lockfile and release build stay small.",
+  "type": "module",
+  "scripts": {
+    "test": "wdio run ./wdio.conf.mts"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@wdio/cli": "^9.20.0",
+    "@wdio/globals": "^9.20.0",
+    "@wdio/local-runner": "^9.20.0",
+    "@wdio/mocha-framework": "^9.20.0",
+    "mocha": "^11.7.0",
+    "obsidian": "^1.14.4",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "wdio-obsidian-reporter": "^3.5.0",
+    "wdio-obsidian-service": "^3.5.0"
+  }
+}

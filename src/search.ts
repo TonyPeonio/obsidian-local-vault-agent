@@ -58,6 +58,8 @@ export async function keywordSearch(
 	query: string,
 	limit: number,
 	notes: NoteInfo[] = vault.listNotes(),
+	/** A faster source of a note's text than reading it (e.g. the semantic index's memory); undefined falls back to the vault. */
+	textOf?: (note: NoteInfo) => string | undefined,
 ): Promise<SearchHit[]> {
 	const terms = queryTerms(query);
 	if (terms.length === 0) return [];
@@ -78,7 +80,7 @@ export async function keywordSearch(
 
 		// Only read bodies for a bounded amount of work: names are cheap, bodies are not,
 		// but a vault with a few thousand notes still reads in well under a second.
-		content = await vault.read(note.path);
+		content = textOf?.(note) ?? (await vault.read(note.path));
 		const lower = content.toLowerCase();
 		let matchedTerms = 0;
 		for (const t of terms) {

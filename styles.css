@@ -493,3 +493,96 @@
 .lva-pending-badge {
 	cursor: pointer;
 }
+
+/* Report a problem */
+.lva-report-modal {
+	width: min(820px, 95vw);
+}
+.lva-report-what,
+.lva-report-preview {
+	width: 100%;
+	resize: vertical;
+	margin-bottom: var(--size-4-2);
+}
+.lva-report-preview {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+}
+
+/* Setup checklist */
+.lva-setup-step {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-3);
+	padding: var(--size-4-2) 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+.lva-setup-icon {
+	flex: none;
+	width: 1.5em;
+	text-align: center;
+	font-weight: var(--font-bold);
+}
+.lva-setup-ok .lva-setup-icon {
+	color: var(--text-success);
+}
+.lva-setup-missing .lva-setup-icon {
+	color: var(--text-error);
+}
+.lva-setup-warn .lva-setup-icon {
+	color: var(--text-warning);
+}
+.lva-setup-text {
+	flex: 1;
+	min-width: 0;
+}
+.lva-setup-detail,
+.lva-setup-checking {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+.lva-setup-done {
+	padding: var(--size-4-3) 0;
+	color: var(--text-success);
+}
+
+/* First-run actions, survey, error actions */
+.lva-start {
+	margin-top: var(--size-4-2);
+}
+.lva-survey {
+	text-align: left;
+}
+.lva-error .lva-chip {
+	margin-top: var(--size-4-1);
+}
+
+/* Keyboard users: a visible focus ring on everything clickable in the chat and its dialogs */
+.lva-root button:focus-visible,
+.lva-root select:focus-visible,
+.lva-root summary:focus-visible,
+.lva-approval-modal button:focus-visible,
+.lva-diff:focus-visible,
+.lva-history-modal button:focus-visible,
+.lva-options-modal button:focus-visible {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: 2px;
+}
+
+/* Phones: controls large enough to tap, dialogs the width of the screen */
+.is-mobile .lva-send,
+.is-mobile .lva-mic {
+	height: 44px;
+	width: 44px;
+}
+.is-mobile .lva-chip,
+.is-mobile .lva-undo-btn,
+.is-mobile .lva-icon-btn {
+	min-height: 36px;
+}
+.is-mobile .lva-approval-buttons {
+	flex-wrap: wrap;
+}
+.is-mobile .lva-setup-step {
+	flex-wrap: wrap;
+}

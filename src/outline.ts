@@ -22,6 +22,20 @@ export function buildOutline(vault: VaultAccess, opts: OutlineOptions | number):
 	// When gists are rationed, the most recently modified notes get them first.
 	const byRecency = notes.slice().sort((a, b) => b.mtime - a.mtime);
 
+	// The outline is rendered several times while fitting it to the budget; read each note's metadata once.
+	const metaCache = new Map<string, ReturnType<VaultAccess["getMetadata"]>>();
+	const metaOf = (path: string) => {
+		let m = metaCache.get(path);
+		if (!m) {
+			m = vault.getMetadata(path);
+			metaCache.set(path, m);
+		}
+		return m;
+	};
+	// File names alone are a lower bound on every per-note rendering: when even they overflow the
+	// budget (around 1,000 notes at 32k) the detailed renderings are not attempted at all.
+	const namesAlone = notes.reduce((n, note) => n + note.basename.length + 6, 0);
+
 	const render = (detail: Detail, limit: number, gistCount: number): string => {
 		const gisted = new Set(byRecency.slice(0, gistCount).map((n) => n.path));
 		const lines: string[] = [];
@@ -33,7 +47,7 @@ export function buildOutline(vault: VaultAccess, opts: OutlineOptions | number):
 			}
 			let line = `  ${note.basename}.md`;
 			if (detail !== "none") {
-				const meta = vault.getMetadata(note.path);
+				const meta = metaOf(note.path);
 				const g = detail === "gists" && gisted.has(note.path) ? gist?.(note.path) : undefined;
 				if (g) {
 					line += ` — ${g}`;
@@ -56,7 +70,7 @@ export function buildOutline(vault: VaultAccess, opts: OutlineOptions | number):
 	};
 
 	const fits = (s: string) => s.length <= budgetChars;
-	const hasGists = gist !== undefined && notes.some((n) => gist(n.path));
+	const hasGists = namesAlone <= budgetChars && gist !== undefined && notes.some((n) => gist(n.path));
 
 	if (hasGists) {
 		const all = render("gists", notes.length, notes.length);
@@ -65,10 +79,12 @@ export function buildOutline(vault: VaultAccess, opts: OutlineOptions | number):
 		const k = largest(notes.length, (n) => fits(render("gists", notes.length, n)));
 		if (k > 0) return render("gists", notes.length, k);
 	}
-	const withHeadings = render("headings", notes.length, 0);
-	if (fits(withHeadings)) return withHeadings;
-	const bare = render("none", notes.length, 0);
-	if (fits(bare)) return bare;
+	if (namesAlone <= budgetChars) {
+		const withHeadings = render("headings", notes.length, 0);
+		if (fits(withHeadings)) return withHeadings;
+		const bare = render("none", notes.length, 0);
+		if (fits(bare)) return bare;
+	}
 	// Too many notes even for bare names (about 1000 at 32k). Keep every folder on the map:
 	// folders with at most k notes list them, bigger ones collapse to one line with their count
 	// and name range, so the model still knows the folder exists and can list_notes it. The old

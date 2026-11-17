@@ -1,5 +1,6 @@
 import type { OllamaClient } from "./ollama";
 import { OllamaError } from "./ollama";
+import { answerLanguageLine } from "./i18n";
 import { blockIdEdits, linkedTargets, planCitations, plainText, quotable, withPassages, type CitationMode } from "./citations";
 import { buildOutline, outlineBudget } from "./outline";
 import { ToolError, toOllamaTools } from "./tools";
@@ -32,6 +33,8 @@ export interface AgentConfig {
 	extraSystemPrompt: string;
 	/** Paragraph citations under answers: off, heading links only, or block ids (written on approval). Default "blocks". */
 	citations?: CitationMode;
+	/** Language to answer in; "" or undefined = the language of the question. */
+	answerLanguage?: string;
 }
 
 /** How many times per turn the agent answers a permission question on the user's behalf. */
@@ -341,6 +344,7 @@ export function buildSystemPrompt(
 		"- You know nothing about the contents of the user's notes until you read them. The vault outline below tells you which notes exist and their headings, nothing more. Every answer about the notes starts with search_passages or search_notes (or read_note / read_section on a path from the outline), then reading the relevant results. Never answer from memory or assumption, never invent note names, quotes or facts, and cite only notes you actually read. If nothing relevant exists, say so.",
 		"- Prefer search_passages for questions: it returns the matching sections verbatim, which is usually enough to answer. Use read_section to get one heading's full text, and read_note only when you need the whole note.",
 		"- Refer to notes with wikilinks, e.g. [[Projects/Chess Robot]] (path without the .md extension), never as backticked paths, so the user can click through.",
+		`- ${answerLanguageLine(cfg.answerLanguage ?? "")}`,
 		"- Keep answers concise and in markdown. When the task is complete, stop calling tools and give a short report of what you did and anything you could not do.",
 		"",
 		"Editing:",
@@ -585,7 +589,7 @@ ${LECTURE_TOOLS_HINT}`;
 					const skipped = `Not executed: ${calls.length} tool calls in one step is too many (the first ${MAX_CALLS_PER_STEP} ran). To find which notes contain something use grep_vault or search_passages; then read_section or find_in_note only where needed, a few at a time.`;
 					callbacks.onToolStart?.(call);
 					callbacks.onToolDone?.(call, skipped, false);
-					conversation.messages.push({ role: "tool", content: skipped, tool_name: call.function.name });
+					conversation.messages.push({ role: "tool", content: skipped, tool_name: call.function.name, tool_call_id: call.id });
 					continue;
 				}
 				callbacks.onToolStart?.(call);
@@ -593,7 +597,7 @@ ${LECTURE_TOOLS_HINT}`;
 				if (rejected && tool?.mutates) {
 					// The user said no to a write this turn: every further write waits for their answer.
 					callbacks.onToolDone?.(call, REJECTED_WRITE_NOTICE, false);
-					conversation.messages.push({ role: "tool", content: REJECTED_WRITE_NOTICE, tool_name: call.function.name });
+					conversation.messages.push({ role: "tool", content: REJECTED_WRITE_NOTICE, tool_name: call.function.name, tool_call_id: call.id });
 					continue;
 				}
 				const key = callKey(call);
@@ -604,7 +608,7 @@ ${LECTURE_TOOLS_HINT}`;
 					repeats++;
 					const notice = repeatedCallNotice(call.function.name, prior, repeats);
 					callbacks.onToolDone?.(call, notice, false);
-					conversation.messages.push({ role: "tool", content: notice, tool_name: call.function.name });
+					conversation.messages.push({ role: "tool", content: notice, tool_name: call.function.name, tool_call_id: call.id });
 					if (repeats >= MAX_REPEATED_CALLS) {
 						wrapUpText = REPEATED_CALLS_WRAP_UP;
 						break iterations;
@@ -632,7 +636,7 @@ ${LECTURE_TOOLS_HINT}`;
 				}
 				callbacks.onToolDone?.(call, result, ok);
 				const cached = tool && ok && !tool.mutates;
-				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name, ...(cached ? { cacheKey: key } : {}) });
+				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name, tool_call_id: call.id, ...(cached ? { cacheKey: key } : {}) });
 				if (ok) {
 					if (tool?.mutates) writes++;
 					if (call.function.name === "lecture_transcript") {
