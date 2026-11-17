@@ -134,9 +134,9 @@ describe("Local Vault Agent in Obsidian", function () {
 
 	it("try it on sample notes creates the notes and offers three questions", async function () {
 		await browser.executeObsidianCommand("local-vault-agent:try-sample");
-		await browser.waitUntil(async () => browser.executeObsidian(({ app }) => app.vault.getFileByPath("Local Vault Agent sample/Start here.md") !== null), { timeout: 20000, timeoutMsg: "the sample notes were not created" });
-		const count = await browser.executeObsidian(({ app }) => app.vault.getMarkdownFiles().filter((f) => f.path.startsWith("Local Vault Agent sample/")).length);
-		expect(count).toBe(5);
+		const sampleCount = () => browser.executeObsidian(({ app }) => app.vault.getMarkdownFiles().filter((f) => f.path.startsWith("Local Vault Agent sample/")).length);
+		await browser.waitUntil(async () => (await sampleCount()) === 5, { timeout: 20000, timeoutMsg: "the five sample notes were not created" });
+		expect(await browser.executeObsidian(({ app }) => app.vault.getFileByPath("Local Vault Agent sample/Start here.md") !== null)).toBe(true);
 		await browser.waitUntil(async () => (await browser.$$(".lva-fixes .lva-chip")).length >= 3, { timeout: 20000, timeoutMsg: "the sample questions were not shown" });
 	});
 
@@ -146,14 +146,11 @@ describe("Local Vault Agent in Obsidian", function () {
 			setting.open();
 			setting.openTabById("local-vault-agent");
 		});
-		const content = browser.$(".modal.mod-settings .vertical-tab-content");
-		await content.waitForExist({ timeout: 20000 });
-		await expect(content).toHaveText(expect.stringContaining("Provider"));
-		await expect(content).toHaveText(expect.stringContaining("Chat model"));
-		await expect(content).toHaveText(expect.stringContaining("Scheduled jobs"));
-		await expect(content).toHaveText(expect.stringContaining("Report a problem"));
-		// Ollama is the provider, so its URL row is shown and the OpenAI-compatible rows are not.
-		await expect(content).toHaveText(expect.stringContaining("Ollama URL"));
+		// The text of whatever dialog is open: the settings window's markup differs between Obsidian versions.
+		const text = () => browser.execute(() => Array.from(document.querySelectorAll(".modal-container"), (el) => el.textContent ?? "").join("\n"));
+		await browser.waitUntil(async () => (await text()).includes("Provider"), { timeout: 20000, timeoutMsg: "the settings page did not show the Provider setting" });
+		const shown = await text();
+		for (const expected of ["Chat model", "Scheduled jobs", "Report a problem", "Ollama URL", "Answer language", "Paragraph citations"]) expect(shown).toContain(expected);
 		await browser.keys("Escape");
 	});
 });
