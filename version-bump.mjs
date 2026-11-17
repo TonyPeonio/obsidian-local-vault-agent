@@ -5,6 +5,9 @@ const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
 const { minAppVersion } = manifest;
 manifest.version = targetVersion;
 writeFileSync("manifest.json", JSON.stringify(manifest, null, "\t") + "\n");
+// The beta manifest follows every stable release; a beta bumps only manifest-beta.json by hand
+// (see README, "Beta channel").
+writeFileSync("manifest-beta.json", JSON.stringify(manifest, null, "\t") + "\n");
 
 const versions = JSON.parse(readFileSync("versions.json", "utf8"));
 versions[targetVersion] = minAppVersion;

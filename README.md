@@ -3,6 +3,12 @@
 A fully local, agentic AI assistant for [Obsidian](https://obsidian.md), powered by
 [Ollama](https://ollama.com). Nothing leaves your machine.
 
+<!-- TODO(demo): record a 30–60 s GIF or video and put it here: install → setup checklist →
+     "Try it on sample notes" → a question → the cited answer with its Passages line → an edit
+     with the diff dialog → Undo. Save it as docs/demo.gif and replace the line below with
+     ![Local Vault Agent answering from notes and showing a diff before it edits](docs/demo.gif) -->
+*Demo video: coming soon.*
+
 Ask it questions and it **searches your notes** to answer them. Ask it to **compile a topic**
 and it reads the relevant notes and writes a new one with citations. Ask it to **reformat or
 edit a note** and it shows you a diff that you approve before anything is written.
@@ -34,6 +40,55 @@ Companion (local-model rubric grading with verbatim evidence) and Branching Tabl
   and kept in sync as you edit. Keyword search always works as a fallback.
 - **Free and open source.** MIT licensed. No accounts, no API keys, no telemetry.
 
+## Why this one
+
+Three things, each of which you can check rather than take on trust:
+
+1. **Fully local.** The chat model, the embeddings and the vision model run on your machine
+   through Ollama (or LM Studio, llama.cpp, Jan, vLLM). The plugin talks to the server URL you
+   set and to nothing else; there is no account, no key and no telemetry, and the releases are
+   built by GitHub Actions with provenance attestations.
+2. **You approve every change.** The agent can edit, move and delete across many notes, and
+   every one of those writes is a diff you approve first, recorded with what it replaced, and
+   undoable later, even after you have edited the note further.
+3. **The numbers are published.** Every release runs a scored benchmark on a generated vault
+   (24 scenarios, the failures listed next to the passes), and the large-vault measurements at
+   10,000 and 50,000 notes are in this README with the script that produced them.
+
+How it compares, as fairly as I can put it (November 2026; these plugins move fast, so check
+their own pages before deciding):
+
+| | Local Vault Agent | [Copilot for Obsidian](https://github.com/logancyang/obsidian-copilot) | [Smart Connections](https://github.com/brianpetro/obsidian-smart-connections) | [Text Generator](https://github.com/nhaouari/obsidian-textgenerator-plugin) |
+|---|---|---|---|---|
+| Main idea | An agent that searches, reads and edits the vault with tools | Chat with your vault and with many model providers | Related notes by meaning, plus a chat | Text generation from prompts and templates |
+| Models | Local only (Ollama or an OpenAI-compatible local server) | Cloud providers and local ones | Local embeddings by default; chat through providers you configure | Many providers, cloud and local |
+| Edits to notes | Any note, always through a diff you approve, with history and undo | Mostly inserts into the open note; agentic features are part of its paid tier | Not its focus | Writes generated text where you ask |
+| Citations | Wikilinks, down to the paragraph | Links to source notes | Links to related notes | None by design |
+| Published accuracy benchmark | Yes, per release | Not that I know of | Not that I know of | Not that I know of |
+| Polish, community, integrations | One author, a small user base | Large community, far more features and integrations | Large community, very good at "what is related to this note" | Mature template ecosystem |
+
+Where the others are the better choice: if you want the strongest models and do not mind your
+notes going to a cloud API, Copilot with a frontier model will answer harder questions than a
+9B model on your GPU. If what you want is "show me notes related to this one" while you write,
+that is exactly Smart Connections. If you want prompt templates that fill in frontmatter and
+generate drafts, that is Text Generator. This plugin is for people who want an assistant that
+*works on* the vault, and want it without anything leaving the machine.
+
+## Getting started
+
+1. Install [Ollama](https://ollama.com) and start it (or use another local server, see
+   [Other local servers](#other-local-servers)).
+2. Open the chat (robot icon in the ribbon). The first time, a **setup checklist** opens: it
+   checks that the server is reachable, that there is a chat model that can call tools, an
+   embedding model and an index, and offers one button per missing piece: download the model that
+   fits your machine (with progress), switch to one you already have, build the index. It is also
+   the command **Setup checklist**.
+3. Click **Try it on sample notes**: it creates a small folder (`Local Vault Agent sample`, five
+   linked notes: a project with a decision in it, a person, a lecture with a timestamped
+   transcript, a daily note) and shows three questions to click. You get a cited answer about
+   notes you can read in a minute, before pointing it at your own. Delete the folder whenever you
+   like.
+
 ## Requirements
 
 1. [Ollama](https://ollama.com) installed and running.
@@ -45,7 +100,37 @@ Companion (local-model rubric grading with verbatim evidence) and Branching Tabl
      was both slower and less accurate than the 9B; stay with the 9B there.
 3. An embedding model for semantic search: `ollama pull nomic-embed-text` (274 MB).
 
-The plugin checks all of this for you: **Settings → Local Vault Agent → Test connection**.
+The plugin checks all of this for you: the **setup checklist** (first open of the chat, or the
+command), and **Settings → Local Vault Agent → Test connection and speed**.
+
+### Other local servers
+
+*Settings → Provider → OpenAI-compatible* talks to any local server with the OpenAI API:
+`/v1/chat/completions` (streamed, with tool calls), `/v1/embeddings` and `/v1/models`.
+
+| Server | Server URL |
+|---|---|
+| LM Studio (enable the local server) | `http://localhost:1234/v1` |
+| llama.cpp `llama-server` (start it with `--jinja` for tool calls) | `http://localhost:8080/v1` |
+| Jan | `http://localhost:1337/v1` |
+| vLLM (`--enable-auto-tool-choice --tool-call-parser hermes` for Qwen) | `http://localhost:8000/v1` |
+
+Pick a chat model that supports tool calling and load an embedding model in the same server (set
+its id as the *Embedding model*), or turn semantic search off. An API key can be set if your
+server asks for one; it is stored in the plugin's settings, sent only to that server, and never
+included in a problem report. Ollama stays the default and is what the benchmark measures: with
+other servers the context window is whatever you loaded the model with, the speed test, model
+download and the automatic vision check are not available (set a *Vision model* by hand), and
+tool calling is only as good as the server's chat template. This path is covered by unit tests
+against the wire format, not by a run against each of the four servers; if one misbehaves, use
+*Report a problem*.
+
+### Languages
+
+The agent answers in the language you write in; *Settings → Answer language* fixes one instead
+(`Deutsch`, `Español`, `日本語`, …). Notes are quoted as written. The interface is in English;
+every interface string lives in one dictionary ([`src/i18n.ts`](src/i18n.ts)) with English as the
+fallback, so a translation is one more dictionary of the same keys: pull requests welcome.
 
 ## Usage
 
