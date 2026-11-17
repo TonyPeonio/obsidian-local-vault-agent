@@ -146,22 +146,19 @@ describe("Local Vault Agent in Obsidian", function () {
 			setting.open();
 			setting.openTabById("local-vault-agent");
 		});
-		// The text of whatever dialog is open: the settings window's markup differs between Obsidian versions.
-		const text = () => browser.execute(() => Array.from(document.querySelectorAll(".modal-container"), (el) => el.textContent ?? "").join("\n"));
-		try {
-			await browser.waitUntil(async () => (await text()).includes("Provider"), { timeout: 20000 });
-		} catch {
-			// Say what is on screen instead, on one line, so the failure explains itself.
-			const seen = (await text()).replace(/\s+/g, " ").slice(0, 600);
-			const state = await browser.executeObsidian(({ app }) => {
-				const setting = (app as unknown as { setting: { activeTab?: { id?: string; containerEl?: HTMLElement } | null; pluginTabs?: { id: string }[] } }).setting;
-				const tab = setting.activeTab;
-				return `activeTab=${tab?.id ?? "none"} tabText=${(tab?.containerEl?.textContent ?? "").replace(/\s+/g, " ").slice(0, 300)} pluginTabs=${(setting.pluginTabs ?? []).map((t) => t.id).join(",")}`;
+		// The text of the plugin's settings tab, read from the tab itself: the settings window's own
+		// markup differs between Obsidian versions.
+		const text = () =>
+			browser.executeObsidian(({ app }) => {
+				const tab = (app as unknown as { setting: { activeTab?: { id?: string; containerEl?: HTMLElement } | null } }).setting.activeTab;
+				return tab?.id === "local-vault-agent" ? (tab.containerEl?.textContent ?? "") : "";
 			});
-			throw new Error(`settings page did not show Provider; ${state}; modals=${seen}`);
-		}
+		await browser.waitUntil(async () => (await text()).includes("Provider"), { timeout: 20000, timeoutMsg: "the settings page did not show the Provider setting" });
 		const shown = await text();
 		for (const expected of ["Chat model", "Scheduled jobs", "Report a problem", "Ollama URL", "Answer language", "Paragraph citations"]) expect(shown).toContain(expected);
+		// Ollama is the provider, so the OpenAI-compatible rows are hidden.
+		const serverUrlVisible = await browser.execute(() => Array.from(document.querySelectorAll(".setting-item-name")).some((el) => el.textContent === "Server URL" && (el as HTMLElement).offsetParent !== null));
+		expect(serverUrlVisible).toBe(false);
 		await browser.keys("Escape");
 	});
 });
