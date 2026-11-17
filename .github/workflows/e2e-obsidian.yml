@@ -80,4 +80,6 @@ jobs:
         working-directory: e2e-obsidian
         run: |
           grep -E "passing|failing" wdio.log || true
+          # What failed, as annotations on the run (readable without opening the log).
+          grep -E "✖|Error:|Expected|Received|expected|timeout|not (created|shown|changed)" wdio.log | sed -E 's/\x1b\[[0-9;]*m//g' | head -9 | while IFS= read -r line; do echo "::error::${line}"; done
           ! grep -Eq "[0-9]+ failing" wdio.log
