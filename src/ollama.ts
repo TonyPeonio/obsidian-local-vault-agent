@@ -303,6 +303,7 @@ export class OllamaClient {
 			...openAIOptions(req.options),
 		};
 		if (req.tools?.length) body.tools = req.tools;
+		if (req.format === "json") body.response_format = { type: "json_object" };
 		const url = `${this.baseUrl}/chat/completions`;
 		const headers = { "Content-Type": "application/json", ...this.headers() };
 		let response: Response;

@@ -1,0 +1,27 @@
+{
+  "date": "2026-11-17T20:24:58.672Z",
+  "node": "v24.13.1",
+  "rows": [
+    {
+      "notes": 10000,
+      "generateMs": 216,
+      "buildMs": 133983,
+      "chunks": 30000,
+      "indexFileMB": 125,
+      "largestFileMB": 125,
+      "resyncMs": 29,
+      "editOneNoteMs": 235,
+      "editWritesMB": 125.4,
+      "loadMs": 161,
+      "heapMB": 252,
+      "arrayBuffersMB": 0,
+      "semanticQueryMs": 146,
+      "passageQueryMs": 143,
+      "keywordQueryMs": 145,
+      "systemPromptMs": 219,
+      "systemPromptChars": 7612,
+      "grepMs": 115
+    }
+  ],
+  "realEmbedding": null
+}

@@ -173,6 +173,9 @@ Things to try:
 | Quiz me on a topic or course | Topic, since when, how many questions; the quiz runs in the chat (`/quiz`, or type *quiz me on … since …*) |
 | Suggest concept links for this note | Concept notes the open note mentions or is close to, linked in one diff, optionally as `parent`/`child` properties (`/concepts`) |
 | Review changes from scheduled jobs | Walks the changes the nightly and weekly jobs queued, as diffs (`/review`) |
+| Setup checklist | Live status of server, models and index, with a fix button for each |
+| Try it on sample notes | Creates the sample folder and offers three questions |
+| Report a problem | A GitHub issue with redacted diagnostics that you review first; nothing is sent automatically |
 | Run the nightly daily-notes job now | Runs the scheduled job immediately; its changes wait for review |
 | Write this week's digest now | Runs the weekly digest immediately; the note waits for review |
 
@@ -262,6 +265,16 @@ last message* are commands (also `/undo`, `/undo-all`), and each tool card has a
 too. A revert is shown as a diff and applied only when approved. If the note was edited after the
 change, only the change is taken back and the later edits stay; if the later edits overlap it, the
 undo is refused rather than overwriting them. An undo is itself in the history and can be undone.
+
+**Nothing half-written.** A write is one whole note or nothing. If you press Stop while a diff is
+open, approving it afterwards writes nothing. If the note changed while the diff was open (you
+typed in it, a sync arrived), the write is refused and the model is told to redo it on the current
+text, rather than silently undoing your edit. A write that fails (a locked file) is not recorded and
+leaves the note as it was; in a multi-note edit the other notes are still written and each is
+reported. When a message fails or is stopped after some changes were already applied, the chat says
+how many and offers **Undo these changes**: each applied change was a complete, approved diff, and
+the button takes the whole message back. There is no separate backup folder: the change history
+holds the text every change replaced.
 
 **Paragraph citations.** Under an answer drawn from notes, a *Passages* line links the exact
 paragraphs it used: the ones it quotes, the transcript paragraphs whose `[m:ss]` it names, or the
@@ -496,6 +509,117 @@ blocky "47" as "41"). The full 24-scenario run was not repeated for this release
 Run it yourself with `npm run make-vault && npm run e2e:large` (see Development); results land
 in `bench/`.
 
+## Large vaults
+
+Measured with `npm run bench:scale` on generated vaults of 10,000 and 50,000 notes (three sections
+each, 30,000 and 150,000 chunks), 2026-11-17, Node 24 on the same Ryzen laptop as above. The
+embedding model is replaced by a stand-in that returns 768-number vectors instantly, so these are
+the plugin's own costs: bookkeeping, storage and search, the part that grows with the vault.
+
+| | 10,000 notes (0.7.0) | 10,000 notes (0.8.0) | 50,000 notes (0.8.0) |
+|---|---:|---:|---:|
+| First index, without the embedding model's time | 134 s | 1.6 s | 9.9 s |
+| Start-up check when nothing changed | 0.03 s | 0.03 s | 0.12 s |
+| Loading the saved index at start-up | 0.2 s | 0.5 s | 3.0 s |
+| Index on disk (largest single file) | 125 MB (125 MB) | 125 MB (4 MB) | 627 MB (21 MB) |
+| Written to disk after editing one note | 125 MB | 4 MB | 20 MB |
+| Semantic search, per query | 0.15 s | 0.06 s | 0.28 s |
+| Passage search, per query | 0.14 s | 0.08 s | 0.37 s |
+| Keyword search, per query | 0.15 s | 0.13 s | 0.56 s |
+| `grep_vault` over every note | 0.12 s | 0.13 s | 0.51 s |
+| Building the system prompt (vault outline) | 0.22 s | 0.08 s | 0.27 s |
+| Vault suggestions (`/garden`) | not run (3 s at 2,000) | 0.8 s | 3.3 s |
+| Vectors in memory | not comparable | 88 MB | 439 MB |
+
+What 0.8.0 changed to get there, each found by running this benchmark:
+
+- **The index is stored in 32 shard files** (`index-shards/`) instead of one `index.json`. One
+  edited note rewrites one shard; before, every save rewrote everything, and at 50,000 notes the
+  single file would have been a 627 MB string, which JavaScript cannot hold. An index from an
+  earlier version is moved over on first start; nothing is re-embedded.
+- **The first index no longer looks each note up in the whole vault list** (that made N notes cost
+  N² lookups), status is counted as it goes instead of recounted per note, and a long build is
+  saved every minute, so closing the laptop halfway loses a minute, not the run.
+- **Vectors are kept as numbers, normalised once**, so a query is one dot product per chunk and
+  only the winning chunks get a snippet.
+- **Backlinks come from one reverse map** (rebuilt at most once a second) instead of a scan of
+  every note's links per note. That scan made the vault outline in the system prompt, read on
+  every message, quadratic: with the benchmark's vault stand-in computing backlinks the way the
+  Obsidian adapter did, the outline took 6.8 s at 2,000 notes, and 0.02 s with the map. The fix is
+  in the Obsidian adapter too; its effect inside Obsidian was not measured (see below). (The table's
+  0.7.0 column already uses the fixed stand-in, so it shows only the outline's own cost.)
+- **One cost went up:** loading the index at start-up decodes every vector (0.5 s at 10,000 notes,
+  3 s at 50,000) instead of leaving that to the first search, which is why searches got faster.
+- **Vault suggestions** file each note name under its rarest word and compare for near-duplicates
+  only notes that share a line once there are more than 1,500 candidates: at 10,000 notes the
+  mention scan alone took 33 s, now the whole report takes under a second.
+- Above 2,000 notes, keyword search reads note text from the index's memory instead of from disk.
+
+What these numbers are not: time spent in the embedding model, and Obsidian itself. The embedding
+model is the long part of a first index and scales linearly: `nomic-embed-text` did 29 chunks a
+second on this laptop's integrated GPU (so roughly 17 minutes for 10,000 such notes and an hour and
+a half for 50,000, once; a discrete GPU is several times faster), and after that only edited
+chunks are embedded. And the benchmark runs the plugin's core against an in-memory vault under
+Node: Obsidian's own file and metadata caches at 50,000 notes are not part of it, and no
+50,000-note vault was opened in Obsidian for this release. Results are in `bench/0.8.0-scale.json`
+and `bench/0.7.0-scale-10k.json`.
+
+## Reporting a problem
+
+**Report a problem** (command, the button in settings, and the *Report this problem* link on error
+notices and failed chat messages) opens a dialog with a GitHub issue already written: what you
+type about what happened, then the plugin, Obsidian and server versions, your operating system,
+the model names, the installed models, the settings, index statistics, the ids of your other
+enabled plugins, and the last 50 lines of the plugin's in-memory log. You read and edit all of it
+before anything happens. *Copy* puts it on the clipboard; *Open on GitHub* opens a new-issue page
+in your browser with it filled in (a long report is copied to the clipboard instead, with a note
+to paste it). **Nothing is sent by the plugin itself**: the only network request is the one your
+browser makes when you submit the issue.
+
+What is left out, by construction and with tests: API keys and anything named like a key or
+token; URL query strings and credentials; e-mail addresses; your *Extra instructions* (only their
+length); the vault's path (shown as `<vault>`) and your home folder (`~`); note contents and
+chat text, unless you tick *Include the last chat*, which adds the questions, the answers and
+the names and sizes of the tool calls. The log is kept in memory only (200 lines) and is gone
+when Obsidian closes.
+
+## Feedback
+
+After the fifth answered message the chat asks one question, once: how is it working for you.
+The buttons open a prefilled [GitHub Discussions](https://github.com/TonyPeonio/obsidian-local-vault-agent/discussions)
+post (or the problem report, for *It has problems*); *Don't ask again* dismisses it for good.
+Like the report, it makes no request of its own.
+
+## Beta channel
+
+To test a release before it reaches the community store, install with
+[BRAT](https://github.com/TfTHacker/obsidian42-brat): *BRAT → Add beta plugin →*
+`TonyPeonio/obsidian-local-vault-agent`. Betas are GitHub pre-releases tagged like
+`0.9.0-beta.1`, built by the same workflow as stable releases, with `manifest-beta.json` as their
+manifest; `manifest.json` on `main`, which the community store reads, keeps the stable version,
+so store users never receive a beta. To cut one: set `version` in `manifest-beta.json`, write
+`release-notes/<tag>.md`, commit, push the tag. Betas keep their data in the same plugin folder,
+so going back to stable is a reinstall from the store. Report what you find with *Report a
+problem*.
+
+## Accessibility and mobile
+
+- **Keyboard.** Everything in the chat is reachable with Tab and has a visible focus ring. In the
+  diff dialog Enter approves, A approves all in this chat, Esc rejects, and the diff itself is
+  focusable and scrolls with the arrow keys. `@` and `/` open pickers driven by the arrow keys
+  and Enter.
+- **Screen readers.** Icon buttons, the model picker, the message box and the diff have labels;
+  the conversation is a live region, so new messages are announced; errors are alerts; the
+  setup checklist reads each step with its state.
+- **Mobile.** The plugin is not desktop-only: set the server URL to a machine on your network
+  (see below). Buttons are sized for touch. Model download and streaming need the server to
+  accept requests from Obsidian's origin, as on desktop. Voice input needs Lecture Companion,
+  which is desktop-only, and scanned-PDF reading uses the desktop PDF viewer.
+
+This was reviewed in the code and covered by the end-to-end tests for the dialogs' structure; it
+was not checked with a screen reader or on a phone for this release. If something is unreachable
+or unlabelled, that is a bug: please report it.
+
 ## API for other plugins
 
 Local Vault Agent exposes `app.plugins.plugins["local-vault-agent"].api`:
@@ -505,8 +629,9 @@ interface LocalVaultAgentApi {
   version: 1;
   /** Opens the chat with the note attached (as an @-mention) and the cursor ready for a question. */
   openChatAbout(path: string): Promise<void>;
-  /** The Ollama URL and chat model this plugin uses, for sharing one setup. */
-  ollama(): { url: string; model: string };
+  /** The server URL and chat model this plugin uses, for sharing one setup. `provider` (added in
+      0.8.0) is "ollama" or "openai"; with "openai" the URL is an OpenAI-compatible /v1 base. */
+  ollama(): { url: string; model: string; provider: "ollama" | "openai" };
 }
 ```
 
@@ -529,8 +654,9 @@ enabling or disabling a plugin takes effect without a restart.
 
 ## Privacy and network use
 
-This plugin makes HTTP requests only to the Ollama URL you configure (default
-`http://localhost:11434`). It sends your prompts and the contents of notes the agent reads to
+This plugin makes HTTP requests only to the model server URL you configure (default
+`http://localhost:11434`). *Report a problem* and the feedback question open a GitHub page in
+your browser when you click them; the plugin itself sends nothing there. It sends your prompts and the contents of notes the agent reads to
 that server. It never contacts any other host and collects no telemetry.
 
 What it touches in your vault, and why:
@@ -560,8 +686,22 @@ npm run dev     # watch build → main.js
 npm test        # unit tests (vitest), no Ollama needed
 npm run e2e     # runs the real agent loop against a live Ollama over ./test-vault
 npm run make-vault && npm run e2e:large   # the scored benchmark (see Benchmarks)
-npm run build   # type-check + Obsidian review lint + production bundle
+npm run build   # type-check + Obsidian review lint (0 warnings) + production bundle
+npm run bench:scale   # the large-vault measurements (see Large vaults)
+npm run e2e:obsidian  # end-to-end tests in a real Obsidian; opens an Obsidian window
 ```
+
+**End-to-end tests in Obsidian.** `e2e-obsidian/` drives the built plugin inside a real, sandboxed
+Obsidian with [wdio-obsidian-service](https://github.com/jesse-r-s-hines/wdio-obsidian-service),
+against a scripted stand-in for Ollama: ask in the chat → the diff dialog (nothing written yet) →
+approve → the note is changed; reject → unchanged; undo → restored; the change history; the
+setup checklist; the sample notes; the settings page; and
+*Report a problem* (the report has the versions, has no note text, chat text or vault path, and
+no request is made). It has its own `package.json`, so the plugin's lockfile and release build do
+not carry the test runner. It runs in GitHub Actions under a virtual display
+(`.github/workflows/e2e-obsidian.yml`) on every push that touches the plugin; the workflow fails
+unless the report says all nine specs passed. Locally it opens an Obsidian window, which is why it
+is not part of `npm test`.
 
 The benchmark (`scripts/e2e-large.ts`) runs 24 scenarios on a generated 339-note vault
 (`scripts/make-vault.mjs`, with `scripts/large-facts.json` recording the facts the checks look

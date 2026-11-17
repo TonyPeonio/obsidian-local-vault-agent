@@ -508,6 +508,8 @@ export class AgentView extends ItemView {
 					},
 					onToolDone: (call, result, ok) => {
 						calls++;
+						// Only the tool's name goes into the log: results and errors can quote notes.
+						if (!ok) log.warn(`Tool ${call.function.name} returned an error`);
 						turn?.toolDone(call, result, ok);
 						this.scrollToBottom();
 					},
@@ -526,6 +528,7 @@ export class AgentView extends ItemView {
 				},
 				this.abort.signal,
 			);
+			log.info(`Turn finished: ${calls} tool calls in ${Math.round((Date.now() - started) / 1000)} s${this.abort?.signal.aborted ? " (stopped)" : ""}`);
 			if (!this.abort?.signal.aborted && (await this.plugin.countAnswer())) this.showSurvey();
 		} catch (err) {
 			if (!this.abort?.signal.aborted) {

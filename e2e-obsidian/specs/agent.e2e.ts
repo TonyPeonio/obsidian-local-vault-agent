@@ -120,4 +120,40 @@ describe("Local Vault Agent in Obsidian", function () {
 		await browser.keys("Escape");
 		expect(mock.chats.length).toBe(before);
 	});
+
+	it("the setup checklist shows the four steps with live status", async function () {
+		await browser.executeObsidianCommand("local-vault-agent:setup-checklist");
+		const modal = browser.$(".lva-setup-modal");
+		await modal.waitForExist({ timeout: 20000 });
+		await browser.waitUntil(async () => (await modal.$$(".lva-setup-step")).length === 4, { timeout: 20000, timeoutMsg: "the checklist did not list four steps" });
+		// The scripted server is reachable and its model can call tools.
+		expect((await modal.$$(".lva-setup-step.lva-setup-ok")).length).toBeGreaterThanOrEqual(2);
+		await browser.keys("Escape");
+		await modal.waitForExist({ reverse: true, timeout: 10000 });
+	});
+
+	it("try it on sample notes creates the notes and offers three questions", async function () {
+		await browser.executeObsidianCommand("local-vault-agent:try-sample");
+		await browser.waitUntil(async () => browser.executeObsidian(({ app }) => app.vault.getFileByPath("Local Vault Agent sample/Start here.md") !== null), { timeout: 20000, timeoutMsg: "the sample notes were not created" });
+		const count = await browser.executeObsidian(({ app }) => app.vault.getMarkdownFiles().filter((f) => f.path.startsWith("Local Vault Agent sample/")).length);
+		expect(count).toBe(5);
+		await browser.waitUntil(async () => (await browser.$$(".lva-fixes .lva-chip")).length >= 3, { timeout: 20000, timeoutMsg: "the sample questions were not shown" });
+	});
+
+	it("the settings page renders, with the provider and the report button", async function () {
+		await browser.executeObsidian(({ app }) => {
+			const setting = (app as unknown as { setting: { open(): void; openTabById(id: string): void } }).setting;
+			setting.open();
+			setting.openTabById("local-vault-agent");
+		});
+		const content = browser.$(".modal.mod-settings .vertical-tab-content");
+		await content.waitForExist({ timeout: 20000 });
+		await expect(content).toHaveText(expect.stringContaining("Provider"));
+		await expect(content).toHaveText(expect.stringContaining("Chat model"));
+		await expect(content).toHaveText(expect.stringContaining("Scheduled jobs"));
+		await expect(content).toHaveText(expect.stringContaining("Report a problem"));
+		// Ollama is the provider, so its URL row is shown and the OpenAI-compatible rows are not.
+		await expect(content).toHaveText(expect.stringContaining("Ollama URL"));
+		await browser.keys("Escape");
+	});
 });
