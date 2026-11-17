@@ -128,9 +128,12 @@ against the wire format, not by a run against each of the four servers; if one m
 ### Languages
 
 The agent answers in the language you write in; *Settings → Answer language* fixes one instead
-(`Deutsch`, `Español`, `日本語`, …). Notes are quoted as written. The interface is in English;
-every interface string lives in one dictionary ([`src/i18n.ts`](src/i18n.ts)) with English as the
-fallback, so a translation is one more dictionary of the same keys: pull requests welcome.
+(`Deutsch`, `Español`, `日本語`, …). Notes are quoted as written. The interface is in English.
+The chat, the settings, the command names and the approval, report and setup dialogs read their
+strings from one dictionary ([`src/i18n.ts`](src/i18n.ts)) with English as the fallback, so a
+translation is one more dictionary of the same keys: pull requests welcome. Not yet moved there:
+most pop-up notices and the older dialogs (quiz, concept links, change history, daily notes), which
+stay English until they are.
 
 ## Usage
 

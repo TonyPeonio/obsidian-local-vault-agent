@@ -34,11 +34,50 @@ jobs:
           key: obsidian-cache-${{ runner.os }}
       - name: Run the tests in Obsidian
         working-directory: e2e-obsidian
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" npx wdio run ./wdio.conf.mts 2>&1 | tee wdio.log
-      # A run that found no specs must not count as a pass: the report has to say all nine passed, none failed.
-      - name: Check that every spec ran and passed
+        shell: bash
+        # The verdict comes from the per-spec steps below, so the log is always complete.
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" npx wdio run ./wdio.conf.mts 2>&1 | tee wdio.log || true
+      # One step per spec, so the result of each is visible on the run page without opening the log.
+      # A spec counts only if the report marks it as passed: a run that found no specs fails all nine.
+      - name: "Spec: loads and exposes its API"
+        if: always()
+        working-directory: e2e-obsidian
+        run: grep -F "✓ loads and exposes its API" wdio.log
+      - name: "Spec: chat, diff, approve"
+        if: always()
+        working-directory: e2e-obsidian
+        run: grep -F "✓ chat → diff → approve changes the note" wdio.log
+      - name: "Spec: reject"
+        if: always()
+        working-directory: e2e-obsidian
+        run: grep -F "✓ rejecting a diff leaves the note alone" wdio.log
+      - name: "Spec: undo"
+        if: always()
+        working-directory: e2e-obsidian
+        run: grep -F "✓ undo shows the reverse diff and restores the note" wdio.log
+      - name: "Spec: change history"
+        if: always()
+        working-directory: e2e-obsidian
+        run: grep -F "✓ the change history lists the change and its undo" wdio.log
+      - name: "Spec: report a problem"
+        if: always()
+        working-directory: e2e-obsidian
+        run: grep -F "✓ report a problem shows a redacted report and sends nothing" wdio.log
+      - name: "Spec: setup checklist"
+        if: always()
+        working-directory: e2e-obsidian
+        run: grep -F "✓ the setup checklist shows the four steps with live status" wdio.log
+      - name: "Spec: sample notes"
+        if: always()
+        working-directory: e2e-obsidian
+        run: grep -F "✓ try it on sample notes creates the notes and offers three questions" wdio.log
+      - name: "Spec: settings page"
+        if: always()
+        working-directory: e2e-obsidian
+        run: grep -F "✓ the settings page renders, with the provider and the report button" wdio.log
+      - name: No spec failed
+        if: always()
         working-directory: e2e-obsidian
         run: |
           grep -E "passing|failing" wdio.log || true
-          grep -Eq "(^|[^0-9])(9|[1-9][0-9]+) passing" wdio.log
           ! grep -Eq "[0-9]+ failing" wdio.log
