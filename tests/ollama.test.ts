@@ -101,6 +101,23 @@ describe("OllamaClient.chat", () => {
 		expect(res.message.content).toBe("via fallback");
 	});
 
+	it("lets Stop end the non-streaming fallback, and explains a fallback that fails", async () => {
+		const blocked = fakeFetch(() => {
+			throw new TypeError("Failed to fetch");
+		});
+		const abort = new AbortController();
+		const deltas: unknown[] = [];
+		const hanging = new OllamaClient(() => "http://x", blocked, () => new Promise(() => {}));
+		const pending = hanging.chat({ model: "m", messages: [], signal: abort.signal, onDelta: (d) => deltas.push(d) });
+		abort.abort();
+		await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+		expect(deltas).toEqual([]);
+		const down = new OllamaClient(() => "http://x", blocked, async () => {
+			throw new Error("net::ERR_CONNECTION_REFUSED");
+		});
+		await expect(down.chat({ model: "m", messages: [] })).rejects.toThrow(/Cannot reach Ollama at http:\/\/x\. Is it running\? \(net::ERR_CONNECTION_REFUSED\)/);
+	});
+
 	it("gives a clear error when Ollama is down and there is no fallback", async () => {
 		const client = new OllamaClient(
 			() => "http://x",

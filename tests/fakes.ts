@@ -15,6 +15,7 @@ export class FakeVault implements VaultAccess {
 	seed(path: string, content: string, mtime?: number): void {
 		const t = mtime ?? (this.clock += 1000);
 		this.files.set(path, { content, mtime: t, ctime: t });
+		this.rev++;
 	}
 
 	listNotes(): NoteInfo[] {
@@ -59,6 +60,7 @@ export class FakeVault implements VaultAccess {
 		const f = this.files.get(path);
 		if (!f) throw new Error(`Note not found: ${path}`);
 		f.content = content;
+		this.rev++;
 		f.mtime = this.clock += 1000;
 	}
 
@@ -115,6 +117,7 @@ export class FakeVault implements VaultAccess {
 		if (note) {
 			this.files.delete(path);
 			this.files.set(newPath, note);
+			this.rev++;
 		} else if (att) {
 			this.attachments.delete(path);
 			this.attachments.set(newPath, att);
@@ -123,6 +126,7 @@ export class FakeVault implements VaultAccess {
 	}
 
 	async trash(path: string): Promise<void> {
+		this.rev++;
 		if (this.files.has(path)) this.files.delete(path);
 		else if (this.attachments.has(path)) this.attachments.delete(path);
 		else throw new Error(`File not found: ${path}`);
@@ -135,16 +139,37 @@ export class FakeVault implements VaultAccess {
 		const fm = content.match(/^---\n([\s\S]*?)\n---/);
 		const fmTags = fm?.[1].match(/^tags:\s*\[(.*)\]/m)?.[1].split(",").map((t) => "#" + t.trim()) ?? [];
 		const links = Array.from(content.matchAll(/\[\[([^\]|#]+)/g)).map((m) => m[1]);
-		const backlinks: string[] = [];
 		const me = (path.split("/").pop() ?? "").replace(/\.md$/, "");
-		for (const [other, f] of this.files) {
-			// A link may name the note bare ([[Sensors]]) or by path ([[Ideas/Sensors]]).
-			if (other !== path && new RegExp(`\\[\\[(?:[^\\]|#]*/)?${me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\||\\]|#)`).test(f.content)) {
-				backlinks.push(other);
-			}
-		}
+		// A link may name the note bare ([[Sensors]]) or by path ([[Ideas/Sensors]]); the reverse map
+		// is keyed by the name a link ends in and rebuilt only after a write.
+		const backlinks = (this.linkers().get(me) ?? []).filter((other) => other !== path);
 		const headings = Array.from(content.matchAll(/^(#{1,6}) (.+)$/gm)).map((m) => `${m[1]} ${m[2]}`);
 		return { tags: [...tags, ...fmTags], links, backlinks, headings, frontmatter: {} };
+	}
+
+	private linkerMap: Map<string, string[]> | null = null;
+	private linkerStamp = -1;
+	/** Bumped on every change to a note, so the reverse-link map knows when it is stale. */
+	private rev = 0;
+
+	private linkers(): Map<string, string[]> {
+		if (!this.linkerMap || this.linkerStamp !== this.rev) {
+			const map = new Map<string, string[]>();
+			for (const [other, f] of this.files) {
+				const seen = new Set<string>();
+				for (const m of f.content.matchAll(/\[\[([^\]|#]+)(?=\||\]|#)/g)) {
+					const name = (m[1].split("/").pop() ?? m[1]).trim();
+					if (seen.has(name)) continue;
+					seen.add(name);
+					const list = map.get(name);
+					if (list) list.push(other);
+					else map.set(name, [other]);
+				}
+			}
+			this.linkerMap = map;
+			this.linkerStamp = this.rev;
+		}
+		return this.linkerMap;
 	}
 
 	getActiveNotePath(): string | null {

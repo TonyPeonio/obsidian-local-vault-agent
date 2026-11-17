@@ -6,6 +6,7 @@
  *   node scripts/make-vault.mjs && npm run e2e:large
  *   GISTS=1 → also generate note gists first (slow) and use them in the outline.
  */
+import "../tests/setup";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { deflateSync } from "zlib";
 import { basename, join, relative, resolve } from "path";

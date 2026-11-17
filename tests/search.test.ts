@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fuseRankings, keywordSearch, makeSnippet, queryTerms, tokenize } from "../src/search";
+import { frontmatterText, fuseRankings, keywordSearch, makeSnippet, queryTerms, tokenize } from "../src/search";
 import { FakeVault } from "./fakes";
 
 const vault = new FakeVault({
@@ -39,6 +39,31 @@ describe("keywordSearch", () => {
 	it("respects the limit", async () => {
 		const hits = await keywordSearch(vault, "sensors", 1);
 		expect(hits).toHaveLength(1);
+	});
+});
+
+describe("frontmatterText", () => {
+	it("writes properties as lines, lists joined, without Obsidian's position object", () => {
+		expect(frontmatterText({ tags: ["recipe", "dinner"], author: "Ada Lovelace", rating: 5, done: false, position: { start: 0 } })).toBe(
+			"tags: recipe, dinner\nauthor: Ada Lovelace\nrating: 5\ndone: false",
+		);
+		expect(frontmatterText(undefined)).toBe("");
+		expect(frontmatterText({ position: {} })).toBe("");
+	});
+
+	it("lets keyword search find a property value, and a properties-only note, when bodies come from the index", async () => {
+		const notes = new FakeVault({ "Recipes/Pasta.md": "x", "Recipes/Card.md": "x", "Ideas/Sensors.md": "x" }).listNotes();
+		// What the index holds: chunk text only, so nothing at all for a note that is only properties.
+		const bodies: Record<string, string> = { "Recipes/Pasta.md": "Boil water, add pasta.", "Recipes/Card.md": "", "Ideas/Sensors.md": "Hall effect sensors." };
+		const props: Record<string, Record<string, unknown>> = { "Recipes/Pasta.md": { tags: ["recipe"] }, "Recipes/Card.md": { author: "Ada Lovelace", tags: ["recipe"] } };
+		const reader = { read: async () => { throw new Error("no file should be read"); } } as unknown as FakeVault;
+		const textOf = (n: { path: string }) => {
+			const head = frontmatterText(props[n.path]);
+			return head ? `${head}\n${bodies[n.path]}` : bodies[n.path];
+		};
+		expect((await keywordSearch(reader, "recipe", 10, notes, textOf)).map((h) => h.path).sort()).toEqual(["Recipes/Card.md", "Recipes/Pasta.md"]);
+		expect((await keywordSearch(reader, "lovelace", 10, notes, textOf)).map((h) => h.path)).toEqual(["Recipes/Card.md"]);
+		expect(await keywordSearch(reader, "lovelace", 10, notes, (n) => bodies[n.path])).toEqual([]);
 	});
 });
 

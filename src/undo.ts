@@ -237,3 +237,12 @@ export async function planRevert(change: ChangeRecord, vault: VaultAccess): Prom
 		}
 	}
 }
+
+/**
+ * Of the changes one agent run reported, those still applied, most recent first (the order to revert
+ * them in). The records are the ones `UndoStack.push` returned, so `undone` is current; an undo's own
+ * record is never among them, unlike `forTurn`, which returns it as the turn's newest change.
+ */
+export function stillApplied(made: readonly ChangeRecord[]): ChangeRecord[] {
+	return made.filter((c) => !c.undone).reverse();
+}

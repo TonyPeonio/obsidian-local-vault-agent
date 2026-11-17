@@ -9,3 +9,7 @@ test-vault-large/
 bench/**/*.log
 test-vault-*/
 scripts/large-facts-*.json
+e2e-obsidian/.obsidian-cache/
+e2e-obsidian/package-lock.json
+e2e-obsidian/vault/.obsidian/
+e2e-obsidian/vault/E2E note.md

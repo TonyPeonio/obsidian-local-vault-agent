@@ -58,6 +58,8 @@ export async function keywordSearch(
 	query: string,
 	limit: number,
 	notes: NoteInfo[] = vault.listNotes(),
+	/** A faster source of a note's text than reading it (e.g. the semantic index's memory); undefined falls back to the vault. */
+	textOf?: (note: NoteInfo) => string | undefined,
 ): Promise<SearchHit[]> {
 	const terms = queryTerms(query);
 	if (terms.length === 0) return [];
@@ -78,7 +80,7 @@ export async function keywordSearch(
 
 		// Only read bodies for a bounded amount of work: names are cheap, bodies are not,
 		// but a vault with a few thousand notes still reads in well under a second.
-		content = await vault.read(note.path);
+		content = textOf?.(note) ?? (await vault.read(note.path));
 		const lower = content.toLowerCase();
 		let matchedTerms = 0;
 		for (const t of terms) {
@@ -123,4 +125,13 @@ export function fuseRankings(lists: SearchHit[][], limit: number, k = 60): Searc
 		.sort((a, b) => b.fused - a.fused)
 		.slice(0, limit)
 		.map(({ fused, ...hit }) => ({ ...hit, score: Number(fused.toFixed(5)) }));
+}
+
+/** A note's properties as "key: value" lines: keyword search over text that has no frontmatter (the index's chunks) puts this in front. */
+export function frontmatterText(frontmatter: Record<string, unknown> | null | undefined): string {
+	if (!frontmatter) return "";
+	return Object.entries(frontmatter)
+		.filter(([k]) => k !== "position") // older Obsidian keeps a position object here
+		.map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v !== null && typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+		.join("\n");
 }

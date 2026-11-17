@@ -2,7 +2,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import obsidianmd from "eslint-plugin-obsidianmd";
 
 export default defineConfig([
-	globalIgnores(["node_modules", "main.js", ".e2e", "esbuild.config.mjs", "version-bump.mjs", "vitest.config.mts", "scripts", "tests", "test-vault"]),
+	globalIgnores(["node_modules", "main.js", ".e2e", "esbuild.config.mjs", "version-bump.mjs", "vitest.config.mts", "scripts", "tests", "test-vault", "e2e-obsidian"]),
 	...obsidianmd.configs.recommended,
 	{
 		languageOptions: {

@@ -1,5 +1,6 @@
 import type { OllamaClient } from "./ollama";
 import { OllamaError } from "./ollama";
+import { answerLanguageLine } from "./i18n";
 import { blockIdEdits, linkedTargets, planCitations, plainText, quotable, withPassages, type CitationMode } from "./citations";
 import { buildOutline, outlineBudget } from "./outline";
 import { ToolError, toOllamaTools } from "./tools";
@@ -32,6 +33,8 @@ export interface AgentConfig {
 	extraSystemPrompt: string;
 	/** Paragraph citations under answers: off, heading links only, or block ids (written on approval). Default "blocks". */
 	citations?: CitationMode;
+	/** Language to answer in; "" or undefined = the language of the question. */
+	answerLanguage?: string;
 }
 
 /** How many times per turn the agent answers a permission question on the user's behalf. */
@@ -341,6 +344,7 @@ export function buildSystemPrompt(
 		"- You know nothing about the contents of the user's notes until you read them. The vault outline below tells you which notes exist and their headings, nothing more. Every answer about the notes starts with search_passages or search_notes (or read_note / read_section on a path from the outline), then reading the relevant results. Never answer from memory or assumption, never invent note names, quotes or facts, and cite only notes you actually read. If nothing relevant exists, say so.",
 		"- Prefer search_passages for questions: it returns the matching sections verbatim, which is usually enough to answer. Use read_section to get one heading's full text, and read_note only when you need the whole note.",
 		"- Refer to notes with wikilinks, e.g. [[Projects/Chess Robot]] (path without the .md extension), never as backticked paths, so the user can click through.",
+		`- ${answerLanguageLine(cfg.answerLanguage ?? "")}`,
 		"- Keep answers concise and in markdown. When the task is complete, stop calling tools and give a short report of what you did and anything you could not do.",
 		"",
 		"Editing:",
@@ -442,7 +446,7 @@ export class Agent {
 		/** The text search_passages returned per note, so an answer that quotes a passage cites its note. */
 		const hitTexts = new Map<string, string>();
 		/** Results of read-only calls this turn by callKey, so an identical call is not run again.
-		 * Cleared after every write, since the vault may then differ. */
+		 * Cleared after every write attempt, since the vault may then differ. */
 		const callCache = new Map<string, string>();
 		let repeats = 0;
 		/** Set when the loop stops for a reason other than running out of iterations. */
@@ -514,7 +518,7 @@ ${LECTURE_TOOLS_HINT}`;
 			if (!assistant.tool_calls?.length && rejected && assistant.content.trim()) assistant.content = withRejectionQuestion(assistant.content);
 			// An answer from notes links the exact paragraphs it used (block ids are written on approval).
 			if (!assistant.tool_calls?.length && writes === 0 && !rejected && assistant.content.trim() && (cfg.citations ?? "blocks") !== "off" && unresolvedLinks(assistant.content, vault).length === 0) {
-				assistant.content = await this.citePassages(assistant.content, [...readPaths, ...hitPaths], cfg, conversation, turn, now);
+				assistant.content = await this.citePassages(assistant.content, [...readPaths, ...hitPaths], cfg, conversation, turn, now, signal);
 			}
 			conversation.messages.push(assistant);
 			callbacks.onAssistantDone?.(assistant);
@@ -585,7 +589,7 @@ ${LECTURE_TOOLS_HINT}`;
 					const skipped = `Not executed: ${calls.length} tool calls in one step is too many (the first ${MAX_CALLS_PER_STEP} ran). To find which notes contain something use grep_vault or search_passages; then read_section or find_in_note only where needed, a few at a time.`;
 					callbacks.onToolStart?.(call);
 					callbacks.onToolDone?.(call, skipped, false);
-					conversation.messages.push({ role: "tool", content: skipped, tool_name: call.function.name });
+					conversation.messages.push({ role: "tool", content: skipped, tool_name: call.function.name, tool_call_id: call.id });
 					continue;
 				}
 				callbacks.onToolStart?.(call);
@@ -593,7 +597,7 @@ ${LECTURE_TOOLS_HINT}`;
 				if (rejected && tool?.mutates) {
 					// The user said no to a write this turn: every further write waits for their answer.
 					callbacks.onToolDone?.(call, REJECTED_WRITE_NOTICE, false);
-					conversation.messages.push({ role: "tool", content: REJECTED_WRITE_NOTICE, tool_name: call.function.name });
+					conversation.messages.push({ role: "tool", content: REJECTED_WRITE_NOTICE, tool_name: call.function.name, tool_call_id: call.id });
 					continue;
 				}
 				const key = callKey(call);
@@ -604,7 +608,7 @@ ${LECTURE_TOOLS_HINT}`;
 					repeats++;
 					const notice = repeatedCallNotice(call.function.name, prior, repeats);
 					callbacks.onToolDone?.(call, notice, false);
-					conversation.messages.push({ role: "tool", content: notice, tool_name: call.function.name });
+					conversation.messages.push({ role: "tool", content: notice, tool_name: call.function.name, tool_call_id: call.id });
 					if (repeats >= MAX_REPEATED_CALLS) {
 						wrapUpText = REPEATED_CALLS_WRAP_UP;
 						break iterations;
@@ -615,14 +619,14 @@ ${LECTURE_TOOLS_HINT}`;
 				currentCall = call;
 				let { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
 				currentCall = null;
-				if (tool && ok) {
-					if (tool.mutates) {
-						// A write makes vault-wide results (grep, lists, searches) and reads of the
-						// changed notes stale; reads of other notes are still current.
-						if (changedPaths.size) invalidateCache(callCache, changedPaths);
-						else callCache.clear();
-					} else callCache.set(key, result);
-				}
+				if (tool?.mutates) {
+					// A write makes vault-wide results (grep, lists, searches) and reads of the
+					// changed notes stale; reads of other notes are still current. A refused or failed
+					// write may mean a note changed underneath us ("read it again"), or that half a
+					// batch was written, so every cached read is dropped and the re-read really runs.
+					if (ok && changedPaths.size) invalidateCache(callCache, changedPaths);
+					else callCache.clear();
+				} else if (tool && ok) callCache.set(key, result);
 				changedPaths.clear();
 				// A batch of forty read_note calls would overflow the window on its own; keep the
 				// batch within budget and tell the model to work in smaller steps.
@@ -632,7 +636,7 @@ ${LECTURE_TOOLS_HINT}`;
 				}
 				callbacks.onToolDone?.(call, result, ok);
 				const cached = tool && ok && !tool.mutates;
-				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name, ...(cached ? { cacheKey: key } : {}) });
+				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name, tool_call_id: call.id, ...(cached ? { cacheKey: key } : {}) });
 				if (ok) {
 					if (tool?.mutates) writes++;
 					if (call.function.name === "lecture_transcript") {
@@ -689,7 +693,7 @@ ${LECTURE_TOOLS_HINT}`;
 	 * mode the ids for each note are one diff the user approves, and a note whose diff is rejected
 	 * (or "headings" mode) is linked by heading instead.
 	 */
-	private async citePassages(answer: string, grounded: string[], cfg: AgentConfig, conversation: Conversation, turn: number, now: Date): Promise<string> {
+	private async citePassages(answer: string, grounded: string[], cfg: AgentConfig, conversation: Conversation, turn: number, now: Date, signal?: AbortSignal): Promise<string> {
 		const { vault } = this.deps;
 		if (/\[\[[^\]]*#\^/.test(answer)) return answer;
 		const cited = linkedTargets(answer)
@@ -710,6 +714,8 @@ ${LECTURE_TOOLS_HINT}`;
 		const written = new Set<string>();
 		if ((cfg.citations ?? "blocks") === "blocks") {
 			for (const [path, after] of blockIdEdits(citations, contents)) {
+				// Stopped: no further dialog opens and nothing more is written.
+				if (signal?.aborted) break;
 				const before = contents.get(path) ?? "";
 				const n = citations.filter((c) => c.path === path && c.isNew).length;
 				const req: ApprovalRequest = { tool: "add_block_ids", path, before, after, summary: `Add ${n} block id${n === 1 ? "" : "s"} to ${path} so the answer can link the exact paragraph${n === 1 ? "" : "s"}` };
@@ -717,6 +723,8 @@ ${LECTURE_TOOLS_HINT}`;
 				if (!cfg.autoApprove && !conversation.approveAll) decision = await this.deps.approve(req);
 				if (decision === "approve-all") conversation.approveAll = true;
 				if (decision === "reject") continue;
+				// Stopped while the dialog was open: an approval that arrives after Stop writes nothing.
+				if (signal?.aborted) break;
 				try {
 					if ((await vault.read(path)) !== before) continue;
 					await vault.modify(path, after);

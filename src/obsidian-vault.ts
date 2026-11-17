@@ -149,11 +149,7 @@ export class ObsidianVault implements VaultAccess {
 			new Set([...(cache.links ?? []), ...(cache.embeds ?? [])].map((l) => l.link)),
 		);
 		const headings = (cache.headings ?? []).map((h) => `${"#".repeat(h.level)} ${h.heading}`);
-		const backlinks: string[] = [];
-		const resolved = this.app.metadataCache.resolvedLinks;
-		for (const source of Object.keys(resolved)) {
-			if (resolved[source][file.path]) backlinks.push(source);
-		}
+		const backlinks = this.backlinksOf(file.path);
 		const frontmatter: Record<string, unknown> = {};
 		if (cache.frontmatter) {
 			for (const [k, v] of Object.entries(cache.frontmatter)) {
@@ -161,6 +157,33 @@ export class ObsidianVault implements VaultAccess {
 			}
 		}
 		return { tags, links, backlinks, headings, frontmatter };
+	}
+
+	private backlinkMap: Map<string, string[]> | null = null;
+	private backlinkMapAt = 0;
+
+	/**
+	 * Notes linking to `path`, from a reverse map of Obsidian's resolved links that is rebuilt at most
+	 * once a second. Scanning every note's links for each note asked about made anything that looks
+	 * at the whole vault (the outline in the system prompt, the gardener) quadratic: seconds at 2,000
+	 * notes, minutes at 50,000.
+	 */
+	private backlinksOf(path: string): string[] {
+		const now = Date.now();
+		if (!this.backlinkMap || now - this.backlinkMapAt > 1000) {
+			const map = new Map<string, string[]>();
+			const resolved = this.app.metadataCache.resolvedLinks;
+			for (const source of Object.keys(resolved)) {
+				for (const target of Object.keys(resolved[source])) {
+					const list = map.get(target);
+					if (list) list.push(source);
+					else map.set(target, [source]);
+				}
+			}
+			this.backlinkMap = map;
+			this.backlinkMapAt = now;
+		}
+		return this.backlinkMap.get(path)?.slice() ?? [];
 	}
 
 	getActiveNotePath(): string | null {

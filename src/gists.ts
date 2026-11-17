@@ -70,7 +70,7 @@ export class GistCache {
 	private processing = false;
 	private lastError: string | undefined;
 	private dirty = false;
-	private saveTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+	private saveTimer: number | null = null;
 	private abort: AbortController | null = null;
 	private think: boolean | undefined = false;
 
@@ -171,7 +171,7 @@ export class GistCache {
 		this.processing = true;
 		this.abort = new AbortController();
 		const signal = this.abort.signal;
-		const sleep = this.opts.sleep ?? ((ms: number) => new Promise<void>((r) => globalThis.setTimeout(r, ms)));
+		const sleep = this.opts.sleep ?? ((ms: number) => new Promise<void>((r) => window.setTimeout(r, ms)));
 		try {
 			while (this.queue.size > 0 && !signal.aborted) {
 				if (this.opts.isBusy?.()) {
@@ -232,13 +232,13 @@ export class GistCache {
 	}
 
 	private scheduleSave(): void {
-		if (this.saveTimer !== null) globalThis.clearTimeout(this.saveTimer);
-		this.saveTimer = globalThis.setTimeout(() => void this.flush(), 3000);
+		if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
+		this.saveTimer = window.setTimeout(() => void this.flush(), 3000);
 	}
 
 	async flush(): Promise<void> {
 		if (this.saveTimer !== null) {
-			globalThis.clearTimeout(this.saveTimer);
+			window.clearTimeout(this.saveTimer);
 			this.saveTimer = null;
 		}
 		if (!this.dirty) return;

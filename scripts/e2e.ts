@@ -5,6 +5,7 @@
  *
  *   OLLAMA_URL=http://localhost:11434 MODEL=qwen3.5:9b npm run e2e
  */
+import "../tests/setup";
 import { readFileSync, readdirSync, statSync } from "fs";
 import { join, relative } from "path";
 import { Agent, looksLikePermissionQuestion, newConversation, type AgentConfig } from "../src/agent";

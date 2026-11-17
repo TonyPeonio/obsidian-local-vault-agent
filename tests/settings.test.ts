@@ -38,6 +38,19 @@ describe("migrateSettings", () => {
 	});
 });
 
+describe("the first-run checklist flag", () => {
+	it("is off for a new install, and on for saved settings from before the flag existed", () => {
+		expect(migrateSettings(null).setupShown).toBe(false);
+		expect(migrateSettings({ model: "qwen3:14b" }).setupShown).toBe(true);
+		expect(migrateSettings({}).setupShown).toBe(true);
+	});
+
+	it("keeps a saved value", () => {
+		expect(migrateSettings({ setupShown: false, settingsVersion: SETTINGS_VERSION }).setupShown).toBe(false);
+		expect(migrateSettings({ setupShown: true }).setupShown).toBe(true);
+	});
+});
+
 describe("isExcluded", () => {
 	it("matches folder prefixes case-insensitively", () => {
 		expect(isExcluded("Templates/Daily.md", ["templates"])).toBe(true);

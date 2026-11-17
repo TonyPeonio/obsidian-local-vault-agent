@@ -163,7 +163,21 @@ async function requestApproval(ctx: ToolContext, req: ApprovalRequest): Promise<
 	if (decision === "reject") {
 		throw new ToolError("REJECTED: the user declined this change in the approval dialog, so nothing was written. Do not retry it or a variant of it. Tell the user which change was rejected and ask what they would like instead, then stop.");
 	}
+	// Stopped while the dialog was open: an approval that arrives after Stop writes nothing.
+	if (ctx.signal?.aborted) throw new ToolError("Stopped before writing; nothing was written.");
+	// The diff shown was computed from the note as it was; if the user (or another plugin) changed
+	// it while the dialog was open, writing now would silently undo their edit.
+	if (CONTENT_TOOLS.has(req.tool)) {
+		const now = ctx.vault.exists(req.path) ? await ctx.vault.read(req.path) : null;
+		const expected = req.tool === "create_note" ? null : req.before;
+		if (now !== expected) {
+			throw new ToolError(`${req.path} ${expected === null ? "was created" : "changed"} while the change was waiting for approval, so nothing was written. Read it again and redo the edit on the current text.`);
+		}
+	}
 }
+
+/** Tools whose approval request carries the note's full text before and after. */
+const CONTENT_TOOLS = new Set(["create_note", "edit_note", "edit_notes", "append_to_note", "replace_section", "replace_note"]);
 
 export const searchNotes: ToolDefinition = {
 	name: "search_notes",
@@ -912,11 +926,22 @@ export const editNotes: ToolDefinition = {
 					summary: `Edit ${path} (${okIdx.length} change${okIdx.length === 1 ? "" : "s"})`,
 				});
 			} catch (err) {
-				report.push(`${path}: ${(err as Error).message}`);
-				report.push("Stopped: the user rejected a change. Do not retry it; ask what they want instead.");
-				break;
+				const message = (err as Error).message;
+				report.push(`${path}: ${message}`);
+				if (/^REJECTED/.test(message)) {
+					report.push("Stopped: the user rejected a change. Do not retry it; ask what they want instead.");
+					break;
+				}
+				if (/^Stopped/.test(message)) break;
+				continue;
 			}
-			await ctx.vault.modify(path, content);
+			try {
+				await ctx.vault.modify(path, content);
+			} catch (err) {
+				// Each note is written whole or not at all; a failed write leaves that note as it was.
+				report.push(`${path}: the write failed (${(err as Error).message}); the note is unchanged.`);
+				continue;
+			}
 			ctx.recordChange?.({ tool: "edit_note", path, before, after: content });
 			applied += okIdx.length;
 			report.push(`${path}: applied edit${okIdx.length === 1 ? "" : "s"} ${okIdx.map((i) => `#${i}`).join(", ")}.`);

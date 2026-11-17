@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Agent, newConversation, type AgentConfig } from "../src/agent";
 import { keywordSearch } from "../src/search";
 import { ALL_TOOLS } from "../src/tools";
-import { RevertError, UndoStack, carryOnto, describeChange, planRevert, reverseOnto } from "../src/undo";
+import { RevertError, UndoStack, carryOnto, describeChange, planRevert, reverseOnto, stillApplied } from "../src/undo";
 import type { ChangeRecord } from "../src/types";
 import { FakeOllama, FakeVault } from "./fakes";
 
@@ -21,6 +21,33 @@ const config: AgentConfig = {
 function change(partial: Partial<ChangeRecord> & Pick<ChangeRecord, "tool" | "path">): ChangeRecord {
 	return { id: 1, before: "", after: "", time: 0, turn: 0, ...partial };
 }
+
+describe("stillApplied", () => {
+	it("returns one run's own records newest first, whatever turn number they or other turns carry", () => {
+		const stack = new UndoStack();
+		// After the history is compacted, successive turns are recorded under the same number.
+		stack.push({ tool: "edit_note", path: "Old.md", before: "1", after: "2", time: 0, turn: 8, chat: "c" });
+		const made = [
+			stack.push({ tool: "edit_note", path: "X.md", before: "1", after: "2", time: 1, turn: 8, chat: "c" }),
+			stack.push({ tool: "edit_note", path: "Y.md", before: "1", after: "2", time: 1, turn: 8, chat: "c" }),
+		];
+		expect(stack.forTurn(8, "c").map((c) => c.path)).toEqual(["Y.md", "X.md", "Old.md"]);
+		expect(stillApplied(made).map((c) => c.path)).toEqual(["Y.md", "X.md"]);
+	});
+
+	it("skips a change undone from its card, and never includes the undo's own record", () => {
+		const stack = new UndoStack();
+		const made = [
+			stack.push({ tool: "edit_note", path: "X.md", before: "1", after: "2", time: 1, turn: 4, chat: "c" }),
+			stack.push({ tool: "edit_note", path: "Y.md", before: "1", after: "2", time: 1, turn: 4, chat: "c" }),
+		];
+		// What undoing X does: mark it undone and record the undo under the same turn and chat.
+		stack.markUndone(made[0].id);
+		stack.push({ tool: "undo", path: "X.md", before: "2", after: "1", time: 2, turn: 4, chat: "c" });
+		expect(stack.forTurn(4, "c").map((c) => c.tool)).toEqual(["undo", "edit_note"]);
+		expect(stillApplied(made).map((c) => c.path)).toEqual(["Y.md"]);
+	});
+});
 
 describe("UndoStack", () => {
 	it("records, lists by turn newest first, and removes", () => {
