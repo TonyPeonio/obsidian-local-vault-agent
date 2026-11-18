@@ -1565,7 +1565,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		// (Below 2,000 notes the files are read as before, frontmatter included, which is what the accuracy benchmark measures.)
 		// The index holds no frontmatter, so above that the properties come from Obsidian's metadata cache (also in memory).
 		const textOf = (n: NoteInfo): string | undefined => {
-			const body = this.index.textFor(n.path, n.mtime);
+			const body = this.index.textFor(n.path, n.mtime, n.size);
 			if (body === undefined) return undefined; // not indexed, or changed since: read the file
 			const head = frontmatterText(this.app.metadataCache.getCache(n.path)?.frontmatter);
 			return head ? `${head}\n${body}` : body;

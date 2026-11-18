@@ -28,6 +28,13 @@ export const EMBED_FORMAT = 2;
 
 export interface StoredFile {
 	mtime: number;
+	/**
+	 * The note's size in bytes as the vault reported it beside `mtime`. A note whose text changed
+	 * while its modification time stayed the same (a sync tool that restores times) is read again
+	 * when its size differs. Absent in an entry saved before this was kept: such a note is compared
+	 * by its time alone until it is next read.
+	 */
+	size?: number;
 	chunks: StoredChunk[];
 	/** `EMBED_FORMAT` the chunks were embedded with; absent means 1. */
 	fmt?: number;
@@ -169,6 +176,8 @@ export interface PassageSearchOptions {
 
 interface MemFile {
 	mtime: number;
+	/** See `StoredFile.size`. */
+	size?: number;
 	chunks: MemChunk[];
 	/** See `StoredFile.rest`. */
 	rest: string;
@@ -330,7 +339,7 @@ export class SemanticIndex {
 			// An older embed format stays searchable as it is, and is chunked again on the next sync. So
 			// is an entry without the words outside its chunks: until that sync has read the note, it is
 			// out of date like any other and `absentWords` reads it (or says nothing).
-			this.files.set(path, { mtime: (f.fmt ?? 1) === EMBED_FORMAT && f.rest !== undefined ? f.mtime : STALE_MTIME, chunks, rest: f.rest ?? "" });
+			this.files.set(path, { mtime: (f.fmt ?? 1) === EMBED_FORMAT && f.rest !== undefined ? f.mtime : STALE_MTIME, ...(typeof f.size === "number" ? { size: f.size } : {}), chunks, rest: f.rest ?? "" });
 			this.totalChunks += chunks.length;
 			this.lexUpdate(path);
 		}
@@ -399,27 +408,41 @@ export class SemanticIndex {
 		return this.opts.isEnabled() && this.files.size > 0;
 	}
 
-	/** The indexed text of a note (its chunks joined), when its index entry is current; for keyword search without a disk read. */
-	textFor(path: string, mtime: number): string | undefined {
+	/** The indexed text of a note (its chunks joined), when its index entry is current; for keyword search without a disk read. `size` is the note's size as the vault lists it now. */
+	textFor(path: string, mtime: number, size?: number): string | undefined {
 		const f = this.files.get(path);
-		if (!f || f.mtime !== mtime || !this.opts.shouldIndex(path)) return undefined;
+		if (!f || !sameVersion(f, mtime, size) || !this.opts.shouldIndex(path)) return undefined;
 		return f.chunks.map((c) => (c.heading ? `${c.heading}\n${c.text}` : c.text)).join("\n");
 	}
 
-	/** Queue every note whose mtime changed or that is missing from the index. */
+	/**
+	 * Queue every note that is missing from the index or whose modification time or size differs
+	 * from what the index read. Both come with the vault's list of notes, so no file is opened. A
+	 * note changed without either moving (same length, time restored) cannot be seen this way; only
+	 * a rebuild reads it again.
+	 */
 	async syncAll(force = false): Promise<void> {
 		if (!this.opts.isEnabled()) return;
 		if (force || this.model !== this.opts.getModel()) this.clear();
 		const live = new Set<string>();
+		let sized = false;
 		for (const note of this.vault.listNotes()) {
 			if (!this.opts.shouldIndex(note.path)) continue;
 			live.add(note.path);
 			const stored = this.files.get(note.path);
-			if (!stored || stored.mtime !== note.mtime) {
+			if (!stored || !sameVersion(stored, note.mtime, note.size)) {
 				this.queue.add(note.path);
 				if (!this.unread.has(note.path)) this.unread.set(note.path, ++this.unreadSeq);
+			} else if (stored.size === undefined) {
+				// An entry saved before sizes were kept, current by its time: it takes the size the vault
+				// reports now, without a read, so a later change that keeps the time is seen.
+				stored.size = note.size;
+				this.dirty = true;
+				this.dirtyShards.add(shardOf(note.path));
+				sized = true;
 			}
 		}
+		if (sized) this.scheduleSave();
 		for (const path of Array.from(this.files.keys())) {
 			if (!live.has(path)) this.remove(path);
 		}
@@ -761,11 +784,16 @@ export class SemanticIndex {
 		const batchSize = this.opts.batchSize ?? 64;
 		// One pass over the vault for modification times, not one per queued note: looking each note
 		// up in the full list made a first index of N notes cost N² (25 minutes of nothing at 50,000).
-		let mtimes: Map<string, number> | null = null;
-		const mtimeOf = (path: string): number | undefined => {
-			if (this.queue.size < 8 && !mtimes) return this.vault.listNotes().find((n) => n.path === path)?.mtime;
-			mtimes ??= new Map(this.vault.listNotes().map((n) => [n.path, n.mtime]));
-			return mtimes.get(path) ?? this.vault.listNotes().find((n) => n.path === path)?.mtime;
+		type Stat = { mtime: number; size: number };
+		const statIn = (path: string): Stat | undefined => {
+			const n = this.vault.listNotes().find((x) => x.path === path);
+			return n && { mtime: n.mtime, size: n.size };
+		};
+		let stats: Map<string, Stat> | null = null;
+		const statOf = (path: string): Stat | undefined => {
+			if (this.queue.size < 8 && !stats) return statIn(path);
+			stats ??= new Map(this.vault.listNotes().map((n) => [n.path, { mtime: n.mtime, size: n.size }]));
+			return stats.get(path) ?? statIn(path);
 		};
 		let lastEmit = 0;
 		try {
@@ -776,7 +804,7 @@ export class SemanticIndex {
 					this.remove(path);
 					continue;
 				}
-				const mtime = mtimeOf(path);
+				const stat = statOf(path);
 				const mark = this.unread.get(path);
 				this.inHand = path;
 				this.inHandGone = false;
@@ -812,7 +840,7 @@ export class SemanticIndex {
 				// was computed belongs to a path that is gone (a rename has queued the new one).
 				if (this.inHandGone) continue;
 				this.inHand = null;
-				this.setFile(path, { mtime: mtime ?? Date.now(), rest: unchunkedText(content), chunks: chunks.map((c, i) => ({ heading: c.heading, crumb: c.crumb, text: c.text, vec: vecs[i] as Float32Array })) });
+				this.setFile(path, { mtime: stat?.mtime ?? Date.now(), ...(stat ? { size: stat.size } : {}), rest: unchunkedText(content), chunks: chunks.map((c, i) => ({ heading: c.heading, crumb: c.crumb, text: c.text, vec: vecs[i] as Float32Array })) });
 				// The index now holds the text that was read, unless the note changed again meanwhile.
 				if (this.unread.get(path) === mark && !this.queue.has(path)) this.unread.delete(path);
 				this.lastError = undefined;
@@ -844,7 +872,7 @@ export class SemanticIndex {
 	}
 
 	private stored(file: MemFile): StoredFile {
-		return { mtime: file.mtime, fmt: EMBED_FORMAT, rest: file.rest, chunks: file.chunks.map((c) => ({ heading: c.heading, ...(c.crumb !== c.heading ? { crumb: c.crumb } : {}), text: c.text, vec: encodeVec(c.vec) })) };
+		return { mtime: file.mtime, ...(file.size !== undefined ? { size: file.size } : {}), fmt: EMBED_FORMAT, rest: file.rest, chunks: file.chunks.map((c) => ({ heading: c.heading, ...(c.crumb !== c.heading ? { crumb: c.crumb } : {}), text: c.text, vec: encodeVec(c.vec) })) };
 	}
 
 	/** Saves what changed. Calls queue up: a second flush starting while one is still writing could have its newer shard overwritten by the first one's older copy. */
@@ -898,6 +926,11 @@ export class SemanticIndex {
 	private emit(): void {
 		this.opts.onStatus?.(this.status());
 	}
+}
+
+/** Whether an index entry was read from the note as the vault lists it now: the same modification time and, when the entry has one, the same size. */
+function sameVersion(entry: { mtime: number; size?: number }, mtime: number, size?: number): boolean {
+	return entry.mtime === mtime && (entry.size === undefined || size === undefined || entry.size === size);
 }
 
 function noteTitle(path: string): string {
