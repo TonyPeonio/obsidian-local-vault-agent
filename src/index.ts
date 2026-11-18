@@ -226,6 +226,14 @@ export class SemanticIndex {
 	/** Whether the index has been compared with the vault (`syncAll`) since it was loaded or switched on: before that, what it lacks is unknown. */
 	private compared = false;
 	private processing = false;
+	/**
+	 * The note the indexing pass is reading or embedding now, and whether it was deleted, renamed or
+	 * moved out of the indexed folders since the pass took it up (`remove` and `rename` say so).
+	 * The pass then throws its result away: written under the old path it would be a note that no
+	 * longer exists, found by every search until the next start.
+	 */
+	private inHand: string | null = null;
+	private inHandGone = false;
 	/** The indexing pass under way, or the last one. */
 	private running: Promise<void> = Promise.resolve();
 	private building = false;
@@ -491,6 +499,7 @@ export class SemanticIndex {
 	}
 
 	remove(path: string): void {
+		if (path === this.inHand) this.inHandGone = true;
 		if (this.files.has(path)) {
 			this.setFile(path, null);
 			this.scheduleSave();
@@ -769,7 +778,17 @@ export class SemanticIndex {
 				}
 				const mtime = mtimeOf(path);
 				const mark = this.unread.get(path);
-				const content = await this.vault.read(path);
+				this.inHand = path;
+				this.inHandGone = false;
+				let content: string;
+				try {
+					content = await this.vault.read(path);
+				} catch (err) {
+					// Deleted between the look and the read: one note less, not an error that ends the pass.
+					if (this.vault.exists(path)) throw err;
+					this.remove(path);
+					continue;
+				}
 				const model = this.opts.getModel();
 				const chunks = chunkMarkdown(content);
 				// A chunk whose heading and text are unchanged keeps its vector; only new or edited
@@ -789,6 +808,10 @@ export class SemanticIndex {
 					if (vectors.length && this.dims === 0) this.dims = vectors[0].length;
 					vectors.forEach((v, k) => (vecs[missing[i + k]] = normalize(new Float32Array(v))));
 				}
+				// Deleted, renamed or moved to an excluded folder while it was being read or embedded: what
+				// was computed belongs to a path that is gone (a rename has queued the new one).
+				if (this.inHandGone) continue;
+				this.inHand = null;
 				this.setFile(path, { mtime: mtime ?? Date.now(), rest: unchunkedText(content), chunks: chunks.map((c, i) => ({ heading: c.heading, crumb: c.crumb, text: c.text, vec: vecs[i] as Float32Array })) });
 				// The index now holds the text that was read, unless the note changed again meanwhile.
 				if (this.unread.get(path) === mark && !this.queue.has(path)) this.unread.delete(path);
@@ -806,6 +829,7 @@ export class SemanticIndex {
 		} catch (err) {
 			if (!signal.aborted) this.lastError = (err as Error).message;
 		} finally {
+			this.inHand = null;
 			this.processing = false;
 			this.building = false;
 			this.abort = null;
