@@ -4,6 +4,7 @@ import { answerLanguageLine } from "./i18n";
 import { blockIdEdits, linkedTargets, planCitations, plainText, quotable, withPassages, type CitationMode } from "./citations";
 import { buildOutline, outlineBudget } from "./outline";
 import { ToolError, toOllamaTools } from "./tools";
+import { INVALID_ARGUMENTS } from "./types";
 import type { UndoStack } from "./undo";
 import type {
 	AgentCallbacks,
@@ -89,6 +90,16 @@ export function repeatedCallNotice(name: string, priorResult: string, repeat: nu
 
 export const REPEATED_CALLS_WRAP_UP =
 	"You repeated the same tool call with the same arguments several times, so the turn has been stopped. Answer now with what you have found so far, say what is still missing, and if you were searching for something, say which searches found nothing.";
+
+/** Appended to a reply the model did not finish. */
+export const CUT_OFF_NOTE = "*(This reply was cut off at the model's length limit. Ask me to continue.)*";
+
+/** A failure worth one more try: the server answered 5xx, or the connection dropped before any text came. */
+function isTransient(err: unknown): boolean {
+	if (!(err instanceof OllamaError)) return false;
+	if (err.status !== undefined) return err.status >= 500;
+	return /cannot reach|empty response body|terminated|network|socket|econnreset|fetch failed/i.test(err.message);
+}
 
 export const AUTO_CONTINUE_TEXT =
 	"Yes. Continue without asking again: carry out everything you proposed, for every note involved, in this turn. Reading needs no permission and each change goes through the approval dialog. Report when you are done.";
@@ -374,6 +385,9 @@ export function buildSystemPrompt(
 export class Agent {
 	constructor(private deps: AgentDeps) {}
 
+	/** Characters per token of what was last sent, from the model's own token count; the conversation budget follows it. */
+	private charsPerToken = DEFAULT_CHARS_PER_TOKEN;
+
 	async run(
 		conversation: Conversation,
 		userText: string,
@@ -465,28 +479,39 @@ export class Agent {
 
 ${LECTURE_TOOLS_HINT}`;
 		const options = { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}) };
+		const wireTools = toOllamaTools(tools);
+		/** What every request of this turn carries whatever the conversation holds. */
+		const fixedChars = system.content.length + JSON.stringify(wireTools).length;
+		let transientRetries = 0;
 		iterations: for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
-			const history = trimHistory(conversation.messages, cfg.numCtx, (m) => {
+			// Over budget, the conversation is cut in place and well below the limit, so the steps that
+			// follow only append and Ollama reads just what is new. Cutting "just enough" on every
+			// step changed an early message each time, and the whole turn was read again each step.
+			fitHistory(conversation.messages, turnBudget(cfg.numCtx, fixedChars, this.charsPerToken), (m) => {
 				// A shortened result is no longer "already above"; let the model call for it again.
 				const header = /^# (.+)$/m.exec(m.content);
 				if (m.tool_name === "read_note" && header) ctx.readLog?.delete(header[1].trim());
 				if (m.cacheKey) callCache.delete(m.cacheKey);
 			});
+			const history = conversation.messages;
+			const sentChars = fixedChars + history.reduce((n, m) => n + messageSize(m), 0);
 			callbacks.onStatus?.(iteration === 0 ? "Thinking…" : "Working…");
 			callbacks.onAssistantStart?.();
 
 			let response;
+			let streamed = false;
 			try {
 				response = await client.chat({
 					model: cfg.model,
 					messages: [system, ...history.map(withTurnContext)],
-					tools: toOllamaTools(tools),
+					tools: wireTools,
 					think,
 					options,
 					keep_alive: cfg.keepAlive,
 					signal,
 					onDelta: (d) => {
+						streamed = true;
 						if (d.content) callbacks.onAssistantDelta?.(d.content);
 						if (d.thinking) callbacks.onThinkingDelta?.(d.thinking);
 					},
@@ -505,10 +530,26 @@ ${LECTURE_TOOLS_HINT}`;
 						`The model "${cfg.model}" does not support tool calling, which this plugin needs. Pick a model with the "tools" capability (for example qwen3.5, qwen3, llama3.1 or mistral) in settings.`,
 					);
 				}
+				// A server hiccup before anything was written (a 5xx, a dropped connection, a model
+				// still loading): try once more rather than fail a turn that may already have made changes.
+				if (!streamed && transientRetries < 1 && isTransient(err)) {
+					transientRetries++;
+					await new Promise<void>((resolve) => window.setTimeout(resolve, 1200));
+					if (signal?.aborted) return;
+					iteration--;
+					continue;
+				}
 				throw err;
 			}
 
 			const assistant = response.message;
+			// What was sent, against the model's own count of it: the next budget is in real tokens.
+			if (response.promptTokens !== undefined && response.promptTokens > 2000) {
+				const observed = sentChars / response.promptTokens;
+				if (observed > 2 && observed < 5) this.charsPerToken = observed;
+			}
+			// Stopped at the length limit, not at its own end: say so, so half an answer is not taken for all of it.
+			if (response.doneReason === "length" && !assistant.tool_calls?.length && assistant.content.trim()) assistant.content = `${assistant.content.trimEnd()}\n\n${CUT_OFF_NOTE}`;
 			if (assistant.content) assistant.content = linkifyNotePaths(assistant.content, vault);
 			// An answer built from notes it read but citing none of them gets a sources footer.
 			// A grep or passage search that hit a few notes counts too: models answer "it was on
@@ -543,7 +584,7 @@ ${LECTURE_TOOLS_HINT}`;
 				// A blank reply (usually after a huge tool batch) is never what the user wants.
 				emptyNudges++;
 				const nudge = "Your reply was empty. Answer now with what you have found so far; if a step is still missing, do it.";
-				conversation.messages.push({ role: "user", content: nudge });
+				conversation.messages.push({ role: "user", content: nudge, nudge: true });
 				callbacks.onAutoContinue?.(nudge);
 				continue;
 			}
@@ -554,7 +595,7 @@ ${LECTURE_TOOLS_HINT}`;
 					if (bad.length > 0) {
 						groundingNudges++;
 						const nudge = groundingNudge(bad, toolsUsed > 0);
-						conversation.messages.push({ role: "user", content: nudge });
+						conversation.messages.push({ role: "user", content: nudge, nudge: true });
 						callbacks.onAutoContinue?.(nudge);
 						continue;
 					}
@@ -563,7 +604,7 @@ ${LECTURE_TOOLS_HINT}`;
 				// instead of taking it (common with thinking off). Send it back once.
 				if (cfg.autoContinue && !rejected && followThroughNudges < FOLLOW_THROUGH_TEXTS.length && announcesNextStep(assistant.content)) {
 					const nudge = FOLLOW_THROUGH_TEXTS[followThroughNudges++];
-					conversation.messages.push({ role: "user", content: nudge });
+					conversation.messages.push({ role: "user", content: nudge, nudge: true });
 					callbacks.onAutoContinue?.(nudge);
 					continue;
 				}
@@ -577,7 +618,7 @@ ${LECTURE_TOOLS_HINT}`;
 					!looksLikeChoiceQuestion(assistant.content)
 				) {
 					autoContinues++;
-					conversation.messages.push({ role: "user", content: AUTO_CONTINUE_TEXT });
+					conversation.messages.push({ role: "user", content: AUTO_CONTINUE_TEXT, nudge: true });
 					callbacks.onAutoContinue?.(AUTO_CONTINUE_TEXT);
 					continue;
 				}
@@ -662,32 +703,48 @@ ${LECTURE_TOOLS_HINT}`;
 			}
 		}
 
-		// Ran out of iterations (or was stopped for repeating itself): ask the model to wrap up without tools.
+		// Ran out of iterations (or was stopped for repeating itself): ask the model to wrap up.
 		if (signal?.aborted) return;
 		callbacks.onAssistantStart?.();
-		const response = await this.deps.client.chat({
-			model: cfg.model,
-			messages: [
-				system,
-				...trimHistory(conversation.messages, cfg.numCtx).map(withTurnContext),
-				{
-					role: "user",
-					content:
-						wrapUpText ??
-						"You have used the maximum number of tool calls for this turn. Answer now with what you have found so far, and say what is still missing.",
+		fitHistory(conversation.messages, turnBudget(cfg.numCtx, fixedChars, this.charsPerToken));
+		const wrapUp: ChatMessage = {
+			role: "user",
+			content: wrapUpText ?? "You have used the maximum number of tool calls for this turn. Answer now with what you have found so far, and say what is still missing.",
+		};
+		const ask = (withTools: boolean) =>
+			client.chat({
+				model: cfg.model,
+				messages: [system, ...conversation.messages.map(withTurnContext), wrapUp],
+				...(withTools ? { tools: wireTools } : {}),
+				think,
+				options,
+				keep_alive: cfg.keepAlive,
+				signal,
+				onDelta: (d) => {
+					if (d.content) callbacks.onAssistantDelta?.(d.content);
+					if (d.thinking) callbacks.onThinkingDelta?.(d.thinking);
 				},
-			],
-			think,
-			options,
-			keep_alive: cfg.keepAlive,
-			signal,
-			onDelta: (d) => {
-				if (d.content) callbacks.onAssistantDelta?.(d.content);
-				if (d.thinking) callbacks.onThinkingDelta?.(d.thinking);
-			},
-		});
-		conversation.messages.push(response.message);
-		callbacks.onAssistantDone?.(response.message);
+			});
+		let message: ChatMessage = { role: "assistant", content: "" };
+		let failure = "";
+		try {
+			// With the tool list first: the request then begins with exactly what Ollama has already
+			// read, and only the wrap-up line is new. Without the list the prompt differs from the
+			// start, and the whole conversation was read again at the moment the window is fullest.
+			// A model that answers with another tool call is asked once more with no tools on offer.
+			let response = await ask(true);
+			if (response.message.tool_calls?.length || !response.message.content.trim()) response = await ask(false);
+			message = response.message;
+		} catch (err) {
+			if (signal?.aborted) return;
+			failure = ` (${(err as Error).message})`;
+		}
+		delete message.tool_calls;
+		// Never end a turn on nothing: say where things stand.
+		if (!message.content.trim()) message.content = `I stopped before finishing${failure}${writes ? `; ${writes} change${writes === 1 ? " was" : "s were"} made this turn` : ""}. Ask me to continue and I will pick up from here.`;
+		else message.content = linkifyNotePaths(message.content, vault);
+		conversation.messages.push(message);
+		callbacks.onAssistantDone?.(message);
 	}
 
 	/**
@@ -754,6 +811,13 @@ ${LECTURE_TOOLS_HINT}`;
 				result: `Error: unknown tool "${call.function.name}". Available tools: ${Array.from(toolByName.keys()).join(", ")}.`,
 			};
 		}
+		const invalid = call.function.arguments?.[INVALID_ARGUMENTS];
+		if (typeof invalid === "string") {
+			return {
+				ok: false,
+				result: `Error: the arguments of this ${call.function.name} call were not valid JSON (cut off or malformed), so nothing was done. They began: ${invalid.slice(0, 160)}\nSend the call again with complete, valid JSON. If it was a long text, make the change in smaller pieces.`,
+			};
+		}
 		try {
 			const raw = await tool.execute(call.function.arguments ?? {}, ctx);
 			const result =
@@ -793,72 +857,110 @@ function messageSize(m: ChatMessage): number {
 	return m.content.length + (m.context?.length ?? 0) + (m.thinking?.length ?? 0) + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0);
 }
 
+/** A message that starts a turn: the user's own, not one the agent sent itself to keep the model going. */
+function startsTurn(m: ChatMessage): boolean {
+	return m.role === "user" && !m.nudge;
+}
+
+function lastTurnStart(messages: ChatMessage[]): number {
+	for (let i = messages.length - 1; i >= 0; i--) if (startsTurn(messages[i])) return i;
+	return -1;
+}
+
+/** Characters per token assumed until the model has reported a real count (mixed markdown and JSON). */
+export const DEFAULT_CHARS_PER_TOKEN = 3.2;
+/** Tokens of the window kept free for the reply. */
+const REPLY_RESERVE_TOKENS = 2048;
+
 /**
- * Compacts finished turns in place before a new one starts: reasoning is dropped, tool results are
- * cut to 400 characters, and the oldest turns go when the rest is still over budget. Doing this once
- * per turn, rather than on every step, keeps the messages sent to Ollama append-only within a turn,
- * so its prefix cache stays valid and each step prefills only what is new.
+ * Characters of conversation that fit in one request: the window (capped as for `historyBudget`)
+ * less room for the reply, at the measured characters per token, less what every request carries
+ * whatever the conversation holds (`fixedChars`: the system prompt and the tool list).
+ *
+ * `historyBudget` took 60% of the window at a fixed 3.2 characters per token and trusted the rest
+ * to fit. It did not: the benchmark's long scenarios sent 32,011 to 32,757 tokens into a 32,768
+ * window, and at 16k the fixed part alone is over half the window, so Ollama silently dropped the
+ * start of the prompt in exactly the jobs that fail most.
+ */
+export function turnBudget(numCtx: number, fixedChars: number, charsPerToken = DEFAULT_CHARS_PER_TOKEN): number {
+	const window = Math.min(numCtx, HISTORY_CTX_CAP);
+	const reserve = Math.min(REPLY_RESERVE_TOKENS, Math.floor(window / 6));
+	return Math.max(6000, Math.floor((window - reserve) * charsPerToken * 0.97) - fixedChars);
+}
+
+/**
+ * Tidies finished turns in place before a new one starts: their reasoning is dropped (it is never
+ * useful again), and the oldest turns go when the conversation is over budget. Tool results of
+ * earlier turns are kept as they are while there is room, so a follow-up question can be answered
+ * from what is already in the conversation and the next request starts with what Ollama has
+ * already read; `fitHistory` shortens them when the window fills.
  */
 export function compactHistory(messages: ChatMessage[], numCtx: number): void {
 	const budget = historyBudget(numCtx);
-	for (const m of messages) {
-		if (m.role === "assistant" && m.thinking) delete m.thinking;
-		if (m.role === "tool" && m.content.length > 400) m.content = m.content.slice(0, 400) + "\n[earlier tool result shortened]";
-	}
-	let total = messages.reduce((n, m) => n + messageSize(m), 0);
-	while (total > budget) {
-		const firstUser = messages.findIndex((m) => m.role === "user");
-		const nextUser = messages.findIndex((m, i) => i > firstUser && m.role === "user");
-		if (nextUser < 0) break;
-		total -= messages.splice(0, nextUser).reduce((n, m) => n + messageSize(m), 0);
-	}
+	for (const m of messages) if (m.role === "assistant" && m.thinking) delete m.thinking;
+	fitHistory(messages, budget);
 	while (messages.length && messages[0].role !== "user") messages.shift();
 }
 
-export function trimHistory(messages: ChatMessage[], numCtx: number, onShortened?: (m: ChatMessage) => void): ChatMessage[] {
-	const budget = historyBudget(numCtx);
-	const size = messageSize;
+/** Over budget, the conversation is cut to this share of the budget, not to just under it. */
+const LOW_WATER = 0.75;
 
-	let out = messages.map((m) => ({ ...m }));
-	// Reasoning from earlier turns is never useful to the model again; drop it unconditionally.
-	const lastUser = out.map((m) => m.role).lastIndexOf("user");
-	for (let i = 0; i < lastUser; i++) {
-		if (out[i].role === "assistant" && out[i].thinking) delete out[i].thinking;
-	}
-	let total = out.reduce((n, m) => n + size(m), 0);
-	if (total <= budget) return out;
-
+/**
+ * Brings the conversation under `budget` characters, in place; returns whether it changed anything.
+ * Tool results of earlier turns are shortened first, then whole early turns are dropped, then the
+ * current turn's own results are shortened oldest first (the two most recent stay whole). Each
+ * time it has to act it cuts down to `LOW_WATER` of the budget: the requests that follow then only
+ * append to what Ollama has cached, until the budget is reached again.
+ */
+export function fitHistory(messages: ChatMessage[], budget: number, onShortened?: (m: ChatMessage) => void): boolean {
+	let total = messages.reduce((n, m) => n + messageSize(m), 0);
+	if (total <= budget) return false;
+	const target = budget * LOW_WATER;
 	// Pass 1: shorten tool results that are not part of the most recent turn.
-	for (let i = 0; i < lastUser && total > budget; i++) {
-		const m = out[i];
-		if (m.role === "tool" && m.content.length > 400) {
-			total -= m.content.length - 400;
+	const last = lastTurnStart(messages);
+	for (let i = 0; i < last && total > target; i++) {
+		const m = messages[i];
+		if (m.role === "tool" && m.content.length > 500) {
+			const before = m.content.length;
 			m.content = m.content.slice(0, 400) + "\n[earlier tool result shortened]";
+			total -= before - m.content.length;
 		}
 	}
 	// Pass 2: drop oldest turns, always keeping the latest user message onward.
-	while (total > budget && out.length > 1) {
-		const firstUser = out.findIndex((m) => m.role === "user");
-		const nextUser = out.findIndex((m, i) => i > firstUser && m.role === "user");
-		if (nextUser < 0) break;
-		const dropped = out.splice(0, nextUser);
-		total -= dropped.reduce((n, m) => n + size(m), 0);
+	while (total > target && messages.length > 1) {
+		const first = messages.findIndex(startsTurn);
+		const next = messages.findIndex((m, i) => i > first && startsTurn(m));
+		if (next < 0) break;
+		total -= messages.splice(0, next).reduce((n, m) => n + messageSize(m), 0);
 	}
-	// Pass 3: still over budget inside the current turn (a long multi-note task). Shorten this
-	// turn's tool results oldest first, keeping the two most recent intact, so the system prompt
-	// and the user's request are never pushed out of the window by Ollama's own truncation.
-	const lastUserNow = out.map((m) => m.role).lastIndexOf("user");
-	const current = out.map((m, i) => (i > lastUserNow && m.role === "tool" ? i : -1)).filter((i) => i >= 0);
-	for (let k = 0; k < current.length - 2 && total > budget; k++) {
-		const m = out[current[k]];
-		if (m.content.length > 600) {
-			total -= m.content.length - 600;
+	// Pass 3: still over inside the current turn (a long multi-note task). Shorten this turn's
+	// tool results oldest first, keeping the two most recent whole, so the system prompt and the
+	// user's request are never pushed out of the window by Ollama's own truncation.
+	const start = lastTurnStart(messages);
+	const current = messages.map((m, i) => (i > start && m.role === "tool" ? i : -1)).filter((i) => i >= 0);
+	for (let k = 0; k < current.length - 2 && total > target; k++) {
+		const m = messages[current[k]];
+		if (m.content.length > 750) {
+			const before = m.content.length;
 			m.content = m.content.slice(0, 600) + "\n[earlier result in this turn shortened to save context; call the tool again if you still need it]";
+			total -= before - m.content.length;
 			onShortened?.(m);
 		}
 	}
 	// Never start with a tool message; the model has no call to attach it to.
-	while (out.length && out[0].role !== "user") out.shift();
+	while (messages.length && messages[0].role !== "user") messages.shift();
+	return true;
+}
+
+/** A trimmed copy of the conversation (the input is left as it is); see `fitHistory`. */
+export function trimHistory(messages: ChatMessage[], numCtx: number, onShortened?: (m: ChatMessage) => void, budget = historyBudget(numCtx)): ChatMessage[] {
+	const out = messages.map((m) => ({ ...m }));
+	// Reasoning from earlier turns is never useful to the model again; drop it unconditionally.
+	const last = lastTurnStart(out);
+	for (let i = 0; i < last; i++) {
+		if (out[i].role === "assistant" && out[i].thinking) delete out[i].thinking;
+	}
+	fitHistory(out, budget, onShortened);
 	return out;
 }
 

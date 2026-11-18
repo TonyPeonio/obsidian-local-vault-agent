@@ -147,5 +147,6 @@ function largest(max: number, ok: (n: number) => boolean): number {
  * a long task's tool results).
  */
 export function outlineBudget(numCtx: number, withGists = false): number {
-	return Math.floor(numCtx * 3.2 * (withGists ? 0.18 : 0.12));
+	// Capped like the history: above 32k a larger window bought a longer outline to read on every cold start and nothing measurable else.
+	return Math.floor(Math.min(numCtx, 32768) * 3.2 * (withGists ? 0.18 : 0.12));
 }

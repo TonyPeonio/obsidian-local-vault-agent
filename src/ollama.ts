@@ -1,5 +1,5 @@
 import { ToolCallAccumulator, embeddingVectors, fromOpenAIChoice, modelIds, openAIOptions, sse, toOpenAIMessages, type Provider } from "./openai";
-import type { ChatMessage, OllamaToolSpec, ToolCall } from "./types";
+import { INVALID_ARGUMENTS, type ChatMessage, type OllamaToolSpec, type ToolCall } from "./types";
 
 export interface ModelInfo {
 	name: string;
@@ -545,10 +545,11 @@ export function normalizeToolCall(raw: Record<string, unknown>): ToolCall | null
 	if (typeof name !== "string" || !name) return null;
 	let args = fn.arguments;
 	if (typeof args === "string") {
+		const text = args;
 		try {
-			args = JSON.parse(args);
+			args = text.trim() ? JSON.parse(text) : {};
 		} catch {
-			args = {};
+			args = { [INVALID_ARGUMENTS]: text.slice(0, 300) };
 		}
 	}
 	if (!args || typeof args !== "object" || Array.isArray(args)) args = {};

@@ -25,11 +25,20 @@ export interface ChatMessage {
 	tool_call_id?: string;
 	/** For role === "user": the date, open note and daily note when the message was sent; appended to the content for the model, not shown in the chat. */
 	context?: string;
+	/** For role === "user": a message the agent sent itself to keep the model going ("Yes, continue"); it does not start a new turn. */
+	nudge?: boolean;
 	/** For role === "tool": the agent's repeated-call cache key for this result (not sent to the model). */
 	cacheKey?: string;
 	/** Base64 images sent with the message (vision models only; never saved with the chat). */
 	images?: string[];
 }
+
+/**
+ * The one argument of a tool call whose arguments were not valid JSON (cut off at the length
+ * limit, or malformed): the start of what the model sent. The agent answers such a call with
+ * "your JSON was invalid", where an empty object made every tool say "missing required argument".
+ */
+export const INVALID_ARGUMENTS = "__invalid_json";
 
 /** JSON-schema subset that Ollama accepts for tool parameters. */
 export interface JsonSchema {

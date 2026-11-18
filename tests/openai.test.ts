@@ -47,7 +47,8 @@ describe("OpenAI wire format", () => {
 		acc.add([{ index: 0, function: { name: "note", arguments: 'th":"A"}' } }, { index: 1, function: { name: "grep_vault", arguments: "not json" } }]);
 		expect(acc.calls()).toEqual([
 			{ id: "c1", function: { name: "read_note", arguments: { path: "A" } } },
-			{ id: "call_1", function: { name: "grep_vault", arguments: {} } },
+			// Arguments that are not JSON are kept as a marker, so the agent can say "invalid JSON" and not "missing argument".
+			{ id: "call_1", function: { name: "grep_vault", arguments: { __invalid_json: "not json" } } },
 		]);
 	});
 

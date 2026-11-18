@@ -1,4 +1,4 @@
-import type { ChatMessage, ToolCall } from "./types";
+import { INVALID_ARGUMENTS, type ChatMessage, type ToolCall } from "./types";
 
 /**
  * The OpenAI-compatible wire format (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) that
@@ -90,7 +90,7 @@ export class ToolCallAccumulator {
 				try {
 					args = p.args.trim() ? JSON.parse(p.args) : {};
 				} catch {
-					args = {};
+					args = { [INVALID_ARGUMENTS]: p.args.slice(0, 300) };
 				}
 				if (!args || typeof args !== "object" || Array.isArray(args)) args = {};
 				return { id: p.id ?? `call_${i}`, function: { name: p.name, arguments: args as Record<string, unknown> } };

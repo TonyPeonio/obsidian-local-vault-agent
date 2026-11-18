@@ -181,7 +181,7 @@ export class FakeVault implements VaultAccess {
 }
 
 export type Scripted =
-	| { content: string; thinking?: string }
+	| { content: string; thinking?: string; doneReason?: string; promptTokens?: number }
 	| { tool: string; args: Record<string, unknown>; content?: string }
 	| { tools: { tool: string; args: Record<string, unknown> }[] }
 	| { error: Error };
@@ -219,7 +219,8 @@ export class FakeOllama {
 			}
 			for (const piece of turn.content.match(/.{1,5}/gs) ?? []) req.onDelta?.({ content: piece });
 		}
-		return { message, doneReason: "stop" };
+		const scripted = "content" in turn && !("tool" in turn) ? turn : undefined;
+		return { message, doneReason: scripted?.doneReason ?? "stop", promptTokens: scripted?.promptTokens };
 	}
 
 	/** Deterministic pseudo-embeddings: bag-of-characters hashed into `dims` buckets. */

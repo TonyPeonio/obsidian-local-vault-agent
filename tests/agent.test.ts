@@ -19,6 +19,9 @@ import {
 	newConversation,
 	pickSources,
 	trimHistory,
+	fitHistory,
+	turnBudget,
+	CUT_OFF_NOTE,
 	compactHistory,
 	historyBudget,
 	HISTORY_CTX_CAP,
@@ -174,9 +177,69 @@ describe("Agent.run", () => {
 		await agent.run(conv, "x", {});
 		expect(ollama.requests).toHaveLength(5);
 		const last = ollama.requests[4];
-		expect(last.tools).toBeUndefined();
+		// The wrap-up request starts with what the model has already read: same system prompt, same tool list.
+		expect(last.tools).toEqual(ollama.requests[3].tools);
+		expect(last.messages[0]).toEqual(ollama.requests[3].messages[0]);
 		expect(last.messages.at(-1)?.content).toMatch(/maximum number of tool calls/);
 		expect(conv.messages.at(-1)?.content).toBe("partial answer");
+	});
+
+	it("asks for the wrap-up again without tools when the model answers it with another tool call", async () => {
+		const loop: Scripted[] = Array.from({ length: 2 }, (_, i) => ({ tool: "list_notes", args: { limit: i + 1 } }));
+		const { agent, ollama } = setup([...loop, { tool: "list_notes", args: { limit: 9 } }, { content: "what I found" }], { cfg: { maxIterations: 2 } });
+		const conv = newConversation();
+		await agent.run(conv, "x", {});
+		expect(ollama.requests).toHaveLength(4);
+		expect(ollama.requests[2].tools).toBeDefined();
+		expect(ollama.requests[3].tools).toBeUndefined();
+		expect(conv.messages.at(-1)).toMatchObject({ role: "assistant", content: "what I found" });
+		expect(conv.messages.at(-1)?.tool_calls).toBeUndefined();
+	});
+
+	it("never ends a turn on nothing: an empty or failed wrap-up says where things stand", async () => {
+		const loop: Scripted[] = [
+			{ tool: "append_to_note", args: { path: "Ideas/Sensors.md", content: "more" } },
+			{ tool: "list_notes", args: { limit: 2 } },
+		];
+		const empty = setup([...loop, { content: "" }, { content: "  " }], { cfg: { maxIterations: 2, autoApprove: true } });
+		const conv = newConversation();
+		await empty.agent.run(conv, "x", {});
+		expect(conv.messages.at(-1)?.content).toBe("I stopped before finishing; 1 change was made this turn. Ask me to continue and I will pick up from here.");
+		const failed = setup([...loop, { error: new OllamaError("model runner has unexpectedly stopped", 500) }], { cfg: { maxIterations: 2, autoApprove: true } });
+		const conv2 = newConversation();
+		await failed.agent.run(conv2, "x", {});
+		expect(conv2.messages.at(-1)?.content).toMatch(/^I stopped before finishing \(model runner has unexpectedly stopped\); 1 change was made this turn\./);
+	});
+
+	it("tries once more after a server error that came before any text, and only once", async () => {
+		const ok = setup([{ error: new OllamaError("llama runner process no longer running", 500) }, { content: "fine" }]);
+		const conv = newConversation();
+		await ok.agent.run(conv, "x", {});
+		expect(ok.ollama.requests).toHaveLength(2);
+		expect(conv.messages.at(-1)?.content).toBe("fine");
+		const twice = setup([{ error: new OllamaError("boom", 503) }, { error: new OllamaError("boom", 503) }, { content: "never" }]);
+		await expect(twice.agent.run(newConversation(), "x", {})).rejects.toThrow("boom");
+		expect(twice.ollama.requests).toHaveLength(2);
+		// A request the server refused as wrong (4xx) is not sent again.
+		const refused = setup([{ error: new OllamaError("bad request", 400) }, { content: "never" }]);
+		await expect(refused.agent.run(newConversation(), "x", {})).rejects.toThrow("bad request");
+		expect(refused.ollama.requests).toHaveLength(1);
+	});
+
+	it("tells the model its tool arguments were not valid JSON instead of running the tool with none", async () => {
+		const { agent, ollama } = setup([{ tool: "edit_note", args: { __invalid_json: '{"path": "Ideas/Sensors.md", "old_text": "Hall sens' } }, { content: "ok" }]);
+		const done: { result: string; ok: boolean }[] = [];
+		await agent.run(newConversation(), "x", { onToolDone: (_c, result, ok) => done.push({ result, ok }) });
+		expect(done[0].ok).toBe(false);
+		expect(done[0].result).toMatch(/^Error: the arguments of this edit_note call were not valid JSON \(cut off or malformed\), so nothing was done\. They began: \{"path": "Ideas\/Sensors\.md"/);
+		expect(ollama.requests[1].messages.at(-1)?.content).toContain("Send the call again with complete, valid JSON");
+	});
+
+	it("marks a reply that stopped at the length limit", async () => {
+		const { agent } = setup([{ content: "The answer is long and", doneReason: "length" }]);
+		const conv = newConversation();
+		await agent.run(conv, "x", {});
+		expect(conv.messages.at(-1)?.content).toBe(`The answer is long and\n\n${CUT_OFF_NOTE}`);
 	});
 
 	it("retries without `think` when the model rejects it", async () => {
@@ -537,10 +600,82 @@ describe("trimHistory", () => {
 	});
 });
 
+describe("turnBudget", () => {
+	it("is the window less the reply, less what every request carries, at the measured characters per token", () => {
+		expect(turnBudget(32768, 31000)).toBe(Math.floor((32768 - 2048) * 3.2 * 0.97) - 31000);
+		// Denser text than assumed (paths, JSON): fewer characters fit.
+		expect(turnBudget(32768, 31000, 2.8)).toBeLessThan(turnBudget(32768, 31000, 3.2));
+		// A larger window buys nothing beyond the 32k cap.
+		expect(turnBudget(98304, 31000)).toBe(turnBudget(32768, 31000));
+		// At 16k the fixed part takes most of the window; the old 60% rule promised 31,457 characters that could not fit.
+		expect(turnBudget(16384, 25000)).toBeLessThan(historyBudget(16384) * 0.65);
+		// Never less than a floor, so a turn can still hold a result or two.
+		expect(turnBudget(4096, 31000)).toBe(6000);
+	});
+});
+
+describe("fitHistory", () => {
+	const msg = (role: ChatMessage["role"], content: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({ role, content, ...extra });
+	const size = (ms: ChatMessage[]) => ms.reduce((n, m) => n + m.content.length, 0);
+
+	it("leaves a conversation under budget exactly as it is", () => {
+		const m = [msg("user", "q"), msg("tool", "x".repeat(3000), { tool_name: "t" })];
+		const before = JSON.stringify(m);
+		expect(fitHistory(m, 10000)).toBe(false);
+		expect(JSON.stringify(m)).toBe(before);
+	});
+
+	it("cuts well below the budget when it has to cut, so the next steps only append", () => {
+		const m: ChatMessage[] = [msg("user", "do a long job")];
+		for (let i = 0; i < 12; i++) m.push(msg("tool", `r${i} ` + "x".repeat(1500), { tool_name: "t" }));
+		const shortened: ChatMessage[] = [];
+		expect(fitHistory(m, 16000, (x) => shortened.push(x))).toBe(true);
+		expect(size(m)).toBeLessThanOrEqual(16000 * 0.75 + 700);
+		// Oldest first, and the two most recent results are whole.
+		expect(m[1].content).toContain("shortened to save context");
+		expect(m.at(-1)?.content.length).toBeGreaterThan(1500);
+		expect(m.at(-2)?.content.length).toBeGreaterThan(1500);
+		expect(shortened.length).toBeGreaterThan(0);
+		// Two more results fit without another cut: the earlier messages are byte-for-byte what was sent before.
+		const sent = JSON.stringify(m);
+		m.push(msg("tool", "y".repeat(1200), { tool_name: "t" }));
+		expect(fitHistory(m, 16000)).toBe(false);
+		m.push(msg("tool", "z".repeat(1200), { tool_name: "t" }));
+		expect(fitHistory(m, 16000)).toBe(false);
+		expect(JSON.stringify(m.slice(0, -2))).toBe(sent);
+	});
+
+	it("does not take a message the agent sent itself for the start of a turn", () => {
+		const m = [
+			msg("user", "the real request: clean up every lecture note"),
+			msg("tool", "a".repeat(3000), { tool_name: "t" }),
+			msg("assistant", "Shall I continue?"),
+			msg("user", "Yes. Continue without asking again.", { nudge: true }),
+			msg("tool", "b".repeat(3000), { tool_name: "t" }),
+			msg("tool", "c".repeat(3000), { tool_name: "t" }),
+			msg("tool", "d".repeat(3000), { tool_name: "t" }),
+		];
+		expect(fitHistory(m, 9000)).toBe(true);
+		// The request is still first: the turn was not "dropped" at the nudge.
+		expect(m[0].content).toMatch(/^the real request/);
+		expect(m.map((x) => x.role)).toEqual(["user", "tool", "assistant", "user", "tool", "tool", "tool"]);
+		// The results before the nudge belong to the same turn: shortened with the in-turn marker, oldest first.
+		expect(m[1].content).toContain("shortened to save context");
+		expect(m.at(-1)?.content).toBe("d".repeat(3000));
+	});
+
+	it("drops whole earlier turns before touching the current one", () => {
+		const m = [msg("user", "q1"), msg("assistant", "a".repeat(5000)), msg("user", "q2"), msg("tool", "t".repeat(2000), { tool_name: "t" })];
+		expect(fitHistory(m, 4000)).toBe(true);
+		expect(m.map((x) => x.content.slice(0, 2))).toEqual(["q2", "tt"]);
+		expect(m[1].content).toBe("t".repeat(2000));
+	});
+});
+
 describe("compactHistory", () => {
 	const msg = (role: ChatMessage["role"], content: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({ role, content, ...extra });
 
-	it("permanently drops reasoning and shortens tool results of finished turns", () => {
+	it("drops the reasoning of finished turns and keeps their tool results while there is room", () => {
 		const m = [
 			msg("user", "q1"),
 			msg("assistant", "", { tool_calls: [{ function: { name: "t", arguments: {} } }], thinking: "hmm" }),
@@ -550,12 +685,25 @@ describe("compactHistory", () => {
 		compactHistory(m, 32768);
 		expect(m).toHaveLength(4);
 		expect(m[1].thinking).toBeUndefined();
-		expect(m[2].content.length).toBeLessThan(500);
-		expect(m[2].content).toContain("[earlier tool result shortened]");
-		// Already compact: a second pass changes nothing, so the prefix stays stable.
+		// A follow-up can be answered from this, and the next request begins with what was already read.
+		expect(m[2].content).toBe("x".repeat(5000));
 		const snapshot = JSON.stringify(m);
 		compactHistory(m, 32768);
 		expect(JSON.stringify(m)).toBe(snapshot);
+	});
+
+	it("shortens the tool results of finished turns once the conversation is over budget", () => {
+		const m = [
+			msg("user", "q1"),
+			msg("assistant", "", { tool_calls: [{ function: { name: "t", arguments: {} } }] }),
+			msg("tool", "x".repeat(5000), { tool_name: "t" }),
+			msg("assistant", "a1"),
+			msg("user", "q2"),
+		];
+		compactHistory(m, 2048); // budget ≈ 3932 characters
+		expect(m).toHaveLength(5);
+		expect(m[2].content.length).toBeLessThan(500);
+		expect(m[2].content).toContain("[earlier tool result shortened]");
 	});
 
 	it("drops the oldest turns while over budget and never leaves a tool message first", () => {
@@ -626,7 +774,8 @@ describe("context guards", () => {
 			tools: ALL_TOOLS,
 			search: async () => [],
 			approve: async () => "approve",
-			getConfig: () => ({ ...config, numCtx: 4096, maxToolResultChars: 4000 }),
+			// 16k: the smallest window in which the system prompt and tool list leave room for a batch at all.
+			getConfig: () => ({ ...config, numCtx: 16384, maxToolResultChars: 4000 }),
 		});
 		const conv = newConversation();
 		const nudges: string[] = [];
@@ -739,7 +888,7 @@ describe("repeated-call guard", () => {
 		expect(done[3].result).toMatch(/turn now ends/);
 		expect(ollama.requests).toHaveLength(5);
 		const wrap = ollama.requests[4];
-		expect(wrap.tools).toBeUndefined();
+		expect(wrap.tools).toEqual(ollama.requests[3].tools);
 		expect(wrap.messages.at(-1)?.content).toBe(REPEATED_CALLS_WRAP_UP);
 		expect(conv.messages.at(-1)?.content).toBe("gave up");
 	});
@@ -799,9 +948,10 @@ describe("repeated-call guard", () => {
 	it("lets the model call again for a result that trimHistory shortened", async () => {
 		// A tiny window: the first read's result is shortened once two newer results exist, and
 		// the model is told to call again; that call must run, not be refused as a repeat.
-		// Three 1.5k results each pass the per-step batch cap (25% of a 2k window) but together
-		// exceed the history budget (60%), so the oldest is shortened before the fourth request.
-		const big = "x".repeat(1500);
+		// Three 2.8k results each pass the per-step batch cap (25% of a 4k window) but together
+		// exceed the conversation budget (its 6,000-character floor), so the oldest is shortened
+		// before the fourth request.
+		const big = "x".repeat(2800);
 		const { agent, ollama, vault } = setup(
 			[
 				{ tool: "read_note", args: { path: "Big/A.md" } },
@@ -810,7 +960,7 @@ describe("repeated-call guard", () => {
 				{ tool: "read_note", args: { path: "Big/A.md" } },
 				{ content: "done" },
 			],
-			{ cfg: { numCtx: 2048, maxIterations: 10 } },
+			{ cfg: { numCtx: 4096, maxIterations: 10 } },
 		);
 		for (const n of ["A", "B", "C"]) vault.seed(`Big/${n}.md`, `# ${n}\n\n${big}`);
 		const results: string[] = [];
