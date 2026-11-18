@@ -394,7 +394,7 @@ export class SemanticIndex {
 	/** The indexed text of a note (its chunks joined), when its index entry is current; for keyword search without a disk read. */
 	textFor(path: string, mtime: number): string | undefined {
 		const f = this.files.get(path);
-		if (!f || f.mtime !== mtime) return undefined;
+		if (!f || f.mtime !== mtime || !this.opts.shouldIndex(path)) return undefined;
 		return f.chunks.map((c) => (c.heading ? `${c.heading}\n${c.text}` : c.text)).join("\n");
 	}
 
@@ -449,6 +449,34 @@ export class SemanticIndex {
 	 */
 	scopeChanged(): void {
 		this.compared = false;
+	}
+
+	/**
+	 * Asks, once per note and search, whether a note in the index is still one to index. A folder
+	 * added to the excluded folders keeps its entries until the next `syncAll` removes them (a
+	 * setting typed letter by letter must not throw away and re-embed a folder at every key), and a
+	 * stored index is loaded before it is compared with the settings. Until then the entries are
+	 * there and must not be seen: every search and every list of the index's notes asks here, so
+	 * nothing of an excluded note reaches the model from the moment the setting says so. Asked of
+	 * the ranked candidates in order, not of every note, so it costs nothing at 50,000 notes.
+	 */
+	private inView(): (path: string) => boolean {
+		const known = new Map<string, boolean>();
+		return (path) => {
+			let v = known.get(path);
+			if (v === undefined) known.set(path, (v = this.opts.shouldIndex(path)));
+			return v;
+		};
+	}
+
+	/** The first `n` of a ranked list whose notes are in view. */
+	private firstInView<T extends { path: string }>(ranked: T[], n: number, inView: (path: string) => boolean): T[] {
+		const out: T[] = [];
+		for (const r of ranked) {
+			if (out.length >= n) break;
+			if (inView(r.path)) out.push(r);
+		}
+		return out;
 	}
 
 	enqueue(path: string): void {
@@ -521,7 +549,7 @@ export class SemanticIndex {
 		}
 		best.sort((a, b) => b.score - a.score);
 		const terms = queryTerms(query);
-		return best.slice(0, limit).map((b) => {
+		return this.firstInView(best, limit, this.inView()).map((b) => {
 			const chunk = this.files.get(b.path)!.chunks[b.idx];
 			return { path: b.path, score: b.score, heading: chunk.crumb || undefined, snippet: snippetNear(chunk.text, terms) };
 		});
@@ -549,15 +577,18 @@ export class SemanticIndex {
 			for (let i = 0; i < Math.min(perNote, mine.length); i++) dense.push(mine[i]);
 		}
 		dense.sort((x, y) => y.dense - x.dense);
+		// A note that is still in the index and no longer to be indexed is left out of the ranking itself, so the notes in view fill the result.
+		const inView = this.inView();
 		let ranked: Cand[];
-		if (opts.lexical === false) ranked = dense.slice(0, limit);
+		if (opts.lexical === false) ranked = this.firstInView(dense, limit, inView);
 		else {
 			await this.ensureLex();
 			// "September 10" is `2026-09-10` in a file name or a heading: search the day as notes write it.
 			const dates = opts.dates === false ? [] : dateTerms(query, this.opts.now?.() ?? new Date());
-			const lexical = this.lex.search(query, pool, (path, idx) => this.files.get(path)?.chunks[idx]?.text, dates);
+			const lexical = this.lex.search(query, pool, (path, idx) => this.files.get(path)?.chunks[idx]?.text, dates, (path) => !inView(path));
+			const densePool = this.firstInView(dense, pool, inView);
 			const cands = new Map<string, Cand>();
-			for (const d of dense.slice(0, pool)) cands.set(key(d), d);
+			for (const d of densePool) cands.set(key(d), d);
 			for (const h of lexical) {
 				let c = cands.get(key(h));
 				if (!c) {
@@ -571,7 +602,7 @@ export class SemanticIndex {
 			const all = Array.from(cands.values());
 			if ((opts.fusion ?? "blend") === "rrf") {
 				const fused = fuseKeyed(
-					[dense.slice(0, pool).map((h) => ({ key: key(h), item: h })), lexical.map((h) => ({ key: key(h), item: cands.get(key(h)) as Cand })).filter((e) => e.item)],
+					[densePool.map((h) => ({ key: key(h), item: h })), lexical.map((h) => ({ key: key(h), item: cands.get(key(h)) as Cand })).filter((e) => e.item)],
 					all.length,
 					60,
 					[1, opts.lexWeight ?? 1],
@@ -695,7 +726,7 @@ export class SemanticIndex {
 	noteVectors(): Map<string, Float32Array> {
 		const out = new Map<string, Float32Array>();
 		for (const [path, file] of this.files) {
-			if (file.chunks.length === 0) continue;
+			if (file.chunks.length === 0 || !this.opts.shouldIndex(path)) continue;
 			const sum = new Float32Array(file.chunks[0].vec.length);
 			for (const c of file.chunks) for (let i = 0; i < sum.length; i++) sum[i] += c.vec[i];
 			out.set(path, normalize(sum));

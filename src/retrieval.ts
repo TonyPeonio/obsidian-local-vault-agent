@@ -259,9 +259,10 @@ export class LexicalIndex {
 	 * The chunks that best match the query's words, best first. `textOf` (the chunk's text) lets a
 	 * chunk that contains the whole question as a phrase rank above one that only has its words.
 	 * `extraTerms` are searched as given, on top of the question's own words (the ISO dates a
-	 * question names in words, for one).
+	 * question names in words, for one). A note for which `skip` says true takes no place in the
+	 * result (a note that is still in the index and no longer in view, see `SemanticIndex.inView`).
 	 */
-	search(query: string, limit: number, textOf?: (path: string, idx: number) => string | undefined, extraTerms: string[] = []): LexHit[] {
+	search(query: string, limit: number, textOf?: (path: string, idx: number) => string | undefined, extraTerms: string[] = [], skip?: (path: string) => boolean): LexHit[] {
 		const terms = Array.from(new Set([...lexQueryTerms(query), ...extraTerms.map((t) => t.toLowerCase())]));
 		if (terms.length === 0 || this.live === 0) return [];
 		const avgLen = this.totalLen / this.live;
@@ -293,7 +294,17 @@ export class LexicalIndex {
 			hits.push({ path: doc.path, idx: doc.idx, score: a.score * (0.5 + (0.5 * a.matched) / terms.length), matched: a.matched, terms: terms.length });
 		}
 		hits.sort((x, y) => y.score - x.score);
-		const top = hits.slice(0, Math.max(limit, 50));
+		const most = Math.max(limit, 50);
+		let top: LexHit[];
+		if (!skip) top = hits.slice(0, most);
+		else {
+			// Asked only about the best hits, in order, until the result is full: not about every note.
+			top = [];
+			for (const h of hits) {
+				if (top.length >= most) break;
+				if (!skip(h.path)) top.push(h);
+			}
+		}
 		const phrase = query.trim().toLowerCase().replace(/\s+/g, " ");
 		if (textOf && phrase.length > 5 && terms.length > 1) {
 			for (const h of top) {
