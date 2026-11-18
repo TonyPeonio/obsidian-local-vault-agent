@@ -1098,7 +1098,7 @@ export const readNote: ToolDefinition = {
 		const limit = ctx.maxResultChars;
 		// The header and the page share one budget: a page of `limit` characters under a long
 		// header would be cut by the agent, marker included, and the next offset would skip text.
-		const listChars = Math.max(200, Math.floor(limit / 8));
+		const listChars = Math.max(120, Math.floor(limit / 8));
 		const header = [
 			`# ${path}`,
 			meta.tags.length ? `tags: ${nameList(meta.tags, 60, listChars)}` : null,
@@ -1112,7 +1112,7 @@ export const readNote: ToolDefinition = {
 		let imageNote = "";
 		if (ctx.describeImage && offset === 0) {
 			const images = imageEmbeds(content);
-			if (images.length) imageNote = `\n\n[This note embeds ${images.length} image${images.length === 1 ? "" : "s"} (${nameList(images, 8, 300)}). Its text cannot see them; if what they show matters, read one with read_image.]`;
+			if (images.length) imageNote = `\n\n[This note embeds ${images.length} image${images.length === 1 ? "" : "s"} (${nameList(images, 8, Math.min(300, listChars))}). Its text cannot see them; if what they show matters, read one with read_image.]`;
 		}
 		const page = pageWithin(
 			content,
@@ -1159,13 +1159,14 @@ export const listNotes: ToolDefinition = {
 		const after = parseDate(str(args, "modified_after", false));
 		const before = parseDate(str(args, "modified_before", false));
 
-		let notes = ctx.vault.listNotes();
+		const all = ctx.vault.listNotes();
+		let notes = all;
 		if (after !== null) notes = notes.filter((n) => n.mtime >= after);
 		if (before !== null) notes = notes.filter((n) => n.mtime < before);
 		if (folder) {
 			const prefix = folder.toLowerCase() + "/";
 			// Checked against every note, before the other filters: only a folder that is not there is an error.
-			if (!ctx.vault.listNotes().some((n) => n.path.toLowerCase().startsWith(prefix))) {
+			if (!all.some((n) => n.path.toLowerCase().startsWith(prefix))) {
 				const missing = missingFolderHint(ctx.vault, folder);
 				if (missing) throw new ToolError(missing);
 			}
