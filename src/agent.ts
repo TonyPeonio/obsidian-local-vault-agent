@@ -31,6 +31,8 @@ export interface AgentConfig {
 	autoApprove: boolean;
 	/** Answer the model's "shall I proceed?" with "yes, continue" instead of returning to the user. */
 	autoContinue: boolean;
+	/** Search the vault for a question before the model's first reply (default true); see `looksLikeVaultQuestion`. */
+	preSearch?: boolean;
 	extraSystemPrompt: string;
 	/** Paragraph citations under answers: off, heading links only, or block ids (written on approval). Default "blocks". */
 	citations?: CitationMode;
@@ -91,6 +93,33 @@ export function repeatedCallNotice(name: string, priorResult: string, repeat: nu
 export const REPEATED_CALLS_WRAP_UP =
 	"You repeated the same tool call with the same arguments several times, so the turn has been stopped. Answer now with what you have found so far, say what is still missing, and if you were searching for something, say which searches found nothing.";
 
+/** How many passages the search made for the model returns: fewer than it would ask for itself, since most answers are in the first three. */
+export const PRE_SEARCH_LIMIT = 4;
+
+const EDIT_REQUEST =
+	/^(please\s+|can you\s+|could you\s+|would you\s+)?(add|append|create|write|make|move|rename|delete|remove|fix|clean|tidy|reformat|format|rewrite|edit|update|change|replace|organi[sz]e|compile|distill|process|merge|split|link|tag|translate|convert|sort|archive|quiz|go through|turn)\b/i;
+/** Questions about the vault's shape, not its content: answered by listing and grepping, not by passages. */
+const STRUCTURAL = /\b(how many|count|every note|all (of )?(the |my )?notes|each note|which notes|notes? (that|which) (are|have|lack|contain)|empty|orphan|unlinked|duplicates?|largest|longest|shortest|last modified|recently (modified|edited|changed|created)|folders?|tags?)\b/i;
+const QUESTION_WORD = /^(what|what's|when|where|who|whom|whose|why|how|which|did|do|does|is|are|was|were|have|has|had|can|could|should|tell me|remind me|find|show me|summari[sz]e|explain|describe|give me|any)\b/i;
+/** Words that point back into the conversation: such a message is answered from it, and is a poor search query. */
+const POINTS_BACK = /\b(that|this|those|these|it|its|them|they|he|she|there|then|same|above|previous|earlier|again)\b/i;
+
+/**
+ * A message that will be answered from the content of notes: a question, not a request to change
+ * something, not about the vault's structure, with no note attached, and (after the first turn)
+ * not one that leans on the conversation. For such a message the first step is always the same
+ * search, so the agent makes it before asking the model: one model call fewer per question, and
+ * the model cannot answer "from memory" before it has seen a single note.
+ */
+export function looksLikeVaultQuestion(text: string, firstTurn = true): boolean {
+	const t = text.trim();
+	if (t.length < 8 || t.length > 400 || t.includes("\n") || t.startsWith("/")) return false;
+	if (/\[\[[^\]]+\]\]|!\[/.test(t)) return false;
+	if (EDIT_REQUEST.test(t) || STRUCTURAL.test(t)) return false;
+	if (!firstTurn && POINTS_BACK.test(t)) return false;
+	return /\?\s*$/.test(t) || QUESTION_WORD.test(t);
+}
+
 /** Appended to a reply the model did not finish. */
 export const CUT_OFF_NOTE = "*(This reply was cut off at the model's length limit. Ask me to continue.)*";
 
@@ -108,6 +137,18 @@ export const LECTURE_TOOLS_HINT =
 	"Lecture Companion is installed: for questions about lectures or meetings (what was said about X, and when; which lecture covered Y), use list_lectures to find the lecture and lecture_transcript with a query to get the timestamped paragraphs, then quote the paragraph and give its [m:ss] time with a wikilink to the lecture note.";
 
 export const GROUNDING_PREFIX = "Grounding check:";
+
+/**
+ * A reply that says it searched, read or found something. In a conversation where no tool has
+ * run that cannot be true: the model wrote the look of an answer from the notes without the
+ * notes (the benchmark's first question got "I found this by searching the lecture notes" and a
+ * wrong date, with no tool call at all).
+ */
+export function claimsUnmadeSearch(content: string): boolean {
+	return /\b(i|i've|i have|we) (found|searched|looked|checked|read|reviewed|scanned|went through)\b|\bby (searching|reading|checking|looking|scanning|reviewing)\b|\bafter (searching|reading|checking|reviewing|looking)\b|\b(search|grep) (results?|showed|shows|returned)\b/i.test(content);
+}
+
+export const UNMADE_SEARCH_NUDGE = `${GROUNDING_PREFIX} you have not called any tool in this conversation, so you have not searched or read anything, and that answer did not come from the notes. You cannot know the user's notes from memory. Call search_passages now, then answer only from what it returns, citing the notes. If nothing relevant comes back, say the notes do not cover it.`;
 
 export const REJECTED_WRITE_NOTICE =
 	"Not executed: the user rejected a change earlier in this turn, so no further changes are made until they answer. Tell them what was rejected and ask what they want instead.";
@@ -529,6 +570,34 @@ export class Agent {
 		/** What every request of this turn carries whatever the conversation holds. */
 		const fixedChars = system.content.length + JSON.stringify(wireTools).length;
 		let transientRetries = 0;
+		/** What search_passages returned, per note, so an answer that quotes a passage cites its note. */
+		const notePassages = (result: string) => {
+			for (const block of result.split(/^(?=--- \[\d+\] )/m)) {
+				const m = /^--- \[\d+\] (.+?)(?: › .*)? \(score [^)]*\)\n?([\s\S]*)$/.exec(block);
+				if (!m) continue;
+				if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
+				hitTexts.set(m[1], `${hitTexts.get(m[1]) ?? ""}\n${m[2]}`);
+			}
+		};
+		// A question about the notes: make the search the model would make, and hand it the result
+		// as if it had asked. Only when it found passages; otherwise the model starts as usual.
+		if ((cfg.preSearch ?? true) && this.deps.searchPassages && toolByName.has("search_passages") && looksLikeVaultQuestion(userText, turn === 0)) {
+			const call: ToolCall = { function: { name: "search_passages", arguments: { query: userText.trim(), limit: PRE_SEARCH_LIMIT } } };
+			const { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
+			if (signal?.aborted) return;
+			if (ok && /^\d+ passages?, best first/.test(result)) {
+				const asked: ChatMessage = { role: "assistant", content: "", tool_calls: [call] };
+				callbacks.onAssistantStart?.();
+				conversation.messages.push(asked);
+				callbacks.onAssistantDone?.(asked);
+				callbacks.onToolStart?.(call);
+				callbacks.onToolDone?.(call, result, true);
+				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name, tool_call_id: call.id, cacheKey: callKey(call) });
+				callCache.set(callKey(call), result);
+				toolsUsed++;
+				notePassages(result);
+			}
+		}
 		iterations: for (let iteration = 0; iteration < cfg.maxIterations; iteration++) {
 			if (signal?.aborted) return;
 			// Over budget, the conversation is cut in place and well below the limit, so the steps that
@@ -635,6 +704,14 @@ export class Agent {
 				continue;
 			}
 			if (calls.length === 0) {
+				// "I found this by searching…" when nothing was searched: send it back once. (A reply that
+				// stops to ask "shall I proceed?" is answered below, and has to use the tools then.)
+				if (groundingNudges < 1 && toolsUsed === 0 && !conversation.messages.some((m) => m.role === "tool") && claimsUnmadeSearch(assistant.content) && !looksLikePermissionQuestion(assistant.content)) {
+					groundingNudges++;
+					conversation.messages.push({ role: "user", content: UNMADE_SEARCH_NUDGE, nudge: true });
+					callbacks.onAutoContinue?.(UNMADE_SEARCH_NUDGE);
+					continue;
+				}
 				// A reply that cites notes which do not exist is fabricated. Send it back once.
 				if (groundingNudges < 1) {
 					const bad = unresolvedLinks(assistant.content, vault);
@@ -737,14 +814,7 @@ export class Agent {
 						if (header && !readPaths.includes(header[1].trim())) readPaths.push(header[1].trim());
 					} else if (call.function.name === "grep_vault") {
 						for (const m of result.matchAll(/^(.+?\.md):\d+[ :-]/gm)) if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
-					} else if (call.function.name === "search_passages") {
-						for (const block of result.split(/^(?=--- \[\d+\] )/m)) {
-							const m = /^--- \[\d+\] (.+?)(?: › .*)? \(score [^)]*\)\n?([\s\S]*)$/.exec(block);
-							if (!m) continue;
-							if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
-							hitTexts.set(m[1], `${hitTexts.get(m[1]) ?? ""}\n${m[2]}`);
-						}
-					}
+					} else if (call.function.name === "search_passages") notePassages(result);
 				}
 			}
 		}

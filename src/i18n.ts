@@ -71,6 +71,8 @@ const en = {
 	// Settings: agent
 	"set.autoApprove.name": "Auto-approve edits",
 	"set.autoApprove.desc": "Skip the diff approval dialog and let the agent write to notes directly. Not recommended; you can also choose 'Approve all' per chat.",
+	"set.preSearch.name": "Search before the first reply",
+	"set.preSearch.desc": "For a question, the plugin searches your notes itself and gives the model the passages with your message, so it answers in one step and never from memory. Requests to change notes, questions about the vault's structure and messages with a [[note]] attached are left to the model as before. Needs the embedding index.",
 	"set.warmUp.name": "Get the model ready while you type",
 	"set.warmUp.desc": "When you click into the chat box, the model is loaded and reads its instructions and your vault outline, so your first message does not wait for that (most of a minute without a dedicated graphics card, a few seconds with one). It uses the GPU as soon as you focus the box; turn it off if you often open the chat without sending anything.",
 	"set.autoContinue.name": "Keep going when the model asks for permission",

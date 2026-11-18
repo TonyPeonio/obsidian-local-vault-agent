@@ -22,6 +22,10 @@ import {
 	fitHistory,
 	turnBudget,
 	CUT_OFF_NOTE,
+	looksLikeVaultQuestion,
+	claimsUnmadeSearch,
+	UNMADE_SEARCH_NUDGE,
+	PRE_SEARCH_LIMIT,
 	compactHistory,
 	historyBudget,
 	HISTORY_CTX_CAP,
@@ -30,7 +34,7 @@ import {
 import { OllamaError } from "../src/ollama";
 import { keywordSearch } from "../src/search";
 import { ALL_TOOLS } from "../src/tools";
-import type { ApprovalDecision, ChatMessage } from "../src/types";
+import type { ApprovalDecision, ChatMessage, Passage } from "../src/types";
 import { FakeOllama, FakeVault, type Scripted } from "./fakes";
 
 const config: AgentConfig = {
@@ -597,6 +601,136 @@ describe("trimHistory", () => {
 		expect(historyBudget(98304)).toBe(historyBudget(32768));
 		const m = [msg("user", "q1"), msg("assistant", "a".repeat(70000)), msg("user", "q2")];
 		expect(trimHistory(m, 98304).map((x) => x.content)).toEqual(["q2"]);
+	});
+});
+
+describe("an answer that claims a search nobody made", () => {
+	it("is sent back once, and the corrected answer stands", async () => {
+		const { agent, ollama } = setup([
+			{ content: 'The lecture was on 2026-09-14. I found this by searching for "Isolation Forest" in the lecture notes.' },
+			{ tool: "search_notes", args: { query: "isolation forest" } },
+			{ content: "Nothing in the notes covers it." },
+		]);
+		const conv = newConversation();
+		const nudges: string[] = [];
+		await agent.run(conv, "Which lecture covered isolation forests?", { onAutoContinue: (t) => nudges.push(t) });
+		expect(nudges).toEqual([UNMADE_SEARCH_NUDGE]);
+		expect(ollama.requests).toHaveLength(3);
+		expect(conv.messages.at(-1)?.content).toBe("Nothing in the notes covers it.");
+	});
+
+	it("is not suspected when a tool has run, or when the reply makes no such claim", async () => {
+		const searched = setup([{ tool: "search_notes", args: { query: "sensors" } }, { content: "I found one note: hall sensors are cheap." }]);
+		const nudges: string[] = [];
+		await searched.agent.run(newConversation(), "What do my notes say about sensors?", { onAutoContinue: (t) => nudges.push(t) });
+		expect(nudges).toEqual([]);
+		const chat = setup([{ content: "I can search, read and edit your notes." }]);
+		await chat.agent.run(newConversation(), "What can you do?", { onAutoContinue: (t) => nudges.push(t) });
+		expect(nudges).toEqual([]);
+		expect(claimsUnmadeSearch("By searching the vault I see three notes.")).toBe(true);
+		expect(claimsUnmadeSearch("The search results show two lectures.")).toBe(true);
+		expect(claimsUnmadeSearch("I can help you find that.")).toBe(false);
+	});
+});
+
+describe("search before the first reply", () => {
+	it("recognises a question about the content of notes", () => {
+		for (const q of ["What did I decide about the chess robot's power supply?", "which lecture covered isolation forests, and on what date?", "Tell me about the hall sensors", "summarise my notes on NNUE training", "who is Dr. Beeler"]) {
+			expect(looksLikeVaultQuestion(q), q).toBe(true);
+		}
+	});
+
+	it("leaves requests to change notes, structural questions, attached notes and long prompts to the model", () => {
+		for (const q of [
+			"Add a section on wiring to the chess robot note",
+			"Can you clean up my daily notes?",
+			"Go through every lecture note and remove the recordings",
+			"How many notes do I have?",
+			"Which notes are empty?",
+			"What tags do I use most?",
+			"[[Projects/Kirin Engine]] What NNUE net is in use?",
+			"/garden",
+			"hi",
+			"thanks, that helps",
+			"What is this about?\nAnd a second line, as a prompt sent by a button has",
+			"x".repeat(500) + "?",
+		]) {
+			expect(looksLikeVaultQuestion(q), q).toBe(false);
+		}
+	});
+
+	it("leaves a follow-up that leans on the conversation to the model, but not an independent second question", () => {
+		expect(looksLikeVaultQuestion("Why did I decide that?", false)).toBe(false);
+		expect(looksLikeVaultQuestion("And when was it?", false)).toBe(false);
+		expect(looksLikeVaultQuestion("Who is Dr. Beeler?", false)).toBe(true);
+		expect(looksLikeVaultQuestion("Why did I decide that?", true)).toBe(true);
+	});
+
+	function withSearch(turns: Scripted[], passages: Passage[], cfg: Partial<AgentConfig> = {}) {
+		const vault = new FakeVault({ "Projects/Chess Robot.md": "# Chess Robot\n\nSwitch the gantry supply to 24V." });
+		const ollama = new FakeOllama(turns);
+		const queries: [string, number][] = [];
+		const agent = new Agent({
+			client: ollama.asClient(),
+			vault,
+			tools: ALL_TOOLS,
+			search: async () => [],
+			searchPassages: async (q, limit) => {
+				queries.push([q, limit]);
+				return passages;
+			},
+			approve: async () => "approve",
+			getConfig: () => ({ ...config, ...cfg }),
+		});
+		return { agent, ollama, queries };
+	}
+	const passage: Passage = { path: "Projects/Chess Robot.md", heading: "Decisions", crumb: "Decisions", text: "Switch the gantry supply to 24V.", score: 0.8 };
+
+	it("hands the model the passages with the question, as a search it made itself", async () => {
+		const { agent, ollama, queries } = withSearch([{ content: "You moved the gantry to 24V." }], [passage]);
+		const conv = newConversation();
+		const events: string[] = [];
+		await agent.run(conv, "What did I decide about the power supply?", {
+			onAssistantStart: () => events.push("assistant"),
+			onToolStart: (c) => events.push(`start ${c.function.name}`),
+			onToolDone: (c, r, ok) => events.push(`done ${c.function.name} ${ok} ${r.slice(0, 10)}`),
+		});
+		expect(queries).toEqual([["What did I decide about the power supply?", PRE_SEARCH_LIMIT]]);
+		// One model call, and it already has the result in the shape of its own tool call.
+		expect(ollama.requests).toHaveLength(1);
+		expect(ollama.requests[0].messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "tool"]);
+		expect(ollama.requests[0].messages[2].tool_calls?.[0].function).toEqual({ name: "search_passages", arguments: { query: "What did I decide about the power supply?", limit: PRE_SEARCH_LIMIT } });
+		expect(ollama.requests[0].messages[3].content).toMatch(/^1 passage, best first/);
+		// The chat shows it like any other tool call, and the answer is sourced from it.
+		expect(events).toEqual(["assistant", "start search_passages", "done search_passages true 1 passage,", "assistant"]);
+		expect(conv.messages.map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant"]);
+		expect(conv.messages.at(-1)?.content).toContain("Sources: [[Projects/Chess Robot]]");
+	});
+
+	it("does not search for a request to change something, when switched off, or when the search finds nothing", async () => {
+		const edit = withSearch([{ content: "ok" }], [passage]);
+		await edit.agent.run(newConversation(), "Add a line about wiring to the chess robot note", {});
+		expect(edit.queries).toEqual([]);
+		const off = withSearch([{ content: "ok" }], [passage], { preSearch: false });
+		await off.agent.run(newConversation(), "What did I decide about the power supply?", {});
+		expect(off.queries).toEqual([]);
+		// No index: the tool falls back to "No passages matched", which is not handed over; the model starts as usual.
+		const none = withSearch([{ content: "ok" }], []);
+		const conv = newConversation();
+		await none.agent.run(conv, "What did I decide about the power supply?", {});
+		expect(none.ollama.requests[0].messages.map((m) => m.role)).toEqual(["system", "user"]);
+		expect(conv.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+	});
+
+	it("does not repeat the search when the model asks for the same one", async () => {
+		const { agent, queries } = withSearch(
+			[{ tool: "search_passages", args: { limit: PRE_SEARCH_LIMIT, query: "What did I decide about the power supply?" } }, { content: "24V." }],
+			[passage],
+		);
+		const done: string[] = [];
+		await agent.run(newConversation(), "What did I decide about the power supply?", { onToolDone: (_c, r) => done.push(r) });
+		expect(queries).toHaveLength(1);
+		expect(done[1]).toMatch(/already called search_passages/);
 	});
 });
 

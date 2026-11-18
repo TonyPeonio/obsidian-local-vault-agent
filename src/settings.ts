@@ -35,6 +35,8 @@ export interface LocalVaultAgentSettings {
 	keepAlive: string;
 	/** Load the model and have it read the system prompt when the chat box is first focused, before a message is sent. */
 	warmUp: boolean;
+	/** Search the vault for a question before the model's first reply. */
+	preSearch: boolean;
 	/** Folder prefixes (one per line in the UI) that are never searched or indexed. */
 	excludedFolders: string[];
 	extraSystemPrompt: string;
@@ -107,6 +109,7 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	autoContinue: true,
 	keepAlive: "10m",
 	warmUp: true,
+	preSearch: true,
 	excludedFolders: ["templates", "Templates"],
 	extraSystemPrompt: "",
 	conventionsNote: "AGENT.md",

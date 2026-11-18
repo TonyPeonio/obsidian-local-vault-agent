@@ -366,6 +366,14 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 							}),
 						),
 					),
+					this.row("set.preSearch", (st) =>
+						st.addToggle((tg) =>
+							tg.setValue(s.preSearch).onChange(async (v) => {
+								s.preSearch = v;
+								await save();
+							}),
+						),
+					),
 					this.row("set.warmUp", (st) =>
 						st.addToggle((tg) =>
 							tg.setValue(s.warmUp).onChange(async (v) => {

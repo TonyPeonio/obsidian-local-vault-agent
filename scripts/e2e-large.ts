@@ -444,6 +444,11 @@ async function main() {
 	}
 
 	// The "Process my daily notes" command: the same prompt the plugin sends.
+	// Compared with the vault as it is now, not as generated: earlier answers have by now added
+	// block ids to the daily notes they cited, which "left the other daily notes untouched" then
+	// counted against this scenario (3 of 5 runs of 0.8.0).
+	const beforeDistill = new Map<string, string>();
+	for (const n of vault.listNotes()) if (n.path.startsWith("Daily/")) beforeDistill.set(n.path, await vault.read(n.path));
 	await scenario("distill", "Process my daily notes", processDailyNotesPrompt({ folder: "Daily", heading: "Capture", destination: "Topics", move: true }), (_a, tools) => [["used ≤ 30 tool calls", tools.length <= 30]]);
 	{
 		const row = rows[rows.length - 1];
@@ -466,7 +471,7 @@ async function main() {
 		}
 		let untouched = 0;
 		const others = vault.listNotes().filter((n) => n.path.startsWith("Daily/") && !messy.some((m) => m.note === n.path) && !facts.daily.snippets.some((s) => s.note === n.path));
-		for (const n of others) if ((await vault.read(n.path)) === original.get(n.path)) untouched++;
+		for (const n of others) if ((await vault.read(n.path)) === beforeDistill.get(n.path)) untouched++;
 		for (const [label, ok] of [
 			[`created topic notes in Topics/ (${topics.length})`, topics.length >= 4],
 			[`compiled and cited ≥ 5 of the ${messy.length} messy inboxes (${compiled.length})`, compiled.length >= 5],
