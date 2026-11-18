@@ -4,6 +4,7 @@ import type LocalVaultAgentPlugin from "./main";
 import { AUTO_CONTINUE_TEXT, FOLLOW_THROUGH_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
 import { unattendedWrites } from "./approval";
 import { recordOutcomes, restoredCards, type ToolOutcome } from "./chat-restore";
+import type { Lease } from "./busy";
 import { ComposerSuggest } from "./composer-suggest";
 import type { GardenFix, GardenReport } from "./gardener";
 import { HELP_TEXT, attachMentions, matchCommands, matchNotes, parseSlash } from "./mentions";
@@ -32,7 +33,8 @@ export class AgentView extends ItemView {
 	private approveAllEl!: HTMLElement;
 	private approveAllText!: HTMLElement;
 	private approveAllShown: "chat" | "setting" | null = null;
-	private abort: AbortController | null = null;
+	/** The right to use the model while a chat turn or a quiz step of this view runs; Stop aborts through it. */
+	private lease: Lease | null = null;
 	/** Turns (by their list of reported changes) that already show the partial-undo offer. */
 	private partialOffered = new WeakSet<ChangeRecord[]>();
 	private running = false;
@@ -312,9 +314,15 @@ export class AgentView extends ItemView {
 		this.sendBtn.toggleClass("lva-stop", running);
 	}
 
+	/** Stops this view's running turn or quiz step. The lease is kept until that code has unwound, so it can tell it was stopped. */
 	private stop(): void {
-		this.abort?.abort();
-		this.abort = null;
+		this.lease?.stop();
+	}
+
+	/** Says why a message cannot be sent right now (the text stays in the message box). */
+	private noticeBusy(): void {
+		const holder = this.plugin.busy.holder;
+		new Notice(holder?.owner === "job" ? t("notice.jobRunning", { job: holder.label }) : t("notice.wait"));
 	}
 
 	/** Shows or hides the "written without a diff" bar to match this chat's approve-all and the global setting. */
@@ -504,6 +512,12 @@ export class AgentView extends ItemView {
 			await this.runSlash(slash.id);
 			return;
 		}
+		// Everything below calls the model, one job at a time: a scheduled job may be running.
+		// (Ending a quiz needs no model.) The text stays in the box when it cannot be sent.
+		if (this.plugin.busy.busy && !(this.quiz && QUIZ_END.test(text))) {
+			this.noticeBusy();
+			return;
+		}
 		if (this.quiz) {
 			this.inputEl.value = "";
 			await this.answerQuiz(text);
@@ -514,54 +528,57 @@ export class AgentView extends ItemView {
 			await this.startQuiz(text, this.plugin.settings.quizQuestions);
 			return;
 		}
+		const lease = this.plugin.busy.acquire("chat");
+		if (!lease) {
+			this.noticeBusy();
+			return;
+		}
+		this.lease = lease;
 		this.messagesEl.querySelector(".lva-welcome")?.remove();
 		this.inputEl.value = "";
 		this.autoGrow();
-
-		const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
-		user.createDiv({ cls: "lva-bubble", text });
-		const { message, attached } = attach ? await attachMentions(text, this.plugin.vault, this.plugin.settings.maxToolResultChars * 2) : { message: text, attached: [] as string[] };
-		if (attached.length) {
-			user.createDiv({ cls: "lva-attached", text: `Attached: ${attached.map((p) => p.replace(/\.md$/i, "")).join(", ")}` });
-		}
-		this.scrollToBottom();
-
-		this.abort = new AbortController();
 		this.setSendState(true);
-		this.plugin.agentBusy = true;
 		/** The changes the agent reports for this message. Not looked up by turn number: the agent
 		 * numbers the turn after compacting the history, so the view cannot know that number. */
 		const made: ChangeRecord[] = [];
-		let turn: TurnRenderer | null = null;
+		/** The reply being drawn; null between the model's steps. In an object so the code after the turn can reach it. */
+		const live: { turn: TurnRenderer | null } = { turn: null };
 		const started = Date.now();
 		let calls = 0;
 		const progress = () => this.updateStatus(t("view.status.working", { calls, secs: Math.round((Date.now() - started) / 1000) }));
 		const ticker = window.setInterval(progress, 1000);
 
 		try {
+			const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
+			user.createDiv({ cls: "lva-bubble", text });
+			const { message, attached } = attach ? await attachMentions(text, this.plugin.vault, this.plugin.settings.maxToolResultChars * 2) : { message: text, attached: [] as string[] };
+			if (attached.length) {
+				user.createDiv({ cls: "lva-attached", text: `Attached: ${attached.map((p) => p.replace(/\.md$/i, "")).join(", ")}` });
+			}
+			this.scrollToBottom();
 			await this.plugin.agent.run(
 				this.conversation,
 				message,
 				{
 					onStatus: () => progress(),
 					onAssistantStart: () => {
-						turn = new TurnRenderer(this, this.messagesEl, this.plugin);
+						live.turn = new TurnRenderer(this, this.messagesEl, this.plugin);
 						this.scrollToBottom();
 					},
 					onThinkingDelta: (d) => {
-						turn?.appendThinking(d);
+						live.turn?.appendThinking(d);
 						this.scrollToBottom();
 					},
 					onAssistantDelta: (d) => {
-						turn?.appendContent(d);
+						live.turn?.appendContent(d);
 						this.scrollToBottom();
 					},
 					onAssistantDone: (m) => {
-						void turn?.finish(m);
+						void live.turn?.finish(m);
 						this.scrollToBottom();
 					},
 					onToolStart: (call) => {
-						turn?.toolStart(call);
+						live.turn?.toolStart(call);
 						this.scrollToBottom();
 					},
 					onToolDone: (call, result, ok) => {
@@ -569,7 +586,7 @@ export class AgentView extends ItemView {
 						this.outcomes.set(call, { ...this.outcomes.get(call), ok });
 						// Only the tool's name goes into the log: results and errors can quote notes.
 						if (!ok) log.warn(`Tool ${call.function.name} returned an error`);
-						turn?.toolDone(call, result, ok);
+						live.turn?.toolDone(call, result, ok);
 						this.scrollToBottom();
 					},
 					onChange: (change, call) => {
@@ -578,7 +595,7 @@ export class AgentView extends ItemView {
 						this.syncApproveAll();
 						const seen = this.outcomes.get(call);
 						this.outcomes.set(call, { ok: seen?.ok ?? true, changes: [...(seen?.changes ?? []), change.id] });
-						turn?.attachUndo(call, change);
+						live.turn?.attachUndo(call, change);
 					},
 					onUsage: (u) => {
 						this.usage = u;
@@ -592,12 +609,12 @@ export class AgentView extends ItemView {
 						this.scrollToBottom();
 					},
 				},
-				this.abort.signal,
+				lease.signal,
 			);
-			log.info(`Turn finished: ${calls} tool calls in ${Math.round((Date.now() - started) / 1000)} s${this.abort?.signal.aborted ? " (stopped)" : ""}`);
-			if (!this.abort?.signal.aborted && (await this.plugin.countAnswer())) this.showSurvey();
+			log.info(`Turn finished: ${calls} tool calls in ${Math.round((Date.now() - started) / 1000)} s${lease.stopped ? " (stopped)" : ""}`);
+			if (!lease.stopped && (await this.plugin.countAnswer())) this.showSurvey();
 		} catch (err) {
-			if (!this.abort?.signal.aborted) {
+			if (!lease.stopped) {
 				const message = (err as Error).message ?? String(err);
 				log.error(`Chat turn failed: ${message}`);
 				const errEl = this.messagesEl.createDiv({ cls: "lva-msg lva-error", attr: { role: "alert" } });
@@ -608,13 +625,15 @@ export class AgentView extends ItemView {
 			this.offerPartialUndo(made);
 		} finally {
 			window.clearInterval(ticker);
-			if (this.abort?.signal.aborted) {
+			if (lease.stopped) {
+				// What was being drawn when Stop was pressed is left as it is, not as if it were still coming.
+				live.turn?.abandon();
 				this.offerPartialUndo(made);
 				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.stopped") });
 			}
-			this.abort = null;
+			lease.release();
+			this.lease = null;
 			this.setSendState(false);
-			this.plugin.agentBusy = false;
 			this.saveChat();
 			void this.plugin.checkPlacementOnce();
 			this.updateStatus();
@@ -760,6 +779,12 @@ export class AgentView extends ItemView {
 			new Notice(t("notice.wait"));
 			return;
 		}
+		const lease = this.plugin.busy.acquire("quiz");
+		if (!lease) {
+			this.noticeBusy();
+			return;
+		}
+		this.lease = lease;
 		const req = parseQuizRequest(text, new Date()) ?? { topic: text };
 		this.addUser(text);
 		this.quizBusy = true;
@@ -771,6 +796,7 @@ export class AgentView extends ItemView {
 			let paths = selectQuizNotes(this.plugin.vault.listNotes(), req, lc?.lectures() ?? []);
 			if (paths.length === 0 && req.topic) {
 				const hits = await this.plugin.hybridSearch(req.topic, 10);
+				if (lease.stopped) return;
 				const since = req.since ?? "0000-00-00";
 				paths = hits.map((h) => h.path).filter((p) => {
 					const n = this.plugin.vault.listNotes().find((x) => x.path === p);
@@ -786,7 +812,10 @@ export class AgentView extends ItemView {
 			}
 			this.quizSources.clear();
 			for (const p of paths) this.quizSources.set(p, await this.plugin.vault.read(p));
-			const questions = await this.plugin.quiz.questions(req.topic, Array.from(this.quizSources, ([path, content]) => ({ path, content })), count, this.abort?.signal);
+			if (lease.stopped) return;
+			const questions = await this.plugin.quiz.questions(req.topic, Array.from(this.quizSources, ([path, content]) => ({ path, content })), count, lease.signal);
+			// Stopped while the model was writing: whatever came back is not a quiz.
+			if (lease.stopped) return;
 			if (questions.length === 0) {
 				const md = "The model did not write any questions I could check against your notes. Try again, or a narrower topic.";
 				await this.addAssistant(md);
@@ -803,9 +832,17 @@ export class AgentView extends ItemView {
 			await this.addAssistant(md);
 			this.remember(text, md);
 		} catch (err) {
-			const message = (err as Error).message ?? String(err);
-			this.messagesEl.createDiv({ cls: "lva-msg lva-error" }).createDiv({ cls: "lva-bubble", text: message });
+			if (!lease.stopped) {
+				const message = (err as Error).message ?? String(err);
+				this.messagesEl.createDiv({ cls: "lva-msg lva-error" }).createDiv({ cls: "lva-bubble", text: message });
+			}
 		} finally {
+			if (lease.stopped) {
+				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.stopped") });
+				this.scrollToBottom();
+			}
+			lease.release();
+			this.lease = null;
 			this.quizBusy = false;
 			this.setSendState(false);
 			this.updateStatus();
@@ -818,16 +855,26 @@ export class AgentView extends ItemView {
 		const q = quiz?.current();
 		if (!quiz || !q) return;
 		this.addUser(text);
-		if (/^(stop|quit|end( the)? quiz|cancel|done)[.!]*$/i.test(text.trim())) {
+		if (QUIZ_END.test(text.trim())) {
 			await this.finishQuiz(text, "");
 			return;
 		}
+		const lease = this.plugin.busy.acquire("quiz");
+		if (!lease) {
+			// The answer is already shown; it is not lost, only not graded yet.
+			this.noticeBusy();
+			this.inputEl.value = text;
+			return;
+		}
+		this.lease = lease;
 		this.quizBusy = true;
 		this.setSendState(true);
 		this.updateStatus("Grading…");
 		try {
 			const source = this.quizSources.get(q.source) ?? "";
-			const grade = isNonAnswer(text) ? { verdict: "wrong" as const, feedback: "Skipped." } : await this.plugin.quiz.grade(q, text, source.slice(0, 6000));
+			const grade = isNonAnswer(text) ? { verdict: "wrong" as const, feedback: "Skipped." } : await this.plugin.quiz.grade(q, text, source.slice(0, 6000), lease.signal);
+			// Stopped while grading: nothing is recorded, the question stays the current one.
+			if (lease.stopped) return;
 			const result = quiz.record(text, grade.verdict, grade.feedback);
 			const md = resultMarkdown(result);
 			if (quiz.done()) {
@@ -838,8 +885,14 @@ export class AgentView extends ItemView {
 			await this.addAssistant(next);
 			this.remember(text, next);
 		} catch (err) {
-			new Notice(`Grading failed: ${(err as Error).message}`, 8000);
+			if (!lease.stopped) new Notice(`Grading failed: ${(err as Error).message}`, 8000);
 		} finally {
+			if (lease.stopped) {
+				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.quiz.stoppedGrading") });
+				this.scrollToBottom();
+			}
+			lease.release();
+			this.lease = null;
 			this.quizBusy = false;
 			this.setSendState(false);
 			this.updateStatus();
@@ -891,6 +944,9 @@ export class AgentView extends ItemView {
 		new Notice("Inserted into the note.");
 	}
 }
+
+/** What ends a quiz when typed as an answer; needs no model call. */
+const QUIZ_END = /^(stop|quit|end( the)? quiz|cancel|done)[.!]*$/i;
 
 /** Renders one assistant turn: thinking, streaming content, tool cards, actions. */
 class TurnRenderer {
@@ -956,6 +1012,28 @@ class TurnRenderer {
 
 	toolStart(call: ToolCall): void {
 		this.toolCards.set(call, createToolCard(this.root, call, "lva-tool-running"));
+	}
+
+	/**
+	 * The turn was stopped while this reply was being drawn: show the text that had arrived without
+	 * the "still writing" cursor, and mark tool calls that never answered as stopped instead of running.
+	 */
+	abandon(): void {
+		if (this.renderTimer !== null) {
+			window.clearTimeout(this.renderTimer);
+			this.renderTimer = null;
+		}
+		if (this.contentEl.hasClass("lva-streaming")) {
+			this.contentEl.removeClass("lva-streaming");
+			if (this.content.trim()) void this.view.renderMarkdown(this.content, this.contentEl);
+			else this.contentEl.remove();
+		}
+		for (const card of this.toolCards.values()) {
+			if (!card.hasClass("lva-tool-running")) continue;
+			card.removeClass("lva-tool-running");
+			card.addClass("lva-tool-unfinished");
+			card.querySelector(".lva-tool-args")?.setText(t("view.tool.stopped"));
+		}
 	}
 
 	/** Adds an "Undo" button to the tool card whose write produced `change`. */

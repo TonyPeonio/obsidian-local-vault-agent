@@ -191,6 +191,7 @@ const en = {
 	"view.tool.failed": "failed",
 	"view.tool.stopped": "stopped",
 	"view.stopped": "Stopped.",
+	"view.quiz.stoppedGrading": "Stopped before the answer was graded. The question is still open: answer again, or type stop to end the quiz.",
 	"view.autoContinued": "The model asked whether to continue — answered yes automatically.",
 	"view.groundingNudge": "The reply cited notes that do not exist — sent it back to search the vault first.",
 	"view.report": "Report this problem",
@@ -266,6 +267,7 @@ const en = {
 	"notice.selectText": "Select some text in a note first.",
 	"notice.nothingUndo": "Nothing to undo.",
 	"notice.wait": "Wait for the current reply to finish, or stop it, first.",
+	"notice.jobRunning": "{job} is running in the background. Wait for it to finish, or stop it, first.",
 	"notice.sampleCreated": "Created {n} sample notes in {folder}.",
 	"notice.sampleExists": "The sample notes are already in {folder}.",
 } as const;

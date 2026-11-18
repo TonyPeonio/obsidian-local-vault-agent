@@ -1,6 +1,7 @@
 import { FileSystemAdapter, MarkdownView, Notice, Platform, Plugin, TFile, WorkspaceLeaf, apiVersion, loadPdfJs, moment, normalizePath, requestUrl } from "obsidian";
 import { Agent, type AgentConfig } from "./agent";
 import { ApprovalModal } from "./approval-modal";
+import { BusyGate } from "./busy";
 import { LEGACY_SUGGESTIONS_NOTE, gardenFixes, gardenVault, planGardenAction, renderGardenChat, renderPlanResult, type GardenAction, type GardenReport, type PlannedChange } from "./gardener";
 import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, type IndexData, type IndexManifest, type IndexStatus, type StoredFile } from "./index";
@@ -36,8 +37,12 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	index!: SemanticIndex;
 	gists!: GistCache;
 	agent!: Agent;
-	/** True while a chat turn is running; background gist generation pauses. */
-	agentBusy = false;
+	/** One model job at a time: chat turns, quiz steps and scheduled jobs take this gate, and whoever holds it can be stopped. */
+	readonly busy = new BusyGate();
+	/** True while a chat turn, a quiz step or a scheduled job is running; background gist generation pauses. */
+	get agentBusy(): boolean {
+		return this.busy.busy;
+	}
 	/** Every approved write, newest last; saved to history.json, so it survives "New chat" and restarts. */
 	readonly undo = new UndoStack();
 	/** Changes scheduled jobs produced, waiting for the user's approval (pending.json). */
@@ -1100,7 +1105,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	/** Runs due scheduled jobs (at most one at a time) and reminds a present user of waiting changes. */
 	private async tick(): Promise<void> {
-		if (!this.jobRunning && !this.agentBusy) {
+		// A job that comes due while a chat turn or a quiz step runs waits for the next check (a minute later).
+		if (!this.jobRunning && !this.busy.busy) {
 			const due = dueJobs(new Date(), this.settings, this.settings.jobRuns);
 			for (const job of due) await this.runJob(job, false);
 		}
@@ -1114,6 +1120,12 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	async runJob(job: JobId, manual: boolean): Promise<void> {
 		if (this.jobRunning) {
 			if (manual) new Notice("A scheduled job is already running.");
+			return;
+		}
+		// The model does one thing at a time: never a job on top of a chat turn, nor the other way round.
+		const lease = this.busy.acquire("job", JOB_NAMES[job]);
+		if (!lease) {
+			if (manual) new Notice(t("notice.wait"));
 			return;
 		}
 		this.jobRunning = true;
@@ -1131,6 +1143,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			log.error(`${JOB_NAMES[job]} failed: ${(err as Error).message}`);
 			this.notifyError(`${JOB_NAMES[job]} failed: ${(err as Error).message}`);
 		} finally {
+			lease.release();
 			this.jobRunning = false;
 		}
 	}
@@ -1154,12 +1167,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		const s = this.settings;
 		const prompt = processDailyNotesPrompt({ folder: this.dailyFolder, heading: s.dailyInboxHeading, destination: s.dailyTopicsFolder, move: s.dailyMoveItems, since });
-		this.agentBusy = true;
-		try {
-			await agent.run({ id: "scheduled", messages: [], approveAll: true }, prompt, {});
-		} finally {
-			this.agentBusy = false;
-		}
+		await agent.run({ id: "scheduled", messages: [], approveAll: true }, prompt, {});
 		return overlay.changes();
 	}
 
