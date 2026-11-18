@@ -31,6 +31,16 @@ export interface EditorSituation<T> {
  * With several notes open and none of them last used or active, nothing is picked: text is never
  * put into a note the user did not point at.
  */
+/**
+ * Whether the selection in the editor showing `editorPath` may be reported as "the text selected in
+ * the active note". The agent is given the active note and the selection together; the editor the
+ * user was last in can show another note (the active one is in a side panel, say), and a selection
+ * from there would be passed off as text of a note that does not contain it.
+ */
+export function selectionIsInActiveNote(editorPath: string | null, activePath: string | null): boolean {
+	return editorPath !== null && editorPath === activePath;
+}
+
 export function pickEditorTarget<T>(s: EditorSituation<T>): T | null {
 	if (s.focused) return s.focused;
 	if (s.recent) return s.recent.view;

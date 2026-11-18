@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pickEditorTarget, type EditorCandidate } from "../src/editor-target";
+import { pickEditorTarget, selectionIsInActiveNote, type EditorCandidate } from "../src/editor-target";
 
 const ed = (name: string): EditorCandidate<string> => ({ view: `editor:${name}`, path: `${name}.md` });
 
@@ -41,5 +41,17 @@ describe("which editor the chat's 'Insert at cursor' means", () => {
 		expect(pickEditorTarget({ focused: null, recent: null, open: [ed("A"), ed("B")], activePath: "C.md" })).toBeNull();
 		expect(pickEditorTarget({ focused: null, recent: null, open: [], activePath: "A.md" })).toBeNull();
 		expect(pickEditorTarget<string>({ focused: null, recent: null, open: [], activePath: null })).toBeNull();
+	});
+});
+
+describe("the selection the agent is told about with the active note", () => {
+	it("is taken only from an editor that shows the active note", () => {
+		expect(selectionIsInActiveNote("A.md", "A.md")).toBe(true);
+		// The editor last used shows B while the active note is A (open in a side panel): B's selection is not text of A.
+		expect(selectionIsInActiveNote("B.md", "A.md")).toBe(false);
+		// No active note, or an editor with no file yet: nothing to report.
+		expect(selectionIsInActiveNote("A.md", null)).toBe(false);
+		expect(selectionIsInActiveNote(null, "A.md")).toBe(false);
+		expect(selectionIsInActiveNote(null, null)).toBe(false);
 	});
 });

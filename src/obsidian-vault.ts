@@ -1,5 +1,5 @@
 import { App, MarkdownView, TFile, getAllTags, normalizePath, type WorkspaceLeaf } from "obsidian";
-import { pickEditorTarget, type EditorCandidate } from "./editor-target";
+import { pickEditorTarget, selectionIsInActiveNote, type EditorCandidate } from "./editor-target";
 import type { FileInfo, NoteInfo, NoteMetadata, VaultAccess } from "./types";
 
 /** `VaultAccess` backed by the live Obsidian app. */
@@ -195,7 +195,9 @@ export class ObsidianVault implements VaultAccess {
 	getSelection(): string | null {
 		// Asked for while the user is typing in the chat, so the focused view is the chat, not the note.
 		const view = findEditorView(this.app);
-		const sel = view?.editor?.getSelection();
+		// It is reported together with the active note, so it has to be a selection in that note.
+		if (!view || !selectionIsInActiveNote(view.file?.path ?? null, this.getActiveNotePath())) return null;
+		const sel = view.editor?.getSelection();
 		return sel && sel.length > 0 ? sel : null;
 	}
 }
