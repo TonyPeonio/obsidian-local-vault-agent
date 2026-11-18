@@ -188,6 +188,8 @@ const en = {
 	"view.undo": "Undo",
 	"view.undone": "Undone",
 	"view.restored": "Restored from the previous session.",
+	"view.tool.failed": "failed",
+	"view.tool.stopped": "stopped",
 	"view.stopped": "Stopped.",
 	"view.autoContinued": "The model asked whether to continue — answered yes automatically.",
 	"view.groundingNudge": "The reply cited notes that do not exist — sent it back to search the vault first.",

@@ -25,7 +25,7 @@ import { frontmatterText, fuseRankings, keywordSearch } from "./search";
 import { DEFAULT_SETTINGS, SAMPLING, isExcluded, migrateSettings, type LocalVaultAgentSettings } from "./settings";
 import { LocalVaultAgentSettingTab } from "./settings-tab";
 import { ALL_TOOLS } from "./tools";
-import type { ApprovalRequest, ChangeRecord, ChatMessage, NoteInfo, SearchHit } from "./types";
+import type { ApprovalRequest, ChangeRecord, ChatMessage, NoteInfo, SearchHit, UsageInfo } from "./types";
 import { RevertError, UndoStack, describeChange, planRevert } from "./undo";
 import { AgentView, VIEW_TYPE } from "./view";
 
@@ -465,8 +465,10 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	async loadChat(): Promise<ChatMessage[] | null> {
 		try {
 			if (!this.chatPath || !(await this.app.vault.adapter.exists(this.chatPath))) return null;
-			const data = JSON.parse(await this.app.vault.adapter.read(this.chatPath)) as { messages?: ChatMessage[]; id?: string };
+			const data = JSON.parse(await this.app.vault.adapter.read(this.chatPath)) as { messages?: ChatMessage[]; id?: string; usage?: Partial<UsageInfo> | null };
 			if (typeof data.id === "string") this.lastChatId = data.id;
+			const u = data.usage;
+			this.lastChatUsage = u && typeof u.promptTokens === "number" && typeof u.completionTokens === "number" && typeof u.numCtx === "number" && u.numCtx > 0 ? { promptTokens: u.promptTokens, completionTokens: u.completionTokens, numCtx: u.numCtx } : null;
 			return Array.isArray(data.messages) ? data.messages : null;
 		} catch {
 			return null;
@@ -475,15 +477,17 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	/** The id of the chat restored from chat.json, so its changes stay grouped in the history. */
 	lastChatId: string | null = null;
+	/** The context use of the chat restored from chat.json, for the status line. */
+	lastChatUsage: UsageInfo | null = null;
 
-	saveChat(messages: ChatMessage[], id?: string): void {
+	saveChat(messages: ChatMessage[], id?: string, usage?: UsageInfo | null): void {
 		if (!this.chatPath) return;
 		if (this.chatSaveTimer !== null) window.clearTimeout(this.chatSaveTimer);
 		this.chatSaveTimer = window.setTimeout(() => {
 			this.chatSaveTimer = null;
 			// Thinking is dropped: it is large and never shown again.
 			const slim = messages.map((m) => (m.thinking || m.images ? { ...m, thinking: undefined, images: undefined } : m));
-			void this.app.vault.adapter.write(this.chatPath, JSON.stringify({ id, messages: slim }));
+			void this.app.vault.adapter.write(this.chatPath, JSON.stringify({ id, messages: slim, usage: usage ?? undefined }));
 		}, 500);
 	}
 

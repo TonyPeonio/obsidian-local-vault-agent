@@ -1,7 +1,8 @@
 import { sameModel } from "./ollama";
 import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
-import { AUTO_CONTINUE_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
+import { AUTO_CONTINUE_TEXT, FOLLOW_THROUGH_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
+import { recordOutcomes, restoredCards, type ToolOutcome } from "./chat-restore";
 import { ComposerSuggest } from "./composer-suggest";
 import type { GardenFix, GardenReport } from "./gardener";
 import { HELP_TEXT, attachMentions, matchCommands, matchNotes, parseSlash } from "./mentions";
@@ -43,6 +44,8 @@ export class AgentView extends ItemView {
 	private quizSources = new Map<string, string>();
 	private quizBusy = false;
 	private micBtn: HTMLButtonElement | null = null;
+	/** How each tool call of this session ended, written onto the saved chat so a restored one is drawn as it was. */
+	private outcomes = new WeakMap<ToolCall, ToolOutcome>();
 	private recorder = new VoiceRecorder();
 
 	constructor(
@@ -221,16 +224,24 @@ export class AgentView extends ItemView {
 		const messages = await this.plugin.loadChat();
 		if (!messages || messages.length === 0 || this.conversation.messages.length > 0) return;
 		this.conversation = { id: this.plugin.lastChatId ?? newConversation().id, messages, approveAll: false };
+		this.usage = this.plugin.lastChatUsage;
 		this.messagesEl.querySelector(".lva-welcome")?.remove();
 		await this.renderHistory(messages);
+		this.updateStatus();
 		this.scrollToBottom();
+	}
+
+	/** Saves the conversation, with how each tool call ended, so it can be drawn again after a restart. */
+	private saveChat(): void {
+		recordOutcomes(this.conversation.messages, this.outcomes);
+		this.plugin.saveChat(this.conversation.messages, this.conversation.id, this.usage);
 	}
 
 	private async renderHistory(messages: ChatMessage[]): Promise<void> {
 		for (let i = 0; i < messages.length; i++) {
 			const m = messages[i];
 			if (m.role === "user") {
-				if (m.content === AUTO_CONTINUE_TEXT || m.content.startsWith(GROUNDING_PREFIX) || /^Your reply was empty/.test(m.content)) {
+				if (m.content === AUTO_CONTINUE_TEXT || m.content.startsWith(GROUNDING_PREFIX) || m.content.startsWith(FOLLOW_THROUGH_TEXT) || /^Your reply was empty/.test(m.content)) {
 					this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: "(auto-continued)" });
 				} else {
 					const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
@@ -238,20 +249,21 @@ export class AgentView extends ItemView {
 				}
 			} else if (m.role === "assistant") {
 				const root = this.messagesEl.createDiv({ cls: "lva-msg lva-assistant" });
-				if (m.content.trim()) await this.renderMarkdown(m.content, root.createDiv({ cls: "lva-bubble lva-markdown" }));
-				for (const call of m.tool_calls ?? []) {
-					// The tool results follow the assistant message in call order.
-					const candidate = messages[i + 1 + (m.tool_calls ?? []).indexOf(call)];
-					const resultMsg = candidate?.role === "tool" ? candidate : undefined;
-					const card = root.createEl("details", { cls: "lva-tool lva-tool-ok" });
-					const summary = card.createEl("summary");
-					const icon = summary.createSpan({ cls: "lva-tool-icon" });
-					setToolIcon(icon, call.function.name);
-					summary.createSpan({ cls: "lva-tool-name", text: describeCall(call) });
-					summary.createSpan({ cls: "lva-tool-args", text: resultMsg ? describeResult(call, resultMsg.content) : "" });
-					const body = card.createDiv({ cls: "lva-tool-body" });
-					body.createEl("pre", { cls: "lva-tool-pre", text: JSON.stringify(call.function.arguments, null, 2) });
-					if (resultMsg) body.createEl("pre", { cls: "lva-tool-pre lva-tool-result", text: resultMsg.content.length > 3000 ? resultMsg.content.slice(0, 3000) + "\n…" : resultMsg.content });
+				if (m.content.trim()) {
+					await this.renderMarkdown(m.content, root.createDiv({ cls: "lva-bubble lva-markdown" }));
+					addAnswerActions(this, root, m.content);
+				}
+				// Each card as it ended: failed calls red, a call the turn never finished marked as stopped,
+				// and the Undo button of every write that is still in the change history.
+				for (const restored of restoredCards(messages, i)) {
+					const card = createToolCard(root, restored.call, restored.state === "ok" ? "lva-tool-ok" : restored.state === "error" ? "lva-tool-error" : "lva-tool-unfinished");
+					if (restored.result === null) card.querySelector(".lva-tool-args")?.setText(t("view.tool.stopped"));
+					else fillToolResult(card, restored.call, restored.result, restored.state === "ok");
+					for (const id of restored.changes) {
+						const change = this.plugin.undo.byId(id);
+						// The id alone is not proof: a history file that was reset numbers its changes from 1 again.
+						if (change && change.chat === this.conversation.id) addUndoButton(this.plugin, card, change);
+					}
 				}
 			}
 		}
@@ -386,7 +398,7 @@ export class AgentView extends ItemView {
 		await this.renderMarkdown(markdown, root.createDiv({ cls: "lva-bubble lva-markdown" }));
 		// History must start with a user message, hence the pair.
 		this.conversation.messages.push({ role: "user", content: userText }, { role: "assistant", content: markdown });
-		this.plugin.saveChat(this.conversation.messages, this.conversation.id);
+		this.saveChat();
 		this.scrollToBottom();
 		return root;
 	}
@@ -515,6 +527,7 @@ export class AgentView extends ItemView {
 					},
 					onToolDone: (call, result, ok) => {
 						calls++;
+						this.outcomes.set(call, { ...this.outcomes.get(call), ok });
 						// Only the tool's name goes into the log: results and errors can quote notes.
 						if (!ok) log.warn(`Tool ${call.function.name} returned an error`);
 						turn?.toolDone(call, result, ok);
@@ -522,6 +535,8 @@ export class AgentView extends ItemView {
 					},
 					onChange: (change, call) => {
 						made.push(change);
+						const seen = this.outcomes.get(call);
+						this.outcomes.set(call, { ok: seen?.ok ?? true, changes: [...(seen?.changes ?? []), change.id] });
 						turn?.attachUndo(call, change);
 					},
 					onUsage: (u) => {
@@ -559,7 +574,7 @@ export class AgentView extends ItemView {
 			this.abort = null;
 			this.setSendState(false);
 			this.plugin.agentBusy = false;
-			this.plugin.saveChat(this.conversation.messages, this.conversation.id);
+			this.saveChat();
 			void this.plugin.checkPlacementOnce();
 			this.updateStatus();
 			this.scrollToBottom();
@@ -691,7 +706,7 @@ export class AgentView extends ItemView {
 
 	private remember(userText: string, markdown: string): void {
 		this.conversation.messages.push({ role: "user", content: userText }, { role: "assistant", content: markdown });
-		this.plugin.saveChat(this.conversation.messages, this.conversation.id);
+		this.saveChat();
 	}
 
 	/**
@@ -891,16 +906,7 @@ class TurnRenderer {
 		this.contentEl.removeClass("lva-streaming");
 		if (this.content.trim()) {
 			await this.view.renderMarkdown(this.content, this.contentEl);
-			const actions = this.root.createDiv({ cls: "lva-actions" });
-			const copy = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.copy") } });
-			setIcon(copy, "copy");
-			copy.addEventListener("click", () => {
-				void navigator.clipboard.writeText(this.content);
-				new Notice("Copied.");
-			});
-			const insert = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.insert") } });
-			setIcon(insert, "file-input");
-			insert.addEventListener("click", () => this.view.insertAtCursor(this.content));
+			addAnswerActions(this.view, this.root, this.content);
 		} else {
 			// A pure tool-call turn: nothing to show in the bubble.
 			this.contentEl.remove();
@@ -908,34 +914,13 @@ class TurnRenderer {
 	}
 
 	toolStart(call: ToolCall): void {
-		const card = this.root.createEl("details", { cls: "lva-tool lva-tool-running" });
-		const summary = card.createEl("summary");
-		const icon = summary.createSpan({ cls: "lva-tool-icon" });
-		setToolIcon(icon, call.function.name);
-		summary.createSpan({ cls: "lva-tool-name", text: describeCall(call) });
-		summary.createSpan({ cls: "lva-tool-args", text: "" });
-		const body = card.createDiv({ cls: "lva-tool-body" });
-		body.createEl("pre", { cls: "lva-tool-pre", text: JSON.stringify(call.function.arguments, null, 2) });
-		this.toolCards.set(call, card);
+		this.toolCards.set(call, createToolCard(this.root, call, "lva-tool-running"));
 	}
 
 	/** Adds an "Undo" button to the tool card whose write produced `change`. */
 	attachUndo(call: ToolCall, change: ChangeRecord): void {
 		const card = this.toolCards.get(call);
-		if (!card) return;
-		const summary = card.querySelector("summary");
-		if (!summary) return;
-		const btn = summary.createEl("button", { cls: "lva-undo-btn", text: t("view.undo"), attr: { "aria-label": `${t("view.undo")}: ${change.path}` } });
-		btn.addEventListener("click", (e) => {
-			e.preventDefault();
-			e.stopPropagation();
-			void this.plugin.revert(change).then((done) => {
-				if (done) {
-					btn.disabled = true;
-					btn.setText(t("view.undone"));
-				}
-			});
-		});
+		if (card) addUndoButton(this.plugin, card, change);
 	}
 
 	toolDone(call: ToolCall, result: string, ok: boolean): void {
@@ -943,14 +928,63 @@ class TurnRenderer {
 		if (!card) return;
 		card.removeClass("lva-tool-running");
 		card.addClass(ok ? "lva-tool-ok" : "lva-tool-error");
-		const args = card.querySelector(".lva-tool-args");
-		if (args) args.setText(ok ? describeResult(call, result) : "failed");
-		const body = card.querySelector(".lva-tool-body") as HTMLElement;
-		body.createEl("pre", {
-			cls: "lva-tool-pre lva-tool-result",
-			text: result.length > 3000 ? result.slice(0, 3000) + "\n…" : result,
-		});
+		fillToolResult(card, call, result, ok);
 	}
+}
+
+/** Copy and "Insert at cursor" under an answer. */
+function addAnswerActions(view: AgentView, root: HTMLElement, content: string): void {
+	const actions = root.createDiv({ cls: "lva-actions" });
+	const copy = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.copy") } });
+	setIcon(copy, "copy");
+	copy.addEventListener("click", () => {
+		void navigator.clipboard.writeText(content);
+		new Notice("Copied.");
+	});
+	const insert = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.insert") } });
+	setIcon(insert, "file-input");
+	insert.addEventListener("click", () => view.insertAtCursor(content));
+}
+
+/** A collapsed card for one tool call: icon, sentence, room for the result summary, and the raw arguments inside. */
+function createToolCard(parent: HTMLElement, call: ToolCall, stateClass: string): HTMLDetailsElement {
+	const card = parent.createEl("details", { cls: `lva-tool ${stateClass}` });
+	const summary = card.createEl("summary");
+	const icon = summary.createSpan({ cls: "lva-tool-icon" });
+	setToolIcon(icon, call.function.name);
+	summary.createSpan({ cls: "lva-tool-name", text: describeCall(call) });
+	summary.createSpan({ cls: "lva-tool-args", text: "" });
+	const body = card.createDiv({ cls: "lva-tool-body" });
+	body.createEl("pre", { cls: "lva-tool-pre", text: JSON.stringify(call.function.arguments, null, 2) });
+	return card;
+}
+
+/** The result on a card: a few words in the summary line, the first 3000 characters inside. */
+function fillToolResult(card: HTMLElement, call: ToolCall, result: string, ok: boolean): void {
+	card.querySelector(".lva-tool-args")?.setText(ok ? describeResult(call, result) : t("view.tool.failed"));
+	card.querySelector(".lva-tool-body")?.createEl("pre", {
+		cls: "lva-tool-pre lva-tool-result",
+		text: result.length > 3000 ? result.slice(0, 3000) + "\n…" : result,
+	});
+}
+
+/** An "Undo" button on the card of the call that made `change`; already "Undone" when it was taken back. */
+function addUndoButton(plugin: LocalVaultAgentPlugin, card: HTMLElement, change: ChangeRecord): void {
+	const summary = card.querySelector("summary");
+	if (!summary) return;
+	const btn = summary.createEl("button", { cls: "lva-undo-btn", text: t("view.undo"), attr: { "aria-label": `${t("view.undo")}: ${change.path}` } });
+	const markUndone = () => {
+		btn.disabled = true;
+		btn.setText(t("view.undone"));
+	};
+	if (change.undone) markUndone();
+	btn.addEventListener("click", (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+		void plugin.revert(change).then((done) => {
+			if (done) markUndone();
+		});
+	});
 }
 
 function fmtK(n: number): string {

@@ -177,6 +177,10 @@
 .lva-tool-error .lva-tool-icon {
 	color: var(--color-red);
 }
+/* A call the turn was stopped in: neither done nor failed (seen in a restored chat) */
+.lva-tool-unfinished .lva-tool-icon {
+	color: var(--text-faint);
+}
 
 .lva-tool-body {
 	margin-top: 6px;

@@ -29,6 +29,10 @@ export interface ChatMessage {
 	cacheKey?: string;
 	/** Base64 images sent with the message (vision models only; never saved with the chat). */
 	images?: string[];
+	/** For role === "tool": false when the call failed, was refused or skipped. Written by the chat view so a restored chat draws the card as it was; not sent to the model. */
+	ok?: boolean;
+	/** For role === "tool": ids in the change history of the writes the call made (the Undo buttons of a restored chat); not sent to the model. */
+	changes?: number[];
 }
 
 /** JSON-schema subset that Ollama accepts for tool parameters. */
