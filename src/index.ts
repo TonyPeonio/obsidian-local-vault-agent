@@ -1,4 +1,4 @@
-import { chunkMarkdown } from "./chunker";
+import { chunkMarkdown, unchunkedText } from "./chunker";
 import type { OllamaClient } from "./ollama";
 import { LexicalIndex, absentFrom, dateTerms, fuseKeyed } from "./retrieval";
 import { queryTerms, snippetNear } from "./search";
@@ -31,6 +31,12 @@ export interface StoredFile {
 	chunks: StoredChunk[];
 	/** `EMBED_FORMAT` the chunks were embedded with; absent means 1. */
 	fmt?: number;
+	/**
+	 * The note's text that is in no chunk: its properties and its headings (`unchunkedText`), kept
+	 * for the word index's "no note contains this word". Absent in an entry saved before this was
+	 * kept: such a note is read again on the next sync (its vectors are kept, nothing is embedded).
+	 */
+	rest?: string;
 }
 
 export interface IndexData {
@@ -164,6 +170,8 @@ export interface PassageSearchOptions {
 interface MemFile {
 	mtime: number;
 	chunks: MemChunk[];
+	/** See `StoredFile.rest`. */
+	rest: string;
 }
 
 export function cosine(a: Float32Array, b: Float32Array): number {
@@ -272,7 +280,7 @@ export class SemanticIndex {
 		if (this.lexBuilding) this.lexStale.add(path);
 		if (!this.lexBuilt) return;
 		const file = this.files.get(path);
-		if (file) this.lex.setFile(path, file.chunks.map((c) => ({ heading: c.crumb, text: c.text })), noteTitle(path));
+		if (file) this.lex.setFile(path, file.chunks.map((c) => ({ heading: c.crumb, text: c.text })), noteTitle(path), file.rest);
 		else this.lex.remove(path);
 	}
 
@@ -284,7 +292,7 @@ export class SemanticIndex {
 			this.lexStale.clear();
 			let n = 0;
 			for (const [path, file] of Array.from(this.files)) {
-				this.lex.setFile(path, file.chunks.map((c) => ({ heading: c.crumb, text: c.text })), noteTitle(path));
+				this.lex.setFile(path, file.chunks.map((c) => ({ heading: c.crumb, text: c.text })), noteTitle(path), file.rest);
 				if (++n % 400 === 0) await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 			}
 			this.lexBuilt = true;
@@ -311,8 +319,10 @@ export class SemanticIndex {
 	private adopt(files: Record<string, StoredFile>): void {
 		for (const [path, f] of Object.entries(files)) {
 			const chunks = f.chunks.map((c) => ({ heading: c.heading, crumb: c.crumb ?? c.heading, text: c.text, vec: normalize(decodeVec(c.vec)) }));
-			// An older embed format stays searchable as it is, and is chunked again on the next sync.
-			this.files.set(path, { mtime: (f.fmt ?? 1) === EMBED_FORMAT ? f.mtime : STALE_MTIME, chunks });
+			// An older embed format stays searchable as it is, and is chunked again on the next sync. So
+			// is an entry without the words outside its chunks: until that sync has read the note, it is
+			// out of date like any other and `absentWords` reads it (or says nothing).
+			this.files.set(path, { mtime: (f.fmt ?? 1) === EMBED_FORMAT && f.rest !== undefined ? f.mtime : STALE_MTIME, chunks, rest: f.rest ?? "" });
 			this.totalChunks += chunks.length;
 			this.lexUpdate(path);
 		}
@@ -472,7 +482,15 @@ export class SemanticIndex {
 				this.setFile(newPath, entry);
 				this.scheduleSave();
 			}
-			if (unread) this.unread.set(newPath, ++this.unreadSeq);
+			if (unread) {
+				this.unread.set(newPath, ++this.unreadSeq);
+				// Read now: no later event names the new path (the pause after an edit ends with the old
+				// name, which is gone by then), so it would stay unread until the next start.
+				if (this.opts.isEnabled()) {
+					this.queue.add(newPath);
+					void this.process();
+				} else this.compared = false;
+			}
 		}
 		this.emit();
 	}
@@ -740,7 +758,7 @@ export class SemanticIndex {
 					if (vectors.length && this.dims === 0) this.dims = vectors[0].length;
 					vectors.forEach((v, k) => (vecs[missing[i + k]] = normalize(new Float32Array(v))));
 				}
-				this.setFile(path, { mtime: mtime ?? Date.now(), chunks: chunks.map((c, i) => ({ heading: c.heading, crumb: c.crumb, text: c.text, vec: vecs[i] as Float32Array })) });
+				this.setFile(path, { mtime: mtime ?? Date.now(), rest: unchunkedText(content), chunks: chunks.map((c, i) => ({ heading: c.heading, crumb: c.crumb, text: c.text, vec: vecs[i] as Float32Array })) });
 				// The index now holds the text that was read, unless the note changed again meanwhile.
 				if (this.unread.get(path) === mark && !this.queue.has(path)) this.unread.delete(path);
 				this.lastError = undefined;
@@ -771,7 +789,7 @@ export class SemanticIndex {
 	}
 
 	private stored(file: MemFile): StoredFile {
-		return { mtime: file.mtime, fmt: EMBED_FORMAT, chunks: file.chunks.map((c) => ({ heading: c.heading, ...(c.crumb !== c.heading ? { crumb: c.crumb } : {}), text: c.text, vec: encodeVec(c.vec) })) };
+		return { mtime: file.mtime, fmt: EMBED_FORMAT, rest: file.rest, chunks: file.chunks.map((c) => ({ heading: c.heading, ...(c.crumb !== c.heading ? { crumb: c.crumb } : {}), text: c.text, vec: encodeVec(c.vec) })) };
 	}
 
 	/** Saves what changed. Calls queue up: a second flush starting while one is still writing could have its newer shard overwritten by the first one's older copy. */

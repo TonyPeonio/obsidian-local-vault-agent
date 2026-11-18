@@ -34,6 +34,18 @@ export function stripFrontmatter(content: string): { frontmatter: string; body: 
 	return { frontmatter: m[1], body: content.slice(m[0].length) };
 }
 
+/**
+ * The text of a note that `chunkMarkdown` puts in no chunk's text: its properties and its heading
+ * lines. A heading lives on only as the path of the text under it, so one with nothing under it is
+ * in no chunk at all, and neither is a lone top-level title that has only sections below it. The
+ * word index keeps these words apart, so that "no note contains this word" is about whole notes.
+ */
+export function unchunkedText(content: string): string {
+	const { frontmatter, body } = stripFrontmatter(content);
+	const headings = body.split(/\r?\n/).filter((line) => /^#{1,6}\s/.test(line));
+	return [frontmatter, ...headings].filter(Boolean).join("\n");
+}
+
 export function chunkMarkdown(content: string, opts: ChunkOptions = {}): Chunk[] {
 	const { target, max } = { ...DEFAULTS, ...opts };
 	const { body } = stripFrontmatter(content);

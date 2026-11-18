@@ -279,6 +279,21 @@ describe("a word is called absent only when the vault as it is now does not have
 		index.rename("Recipes/Pasta.md", "Recipes/Mixer.md");
 		expect(index.unreadCount).toBe(1);
 		expect(await index.absentWords(QUESTION)).toEqual([]);
+		// The rename itself has it read: the pause after the edit ends with the old name, which no longer exists.
+		index.enqueue("Recipes/Pasta.md");
+		await index.idle();
+		expect(index.unreadCount).toBe(0);
+		expect((await index.searchPassages("mixer belts squeak", 1))[0]).toMatchObject({ path: "Recipes/Mixer.md", text: "Boil water. The mixer's belts squeak." });
+		// Edited so that the word is gone: nothing is said of it while the index still has the old text, and it is named once the note is read.
+		await vault.modify("Recipes/Mixer.md", "Boil water. The mixer squeaks.");
+		index.touch("Recipes/Mixer.md");
+		expect(await index.absentWords(QUESTION)).toEqual([]);
+		index.enqueue("Recipes/Mixer.md");
+		await index.idle();
+		expect(await index.absentWords(QUESTION)).toEqual(["belts"]);
+		await vault.modify("Recipes/Mixer.md", "Boil water. The mixer's belts squeak.");
+		index.touch("Recipes/Mixer.md");
+		expect(await index.absentWords(QUESTION)).toEqual([]);
 		// Deleted: the note and its word are gone.
 		await vault.trash("Recipes/Mixer.md");
 		index.remove("Recipes/Mixer.md");
@@ -388,6 +403,110 @@ describe("a word is called absent only when the vault as it is now does not have
 		expect(await index.absentWords(QUESTION)).toEqual([]);
 		expect(await index.absentWords("the wheels")).toEqual(["wheels"]);
 	});
+
+	it("counts the words a note has only in its properties, in its name, or in a heading with nothing under it", async () => {
+		const store = new MemoryStore();
+		const { index, vault } = setup(
+			{
+				...notes,
+				"Projects/Greenhouse Monitor.md": "---\nstatus: paused\nowner: Lena\n---\n# Greenhouse Monitor\n\nWaiting on the humidity sensors.\n",
+				"Projects/Desk Clock.md": "---\nstatus: paused\nowner: Jordan\n---\n# Desk Clock\n\nOn hold.\n",
+				// A lone title with only sections below it, and a section with no text: the chunker puts neither in a chunk.
+				"Daily/2026-09-10.md": "# Wheels day\n\n## Morning\n\nOrdered parts.\n\n## Flywheel\n\n## Evening\n\nNothing.",
+				"Inbox/Zeppelin.md": "",
+			},
+			store,
+		);
+		await index.syncAll();
+		await index.searchPassages("gantry", 1);
+		expect(index.unreadCount).toBe(0);
+		expect(await index.absentWords("paused and Lena and Jordan")).toEqual([]);
+		expect(await index.absentWords("the wheels and the flywheel and the zeppelin")).toEqual([]);
+		expect(await index.absentWords("the paused turbines")).toEqual(["turbines"]);
+		// The words go when the property, the name and the note do.
+		await vault.modify("Projects/Greenhouse Monitor.md", "# Greenhouse Monitor\n\nWaiting on the humidity sensors.\n");
+		await index.syncAll();
+		expect(await index.absentWords("paused and Lena and Jordan")).toEqual(["lena"]);
+		await vault.rename("Inbox/Zeppelin.md", "Inbox/Airship.md");
+		index.rename("Inbox/Zeppelin.md", "Inbox/Airship.md");
+		expect(await index.absentWords("the zeppelin and the airship")).toEqual(["zeppelin"]);
+		await vault.trash("Daily/2026-09-10.md");
+		index.remove("Daily/2026-09-10.md");
+		expect(await index.absentWords("the wheels and the flywheel")).toEqual(["wheels", "flywheel"]);
+
+		// Saved and loaded again, the index still has those words, and reads and embeds nothing for them.
+		await index.flush();
+		const reads = countReads(vault);
+		const reopen = async () => {
+			const ollama = new FakeOllama([], 64);
+			const next = new SemanticIndex(ollama.asClient(), vault, store, { getModel: () => "nomic-embed-text", isEnabled: () => true, shouldIndex: () => true });
+			await next.load();
+			await next.syncAll();
+			await next.searchPassages("gantry", 1);
+			return { next, embedded: ollama.embedCalls.flat().filter((i) => i.startsWith("search_document: ")).length };
+		};
+		const kept = await reopen();
+		expect(reads).toEqual([]);
+		expect(kept.embedded).toBe(0);
+		expect(await kept.next.absentWords("Jordan and the airship and the turbines")).toEqual(["turbines"]);
+		// An entry saved before these words were kept: the note is read again on the next sync, and nothing is embedded for it.
+		await kept.next.flush();
+		for (const f of Object.values(store.data!.files)) delete f.rest;
+		const older = await reopen();
+		expect(reads.sort()).toEqual(vault.listNotes().map((n) => n.path).sort());
+		expect(older.embedded).toBe(0);
+		expect(await older.next.absentWords("Jordan and the airship and the turbines")).toEqual(["turbines"]);
+	});
+
+	it("costs one question no read on a vault of 50,000 notes with 5,000 not yet indexed, and at most 100 reads when few are", async () => {
+		// Every note has a word of its own, so the word list is as long as a real vault's of this size.
+		const own = (i: number) => "x" + Array.from(String(i), (d) => "abcdefghij"[Number(d)]).join("");
+		const text = (i: number) => `Note ${i} about subject${i} and the ${own(i)} of it.`;
+		const vault = new FakeVault();
+		for (let i = 0; i < 45_000; i++) vault.seed(`Notes/${i}.md`, text(i));
+		const index = new SemanticIndex(new FakeOllama([], 16).asClient(), vault, { load: async () => null, save: async () => {} }, { getModel: () => "nomic-embed-text", isEnabled: () => true, shouldIndex: () => true });
+		await index.syncAll();
+		expect(index.status().indexedFiles).toBe(45_000);
+		await index.searchPassages("subject777", 4);
+		const timed = async <T>(run: () => Promise<T>): Promise<[T, number]> => {
+			const start = performance.now();
+			const result = await run();
+			return [result, performance.now() - start];
+		};
+		const ASK = "What did we decide about the zeppelins?";
+		const [, baseMs] = await timed(() => index.absentWords(ASK));
+
+		// 5,000 notes arrive at once (an import, a sync from another device): the vault's events reach the index, the embedding has not happened.
+		for (let i = 45_000; i < 50_000; i++) {
+			vault.seed(`Notes/${i}.md`, text(i));
+			index.touch(`Notes/${i}.md`);
+		}
+		expect(index.unreadCount).toBe(5_000);
+		const reads = countReads(vault);
+		const [, searchMs] = await timed(() => index.searchPassages(ASK, 4));
+		const [many, manyMs] = await timed(() => index.absentWords(ASK));
+		// Too many to read for one sentence: nothing is read, and nothing is said.
+		expect(many).toEqual([]);
+		expect(reads).toEqual([]);
+		expect(manyMs).toBeLessThan(1000);
+
+		// They are indexed; then 100 long notes are edited, which is the most the check reads (1.9 of its 2 million characters).
+		for (let i = 45_000; i < 50_000; i++) index.enqueue(`Notes/${i}.md`);
+		await index.idle();
+		expect(index.unreadCount).toBe(0);
+		const long = "Reviewed the action items from last time; nothing blocking. ".repeat(322);
+		for (let i = 0; i < UNREAD_CHECK_NOTES; i++) {
+			await vault.modify(`Notes/${i}.md`, long);
+			index.touch(`Notes/${i}.md`);
+		}
+		reads.length = 0;
+		const [few, fewMs] = await timed(() => index.absentWords(ASK));
+		expect(few).toEqual(["decide", "zeppelins"]);
+		expect(reads).toHaveLength(UNREAD_CHECK_NOTES);
+		expect(fewMs).toBeLessThan(10_000);
+		// The number this test is for; the bounds above are loose because the machine may be busy.
+		console.log(`absent-word check at 50,000 notes: ${baseMs.toFixed(1)} ms with nothing unread, ${manyMs.toFixed(1)} ms and 0 reads with 5,000 unread, ${fewMs.toFixed(1)} ms and ${reads.length} reads (${(long.length * UNREAD_CHECK_NOTES).toLocaleString("en-US")} characters) with 100 unread; the passage search of the same question took ${searchMs.toFixed(1)} ms`);
+	}, 120_000);
 });
 
 describe("an index saved before heading paths", () => {

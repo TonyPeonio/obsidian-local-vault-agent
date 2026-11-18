@@ -89,6 +89,14 @@ export class LexicalIndex {
 	private postings = new Map<string, number[]>();
 	private docs: (LexDoc | null)[] = [];
 	private byPath = new Map<string, number[]>();
+	/**
+	 * path → the beginnings of the words a note has outside its chunks: its name, its properties and
+	 * its headings (`setFile`'s `rest`). They are not searched or scored; they are there so that
+	 * `absentWords` is about the whole note and not only the text that was chunked.
+	 */
+	private outside = new Map<string, string[]>();
+	/** beginning → how many notes have a word that starts so outside their chunks. */
+	private outsideStarts = new Map<string, number>();
 	private live = 0;
 	private dead = 0;
 	private totalLen = 0;
@@ -101,6 +109,8 @@ export class LexicalIndex {
 		this.postings.clear();
 		this.docs = [];
 		this.byPath.clear();
+		this.outside.clear();
+		this.outsideStarts.clear();
 		this.live = 0;
 		this.dead = 0;
 		this.totalLen = 0;
@@ -110,9 +120,19 @@ export class LexicalIndex {
 		return this.byPath.has(path);
 	}
 
-	/** Replace a note's chunks. `title` is the note's name; it and each chunk's heading weigh more than body text. */
-	setFile(path: string, chunks: { heading: string; text: string }[], title = ""): void {
+	/**
+	 * Replace a note's chunks. `title` is the note's name; it and each chunk's heading weigh more than body text.
+	 * `rest` is the text of the note that is in no chunk (its properties, a heading with nothing
+	 * under it): its words, and the name's, count as present for `absentWords` and for nothing else.
+	 */
+	setFile(path: string, chunks: { heading: string; text: string }[], title = "", rest = ""): void {
 		this.remove(path);
+		const starts = new Set<string>();
+		for (const t of lexTokens(`${title}\n${rest}`)) if (t.length >= ABSENT_PREFIX) starts.add(t.slice(0, ABSENT_PREFIX));
+		if (starts.size) {
+			this.outside.set(path, Array.from(starts));
+			for (const s of starts) this.outsideStarts.set(s, (this.outsideStarts.get(s) ?? 0) + 1);
+		}
 		if (chunks.length === 0) return;
 		const ids: number[] = [];
 		chunks.forEach((chunk, idx) => {
@@ -138,6 +158,12 @@ export class LexicalIndex {
 	}
 
 	remove(path: string): void {
+		for (const s of this.outside.get(path) ?? []) {
+			const n = (this.outsideStarts.get(s) ?? 1) - 1;
+			if (n > 0) this.outsideStarts.set(s, n);
+			else this.outsideStarts.delete(s);
+		}
+		this.outside.delete(path);
 		const ids = this.byPath.get(path);
 		if (!ids) return;
 		for (const id of ids) {
@@ -154,6 +180,11 @@ export class LexicalIndex {
 	}
 
 	rename(oldPath: string, newPath: string): void {
+		const outside = this.outside.get(oldPath);
+		if (outside) {
+			this.outside.delete(oldPath);
+			this.outside.set(newPath, outside);
+		}
 		const ids = this.byPath.get(oldPath);
 		if (!ids) return;
 		this.byPath.delete(oldPath);
@@ -197,8 +228,11 @@ export class LexicalIndex {
 	 * wheels is answered with passages about everything else in the question, and a small model
 	 * reads those as the answer; told that "wheels" appears nowhere, it can say so. Deliberately
 	 * cautious: words of four letters or more only (see `absenceKeys`), and "decide" counts as
-	 * present when the notes say "decided" or "decision". True of the notes in this index only: the
-	 * caller answers for the notes it has not read yet (`SemanticIndex.absentWords`).
+	 * present when the notes say "decided" or "decision". A word that a note has only in its name,
+	 * its properties or a heading with nothing under it is present too (`setFile`'s `rest`): "which
+	 * notes are paused?" was told that no note contains "paused" in a vault that keeps
+	 * `status: paused` in its properties. True of the notes in this index only: the caller answers
+	 * for the notes it has not read yet (`SemanticIndex.absentWords`).
 	 */
 	absentWords(query: string): string[] {
 		if (this.live === 0) return [];
@@ -206,9 +240,17 @@ export class LexicalIndex {
 		if (words.length === 0) return [];
 		const wanted = new Set(words.flatMap((w) => absenceKeys(w) ?? []));
 		const found = new Set<string>();
-		for (const term of this.postings.keys()) {
-			const start = term.slice(0, ABSENT_PREFIX);
-			if (wanted.has(start) && found.add(start).size === wanted.size) break;
+		for (const start of wanted) if (this.outsideStarts.has(start)) found.add(start);
+		if (found.size < wanted.size) {
+			for (const [term, list] of this.postings) {
+				const start = term.slice(0, ABSENT_PREFIX);
+				if (!wanted.has(start) || found.has(start)) continue;
+				// A chunk that was removed or replaced stays in the lists until they are compacted: only
+				// a live one has the word. Without this a word edited out of its last note, or gone with
+				// a deleted note, went on counting as present until the next start.
+				if (!list.some((packed) => this.docs[Math.floor(packed / TF_BASE)])) continue;
+				if (found.add(start).size === wanted.size) break;
+			}
 		}
 		return words.filter((w) => !(absenceKeys(w) ?? []).some((k) => found.has(k)));
 	}
