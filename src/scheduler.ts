@@ -80,10 +80,26 @@ export class OverlayVault implements VaultAccess {
 	private writes = new Map<string, string>();
 	private created = new Set<string>();
 
-	constructor(private base: VaultAccess) {}
+	/**
+	 * `hidden` takes notes out of the run's sight altogether: not listed, not found, not read, not
+	 * written. The nightly job is told to leave daily notes older than two days alone; told is not
+	 * enough for a 9B model (it compiled June's notes in a run meant for September onward), so
+	 * those notes are simply not there for it.
+	 */
+	constructor(
+		private base: VaultAccess,
+		private hidden: (path: string) => boolean = () => false,
+	) {}
+
+	private refuse(path: string): never {
+		throw new Error(`${path} is outside what this scheduled run covers; leave it alone.`);
+	}
 
 	listNotes(): NoteInfo[] {
-		const notes = this.base.listNotes().map((n) => (this.writes.has(n.path) ? { ...n, size: this.writes.get(n.path)!.length } : n));
+		const notes = this.base
+			.listNotes()
+			.filter((n) => !this.hidden(n.path))
+			.map((n) => (this.writes.has(n.path) ? { ...n, size: this.writes.get(n.path)!.length } : n));
 		for (const path of this.created) {
 			const name = path.split("/").pop() ?? path;
 			notes.push({ path, basename: name.replace(/\.md$/i, ""), folder: path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "", mtime: Date.now(), ctime: Date.now(), size: this.writes.get(path)?.length ?? 0 });
@@ -96,25 +112,29 @@ export class OverlayVault implements VaultAccess {
 		for (const c of [p, `${p}.md`]) if (this.created.has(c)) return c;
 		const name = p.replace(/\.md$/i, "").toLowerCase();
 		for (const c of this.created) if ((c.split("/").pop() ?? "").replace(/\.md$/i, "").toLowerCase() === name) return c;
-		return this.base.resolve(pathOrName);
+		const found = this.base.resolve(pathOrName);
+		return found && this.hidden(found) ? null : found;
 	}
 
 	exists(path: string): boolean {
-		return this.created.has(path) || this.base.exists(path);
+		return this.created.has(path) || (this.base.exists(path) && !this.hidden(path));
 	}
 
 	async read(path: string): Promise<string> {
+		if (this.hidden(path)) this.refuse(path);
 		const held = this.writes.get(path);
 		return held !== undefined ? held : this.base.read(path);
 	}
 
 	async create(path: string, content: string): Promise<void> {
+		if (this.hidden(path)) this.refuse(path);
 		if (this.exists(path)) throw new Error(`Already exists: ${path}`);
 		this.created.add(path);
 		this.writes.set(path, content);
 	}
 
 	async modify(path: string, content: string): Promise<void> {
+		if (this.hidden(path)) this.refuse(path);
 		if (!this.exists(path)) throw new Error(`Note not found: ${path}`);
 		this.writes.set(path, content);
 	}
@@ -172,6 +192,48 @@ export class OverlayVault implements VaultAccess {
 		}
 		return out;
 	}
+}
+
+/** Daily notes in `folder` whose name is a date before `since` (YYYY-MM-DD): what a job that covers `since` onward must not see. */
+export function dailyNotesBefore(folder: string, since: string): (path: string) => boolean {
+	const prefix = folder.replace(/^\/+|\/+$/g, "");
+	return (path) => {
+		const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+		if (dir !== prefix) return false;
+		const date = /(\d{4}-\d{2}-\d{2})/.exec(path.slice(dir.length))?.[1];
+		return date !== undefined && date < since;
+	};
+}
+
+type QueuedChange = { path: string; tool: "create_note" | "edit_note"; before: string; after: string };
+
+/**
+ * Gives every topic note a run wrote its "## Sources" section. The job is told to end each note
+ * it creates with links to the daily notes the content came from, and sometimes does not; a fact
+ * without its day is lost. The daily notes say where their inbox went ("Moved to [[Topics/X]]"),
+ * so the list is known without asking the model: any such daily note that the topic note does not
+ * link yet is added under Sources.
+ */
+export function ensureSources(changes: QueuedChange[], dailyFolder: string): QueuedChange[] {
+	const inDaily = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") === dailyFolder.replace(/^\/+|\/+$/g, "");
+	const link = (path: string) => path.replace(/\.md$/i, "");
+	return changes.map((c) => {
+		if (inDaily(c.path)) return c;
+		const target = link(c.path).toLowerCase();
+		const name = (c.path.split("/").pop() ?? c.path).replace(/\.md$/i, "").toLowerCase();
+		// Daily notes this run edited that now point at this note, by path or by bare name.
+		const from = changes
+			.filter((d) => inDaily(d.path) && d.after !== d.before)
+			.filter((d) => Array.from(d.after.matchAll(/\[\[([^\]|#]+)/g)).some((m) => !d.before.includes(m[0]) && [target, name].includes(m[1].trim().replace(/\.md$/i, "").toLowerCase())))
+			.map((d) => link(d.path))
+			.filter((p) => !c.after.includes(`[[${p}`))
+			.sort();
+		if (from.length === 0) return c;
+		const lines = from.map((p) => `- [[${p}]]`).join("\n");
+		const body = c.after.replace(/\s+$/, "");
+		const after = /^## Sources\s*$/m.test(body) ? body.replace(/^(## Sources[ \t]*\n(?:[ \t]*\n)?)/m, `$1${lines}\n`) + "\n" : `${body}\n\n## Sources\n\n${lines}\n`;
+		return { ...c, after };
+	});
 }
 
 export interface PendingChange {

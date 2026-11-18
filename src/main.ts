@@ -12,7 +12,7 @@ import { ConceptModal, HistoryModal, QuizModal } from "./feature-modals";
 import { cosine } from "./index";
 import { LECTURE_TOOLS, lectureCompanionApi, type LectureCompanionApi, type LocalVaultAgentApi } from "./lecture-companion";
 import { QuizEngine } from "./quiz";
-import { JOB_NAMES, OverlayVault, PendingQueue, digestPath, digestPrompt, dueJobs, localDate, planPending, recentNotes, renderDigest, type JobId } from "./scheduler";
+import { JOB_NAMES, OverlayVault, PendingQueue, dailyNotesBefore, digestPath, ensureSources, digestPrompt, dueJobs, localDate, planPending, recentNotes, renderDigest, type JobId } from "./scheduler";
 import { ImageReader, readImage, type VisionData } from "./vision";
 import { ReportModal, SetupModal } from "./help-modals";
 import { setLocale, t } from "./i18n";
@@ -1139,8 +1139,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	private async runDailyJob() {
 		await this.loadDailyNoteSettings();
-		const overlay = new OverlayVault(this.vault);
 		const since = localDate(new Date(Date.now() - 2 * 86_400_000));
+		const overlay = new OverlayVault(this.vault, dailyNotesBefore(this.dailyFolder, since));
 		const agent = new Agent({
 			client: this.client,
 			vault: overlay,
@@ -1162,7 +1162,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		} finally {
 			this.agentBusy = false;
 		}
-		return overlay.changes();
+		return ensureSources(await overlay.changes(), this.dailyFolder);
 	}
 
 	private async runDigestJob() {

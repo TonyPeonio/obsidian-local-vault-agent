@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OverlayVault, PendingQueue, digestPath, digestPrompt, dueJobs, lastScheduled, localDate, parseTime, planPending, recentNotes, renderDigest, type ScheduleSettings } from "../src/scheduler";
+import { OverlayVault, PendingQueue, dailyNotesBefore, digestPath, ensureSources, digestPrompt, dueJobs, lastScheduled, localDate, parseTime, planPending, recentNotes, renderDigest, type ScheduleSettings } from "../src/scheduler";
 import { FakeVault } from "./fakes";
 
 const S: ScheduleSettings = { nightlyDaily: true, nightlyTime: "02:00", weeklyDigest: true, digestDay: 0, digestTime: "18:00", digestFolder: "Digests" };
@@ -33,6 +33,53 @@ describe("schedule", () => {
 		expect(dueJobs(now, S, { daily: new Date(2026, 10, 17, 2, 5).getTime(), digest: new Date(2026, 10, 15, 18, 1).getTime() })).toEqual(["daily"]);
 		expect(dueJobs(now, S, { daily: new Date(2026, 10, 18, 2, 1).getTime(), digest: new Date(2026, 10, 10).getTime() })).toEqual(["digest"]);
 		expect(dueJobs(now, S, {})).toEqual([]);
+	});
+});
+
+describe("what a nightly run may see and what it leaves behind", () => {
+	it("hides daily notes older than its start date from every kind of access", async () => {
+		const base = new FakeVault({
+			"Daily/2026-08-30.md": "# old\n\n## Capture\n\n- from August",
+			"Daily/2026-09-01.md": "# new\n\n## Capture\n\n- from September",
+			"Daily/Templates/2026-01-01.md": "a dated note in a subfolder is not a daily note",
+			"Projects/2026-01-01 kickoff.md": "a dated note elsewhere",
+		});
+		const o = new OverlayVault(base, dailyNotesBefore("Daily", "2026-09-01"));
+		expect(o.listNotes().map((n) => n.path).sort()).toEqual(["Daily/2026-09-01.md", "Daily/Templates/2026-01-01.md", "Projects/2026-01-01 kickoff.md"]);
+		expect(o.exists("Daily/2026-08-30.md")).toBe(false);
+		expect(o.resolve("Daily/2026-08-30")).toBeNull();
+		await expect(o.read("Daily/2026-08-30.md")).rejects.toThrow(/outside what this scheduled run covers/);
+		await expect(o.modify("Daily/2026-08-30.md", "x")).rejects.toThrow(/outside what this scheduled run covers/);
+		await o.modify("Daily/2026-09-01.md", "changed");
+		expect((await o.changes()).map((c) => c.path)).toEqual(["Daily/2026-09-01.md"]);
+	});
+
+	it("adds the Sources a topic note is missing, from the daily notes that say their inbox moved there", () => {
+		const daily = (path: string, to: string) => ({ path, tool: "edit_note" as const, before: "## Capture\n\n- stuff", after: `## Capture\n\n- Moved to [[${to}]]` });
+		const out = ensureSources(
+			[
+				{ path: "Topics/Career.md", tool: "create_note", before: "", after: "# Career\n\n- Bison Oil and Gas\n" },
+				{ path: "Topics/Immunology.md", tool: "create_note", before: "", after: "# Immunology\n\n- receptors\n\n## Sources\n\n- [[Daily/2026-09-14]]\n" },
+				{ path: "Topics/Funding.md", tool: "edit_note", before: "# Funding\n\n## Sources\n\n- [[Daily/2026-08-01]]\n", after: "# Funding\n\n- NDSEG\n\n## Sources\n\n- [[Daily/2026-08-01]]\n" },
+				daily("Daily/2026-09-01.md", "Topics/Career"),
+				daily("Daily/2026-09-21.md", "Career"),
+				daily("Daily/2026-09-14.md", "Topics/Immunology"),
+				daily("Daily/2026-09-22.md", "Topics/Funding"),
+			],
+			"Daily",
+		);
+		expect(out[0].after).toBe("# Career\n\n- Bison Oil and Gas\n\n## Sources\n\n- [[Daily/2026-09-01]]\n- [[Daily/2026-09-21]]\n");
+		// Already complete: untouched.
+		expect(out[1].after).toBe("# Immunology\n\n- receptors\n\n## Sources\n\n- [[Daily/2026-09-14]]\n");
+		// An existing Sources section gains the day that was missing.
+		expect(out[2].after).toBe("# Funding\n\n- NDSEG\n\n## Sources\n\n- [[Daily/2026-09-22]]\n- [[Daily/2026-08-01]]\n");
+		// Daily notes are never given a Sources section themselves.
+		expect(out.slice(3).every((c) => !c.after.includes("## Sources"))).toBe(true);
+	});
+
+	it("leaves a run with nothing to add exactly as it was", () => {
+		const changes = [{ path: "Topics/A.md", tool: "create_note" as const, before: "", after: "# A\n" }];
+		expect(ensureSources(changes, "Daily")).toEqual(changes);
 	});
 });
 

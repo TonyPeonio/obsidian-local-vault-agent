@@ -24,7 +24,7 @@ import { ALL_TOOLS, extractSection } from "../src/tools";
 import { UndoStack, planRevert } from "../src/undo";
 import { LECTURE_TOOLS } from "../src/lecture-companion";
 import { QuizEngine } from "../src/quiz";
-import { OverlayVault } from "../src/scheduler";
+import { OverlayVault, dailyNotesBefore, ensureSources } from "../src/scheduler";
 import { ImageReader, readImage } from "../src/vision";
 import type { LectureInfo, LectureSource, ToolDefinition } from "../src/types";
 import { FakeVault } from "../tests/fakes";
@@ -717,7 +717,7 @@ async function main() {
 		const pristine = new FakeVault();
 		for (const [p, c] of original) pristine.seed(p, c);
 		const before = new Map<string, string>(original);
-		const overlay = new OverlayVault(pristine);
+		const overlay = new OverlayVault(pristine, dailyNotesBefore("Daily", since));
 		const nightly = new Agent({
 			client,
 			vault: overlay,
@@ -738,7 +738,7 @@ async function main() {
 				onUsage: () => steps++,
 			})
 			.catch((err: Error) => console.log(`  [error] ${err.message}`));
-		const changes = await overlay.changes();
+		const changes = ensureSources(await overlay.changes(), "Daily");
 		for (const c of changes) console.log(`  [queued] ${c.tool} ${c.path} (${c.after.length} chars)`);
 		let untouched = true;
 		for (const [path, content] of before) if (!pristine.exists(path) || (await pristine.read(path)) !== content) untouched = false;
