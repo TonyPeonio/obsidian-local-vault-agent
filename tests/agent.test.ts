@@ -609,6 +609,27 @@ describe("trimHistory", () => {
 	});
 });
 
+describe("what is added to a reply", () => {
+	it("goes on the reply that ends the turn, not on one that is sent back to the model", async () => {
+		const { agent, ollama } = setup(
+			[
+				{ tool: "read_note", args: { path: "Ideas/Sensors.md" } },
+				{ content: "The sensors are cheap. Let me check the other note as well." },
+				{ content: "Hall sensors are cheap, and the gantry uses an electromagnet." },
+			],
+			{ cfg: { autoContinue: true } },
+		);
+		const conv = newConversation();
+		await agent.run(conv, "What do my notes say about sensors?", {});
+		const replies = conv.messages.filter((m) => m.role === "assistant" && !m.tool_calls?.length);
+		expect(replies).toHaveLength(2);
+		// The announcement went back to the model as it was written: no footer for it to copy or argue with.
+		expect(replies[0].content).toBe("The sensors are cheap. Let me check the other note as well.");
+		expect(ollama.requests[2].messages.some((m) => m.content.includes("Sources:"))).toBe(false);
+		expect(replies[1].content).toContain("Sources: [[Ideas/Sensors]]");
+	});
+});
+
 describe("an answer that claims a search nobody made", () => {
 	it("is sent back once, and the corrected answer stands", async () => {
 		const { agent, ollama } = setup([

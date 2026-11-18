@@ -671,18 +671,53 @@ export class Agent {
 			// Stopped at the length limit, not at its own end: say so, so half an answer is not taken for all of it.
 			if (response.doneReason === "length" && !assistant.tool_calls?.length && assistant.content.trim()) assistant.content = `${assistant.content.trimEnd()}\n\n${CUT_OFF_NOTE}`;
 			if (assistant.content) assistant.content = linkifyNotePaths(assistant.content, vault);
-			// An answer built from notes it read but citing none of them gets a sources footer.
-			// A grep or passage search that hit a few notes counts too: models answer "it was on
-			// 2026-11-06" straight from the matching lines without citing the note they came from.
-			const sources = readPaths.length ? readPaths : pickSources(assistant.content, hitPaths, hitTexts);
-			if (!assistant.tool_calls?.length && writes === 0 && sources.length > 0 && !/\[\[/.test(assistant.content) && assistant.content.trim()) {
-				assistant.content = withSources(assistant.content, sources);
+
+			const calls = assistant.tool_calls ?? [];
+			// A reply with no tool call either ends the turn or is sent back to the model with a line
+			// from the agent. Which, is decided on what the model wrote, before anything is added to it.
+			let nudge: string | null = null;
+			if (calls.length === 0) {
+				if (!assistant.content.trim()) {
+					// A blank reply (usually after a huge tool batch) is never what the user wants.
+					if (emptyNudges < 1) {
+						emptyNudges++;
+						nudge = "Your reply was empty. Answer now with what you have found so far; if a step is still missing, do it.";
+					}
+				} else if (groundingNudges < 1 && toolsUsed === 0 && !conversation.messages.some((m) => m.role === "tool") && claimsUnmadeSearch(assistant.content) && !looksLikePermissionQuestion(assistant.content)) {
+					// "I found this by searching…" when nothing was searched: send it back once. (A reply that
+					// stops to ask "shall I proceed?" is answered below, and has to use the tools then.)
+					groundingNudges++;
+					nudge = UNMADE_SEARCH_NUDGE;
+				} else if (groundingNudges < 1 && unresolvedLinks(assistant.content, vault).length > 0) {
+					// A reply that cites notes which do not exist is fabricated. Send it back once.
+					groundingNudges++;
+					nudge = groundingNudge(unresolvedLinks(assistant.content, vault), toolsUsed > 0);
+				} else if (cfg.autoContinue && !rejected && followThroughNudges < FOLLOW_THROUGH_TEXTS.length && announcesNextStep(assistant.content)) {
+					// "I'll check the other note." with no tool call: the model narrated the step
+					// instead of taking it (common with thinking off). Send it back once.
+					nudge = FOLLOW_THROUGH_TEXTS[followThroughNudges++];
+				} else if (cfg.autoContinue && !rejected && autoContinues < MAX_AUTO_CONTINUES && looksLikePermissionQuestion(assistant.content) && !looksLikeChoiceQuestion(assistant.content)) {
+					// Small models like to stop and ask "shall I go on?". The user already said what
+					// they want and every write is approved separately, so answer for them.
+					autoContinues++;
+					nudge = AUTO_CONTINUE_TEXT;
+				}
 			}
-			// A rejected change ends with the user's decision, whatever the model wrote.
-			if (!assistant.tool_calls?.length && rejected && assistant.content.trim()) assistant.content = withRejectionQuestion(assistant.content);
-			// An answer from notes links the exact paragraphs it used (block ids are written on approval).
-			if (!assistant.tool_calls?.length && writes === 0 && !rejected && assistant.content.trim() && (cfg.citations ?? "blocks") !== "off" && unresolvedLinks(assistant.content, vault).length === 0) {
-				assistant.content = await this.citePassages(assistant.content, [...readPaths, ...hitPaths], cfg, conversation, turn, now, signal);
+			// Only the reply that ends the turn is dressed: a reply about to be sent back used to get
+			// a Sources footer, and could open the dialog that writes block ids into notes, for an
+			// answer the user never keeps.
+			if (calls.length === 0 && nudge === null && assistant.content.trim()) {
+				// An answer built from notes it read but citing none of them gets a sources footer.
+				// A grep or passage search that hit a few notes counts too: models answer "it was on
+				// 2026-11-06" straight from the matching lines without citing the note they came from.
+				const sources = readPaths.length ? readPaths : pickSources(assistant.content, hitPaths, hitTexts);
+				if (writes === 0 && sources.length > 0 && !/\[\[/.test(assistant.content)) assistant.content = withSources(assistant.content, sources);
+				// A rejected change ends with the user's decision, whatever the model wrote.
+				if (rejected) assistant.content = withRejectionQuestion(assistant.content);
+				// An answer from notes links the exact paragraphs it used (block ids are written on approval).
+				if (writes === 0 && !rejected && (cfg.citations ?? "blocks") !== "off" && unresolvedLinks(assistant.content, vault).length === 0) {
+					assistant.content = await this.citePassages(assistant.content, [...readPaths, ...hitPaths], cfg, conversation, turn, now, signal);
+				}
 			}
 			conversation.messages.push(assistant);
 			callbacks.onAssistantDone?.(assistant);
@@ -698,60 +733,12 @@ export class Agent {
 					loadMs: ms(response.loadDuration),
 				});
 			}
-
-			const calls = assistant.tool_calls ?? [];
-			if (calls.length === 0 && !assistant.content.trim() && emptyNudges < 1) {
-				// A blank reply (usually after a huge tool batch) is never what the user wants.
-				emptyNudges++;
-				const nudge = "Your reply was empty. Answer now with what you have found so far; if a step is still missing, do it.";
+			if (nudge !== null) {
 				conversation.messages.push({ role: "user", content: nudge, nudge: true });
 				callbacks.onAutoContinue?.(nudge);
 				continue;
 			}
-			if (calls.length === 0) {
-				// "I found this by searching…" when nothing was searched: send it back once. (A reply that
-				// stops to ask "shall I proceed?" is answered below, and has to use the tools then.)
-				if (groundingNudges < 1 && toolsUsed === 0 && !conversation.messages.some((m) => m.role === "tool") && claimsUnmadeSearch(assistant.content) && !looksLikePermissionQuestion(assistant.content)) {
-					groundingNudges++;
-					conversation.messages.push({ role: "user", content: UNMADE_SEARCH_NUDGE, nudge: true });
-					callbacks.onAutoContinue?.(UNMADE_SEARCH_NUDGE);
-					continue;
-				}
-				// A reply that cites notes which do not exist is fabricated. Send it back once.
-				if (groundingNudges < 1) {
-					const bad = unresolvedLinks(assistant.content, vault);
-					if (bad.length > 0) {
-						groundingNudges++;
-						const nudge = groundingNudge(bad, toolsUsed > 0);
-						conversation.messages.push({ role: "user", content: nudge, nudge: true });
-						callbacks.onAutoContinue?.(nudge);
-						continue;
-					}
-				}
-				// "I'll check the other note." with no tool call: the model narrated the step
-				// instead of taking it (common with thinking off). Send it back once.
-				if (cfg.autoContinue && !rejected && followThroughNudges < FOLLOW_THROUGH_TEXTS.length && announcesNextStep(assistant.content)) {
-					const nudge = FOLLOW_THROUGH_TEXTS[followThroughNudges++];
-					conversation.messages.push({ role: "user", content: nudge, nudge: true });
-					callbacks.onAutoContinue?.(nudge);
-					continue;
-				}
-				// Small models like to stop and ask "shall I go on?". The user already said what
-				// they want and every write is approved separately, so answer for them.
-				if (
-					cfg.autoContinue &&
-					!rejected &&
-					autoContinues < MAX_AUTO_CONTINUES &&
-					looksLikePermissionQuestion(assistant.content) &&
-					!looksLikeChoiceQuestion(assistant.content)
-				) {
-					autoContinues++;
-					conversation.messages.push({ role: "user", content: AUTO_CONTINUE_TEXT, nudge: true });
-					callbacks.onAutoContinue?.(AUTO_CONTINUE_TEXT);
-					continue;
-				}
-				return;
-			}
+			if (calls.length === 0) return;
 
 			let batchChars = 0;
 			const cap = batchBudget(cfg.numCtx);
