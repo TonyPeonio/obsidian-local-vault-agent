@@ -318,7 +318,7 @@ async function main() {
 	const iso = facts.lectures.find((l) => l.term.includes("isolation forest"))!;
 	await scenario("qa-lecture", "Find a lecture by concept", "Which lecture covered isolation forests, and on what date?", (a, tools) => [
 		["names the ML course or note", /CSCI 470|Machine Learning/i.test(a)],
-		[`gives the date ${iso.date}`, a.includes(iso.date)],
+		[`gives the date ${iso.date}`, saysDate(a, iso.date)],
 		["cites with a wikilink", /\[\[/.test(a)],
 		["used ≤ 4 tool calls", tools.length <= 4],
 	]);
@@ -344,7 +344,7 @@ async function main() {
 		"What did I decide about the chess robot's power supply, and when?",
 		(a, tools) => [
 			["says 24V", /24 ?V/i.test(a)],
-			["gives 2026-10-14", a.includes("2026-10-14")],
+			["gives 2026-10-14", saysDate(a, "2026-10-14")],
 			["used ≤ 5 tool calls", tools.length <= 5],
 		],
 		{ conversation: decisionConversation },
@@ -946,6 +946,18 @@ function meterReading(client: OllamaClient): void {
 		kept = `${sent},${wire(res.message)}`;
 		return res;
 	};
+}
+
+/** The answer gives this day: as written in the notes (2026-11-06) or in words ("November 6, 2026", "6 November 2026", "Nov 6th"). */
+function saysDate(answer: string, isoDate: string): boolean {
+	if (answer.includes(isoDate)) return true;
+	const [y, m, d] = isoDate.split("-").map(Number);
+	const month = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][m - 1];
+	const name = `(?:${month}|${month.slice(0, 3)}\\.?)`;
+	const day = `0?${d}(?:st|nd|rd|th)?`;
+	// The year, when one is given next to the day, has to be the right one.
+	const re = new RegExp(`\\b(?:${name}\\s+${day}\\b(?!\\s*,?\\s*(?!${y})\\d{4})|${day}\\s+(?:of\\s+)?${name}\\b(?!\\s*,?\\s*(?!${y})\\d{4}))`, "i");
+	return re.test(answer);
 }
 
 function gitCommit(): string | undefined {
