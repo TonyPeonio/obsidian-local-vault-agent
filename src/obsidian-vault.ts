@@ -1,12 +1,29 @@
 import { App, MarkdownView, TFile, getAllTags, normalizePath } from "obsidian";
 import type { FileInfo, NoteInfo, NoteMetadata, VaultAccess } from "./types";
 
-/** `VaultAccess` backed by the live Obsidian app. */
+/** What every refused operation on an excluded path says; it does not confirm that the path exists. */
+export function excludedMessage(path: string): string {
+	return `"${path}" is inside a folder that is excluded in the plugin's settings: the agent does not read, list, create or change anything there.`;
+}
+
+/**
+ * `VaultAccess` backed by the live Obsidian app.
+ *
+ * The excluded folders are a boundary, enforced here and not only where notes are listed: a path
+ * inside one cannot be read, written, created, moved into or out of, or trashed, is reported as not
+ * existing, has no metadata, is never named as a backlink, and is not "the open note" even while
+ * the user has it open. Tools above this layer cannot forget the rule, because no call gets through.
+ */
 export class ObsidianVault implements VaultAccess {
 	constructor(
 		private app: App,
 		private isExcluded: (path: string) => boolean,
 	) {}
+
+	private guard(path: string): void {
+		const normalized = normalizePath(path);
+		if (this.isExcluded(normalized) || (!/\.[a-z0-9]+$/i.test(normalized) && this.isExcluded(`${normalized}.md`))) throw new Error(excludedMessage(path));
+	}
 
 	listNotes(): NoteInfo[] {
 		return this.app.vault
@@ -51,34 +68,41 @@ export class ObsidianVault implements VaultAccess {
 	}
 
 	exists(path: string): boolean {
-		return this.fileFor(path) !== null;
+		const file = this.fileFor(path);
+		return file !== null && !this.isExcluded(file.path);
 	}
 
 	async read(path: string): Promise<string> {
+		this.guard(path);
 		const file = this.fileFor(path);
 		if (!file) throw new Error(`Note not found: ${path}`);
 		return this.app.vault.cachedRead(file);
 	}
 
 	async create(path: string, content: string): Promise<void> {
+		this.guard(path);
 		const normalized = normalizePath(path);
 		await this.ensureFolder(normalized);
 		await this.app.vault.create(normalized, content);
 	}
 
 	async readBinary(path: string): Promise<ArrayBuffer> {
+		this.guard(path);
 		const file = this.app.vault.getFileByPath(normalizePath(path));
 		if (!file) throw new Error(`File not found: ${path}`);
 		return this.app.vault.readBinary(file);
 	}
 
 	async createBinary(path: string, data: ArrayBuffer): Promise<void> {
+		this.guard(path);
 		const normalized = normalizePath(path);
 		await this.ensureFolder(normalized);
 		await this.app.vault.createBinary(normalized, data);
 	}
 
 	async rename(path: string, newPath: string): Promise<void> {
+		this.guard(path);
+		this.guard(newPath);
 		const file = this.app.vault.getFileByPath(normalizePath(path)) ?? this.fileFor(path);
 		if (!file) throw new Error(`File not found: ${path}`);
 		const target = normalizePath(newPath);
@@ -99,6 +123,7 @@ export class ObsidianVault implements VaultAccess {
 	}
 
 	async modify(path: string, content: string): Promise<void> {
+		this.guard(path);
 		const file = this.fileFor(path);
 		if (!file) throw new Error(`Note not found: ${path}`);
 		// `process` serialises against other writers; the content was approved as a whole,
@@ -132,6 +157,7 @@ export class ObsidianVault implements VaultAccess {
 	}
 
 	async trash(path: string): Promise<void> {
+		this.guard(path);
 		const file = this.app.vault.getFileByPath(normalizePath(path)) ?? this.fileFor(path);
 		if (!file) throw new Error(`File not found: ${path}`);
 		// Honours the user's "Deleted files" preference (system trash / .trash / permanent).
@@ -141,7 +167,7 @@ export class ObsidianVault implements VaultAccess {
 	getMetadata(path: string): NoteMetadata {
 		const file = this.fileFor(path);
 		const empty: NoteMetadata = { tags: [], links: [], backlinks: [], headings: [], frontmatter: {} };
-		if (!file) return empty;
+		if (!file || this.isExcluded(file.path)) return empty;
 		const cache = this.app.metadataCache.getFileCache(file);
 		if (!cache) return empty;
 		const tags = Array.from(new Set(getAllTags(cache) ?? []));
@@ -174,6 +200,8 @@ export class ObsidianVault implements VaultAccess {
 			const map = new Map<string, string[]>();
 			const resolved = this.app.metadataCache.resolvedLinks;
 			for (const source of Object.keys(resolved)) {
+				// A note in an excluded folder is not named anywhere, not even as "links here".
+				if (this.isExcluded(source)) continue;
 				for (const target of Object.keys(resolved[source])) {
 					const list = map.get(target);
 					if (list) list.push(source);
@@ -188,11 +216,14 @@ export class ObsidianVault implements VaultAccess {
 
 	getActiveNotePath(): string | null {
 		const file = this.app.workspace.getActiveFile();
-		return file && file.extension === "md" ? file.path : null;
+		return file && file.extension === "md" && !this.isExcluded(file.path) ? file.path : null;
 	}
 
 	getSelection(): string | null {
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		// Text selected in an excluded note stays there.
+		const open = this.app.workspace.getActiveFile();
+		if (open && this.isExcluded(open.path)) return null;
 		const sel = view?.editor?.getSelection();
 		return sel && sel.length > 0 ? sel : null;
 	}
