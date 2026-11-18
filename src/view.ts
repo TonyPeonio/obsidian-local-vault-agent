@@ -6,6 +6,7 @@ import { AUTO_CONTINUE_TEXT, FOLLOW_THROUGH_TEXT, GROUNDING_PREFIX, newConversat
 import { unattendedWrites } from "./approval";
 import { recordOutcomes, restoredCards, type ToolOutcome } from "./chat-restore";
 import type { Lease } from "./busy";
+import { MAX_IMAGES_PER_MESSAGE, attachmentName, checkImage, withImages, type ReadImage } from "./composer-images";
 import { ComposerSuggest } from "./composer-suggest";
 import type { GardenFix, GardenReport } from "./gardener";
 import { HELP_TEXT, attachMentions, matchCommands, matchNotes, parseSlash } from "./mentions";
@@ -53,6 +54,9 @@ export class AgentView extends ItemView {
 	/** Messages sent while the model was busy; they go out, in order, when it is free. */
 	private queue = new MessageQueue();
 	private queueEl!: HTMLElement;
+	/** Vault paths of pictures pasted or dropped into the message box, sent with the next message. */
+	private pendingImages: string[] = [];
+	private pendingEl!: HTMLElement;
 	private unsubscribeStatus: (() => void) | null = null;
 	private unsubscribeGists: (() => void) | null = null;
 	private usage: UsageInfo | null = null;
@@ -172,6 +176,10 @@ export class AgentView extends ItemView {
 		});
 		this.syncJobBar();
 
+		// Pictures pasted or dropped into the message box wait here until the message is sent.
+		this.pendingEl = root.createDiv({ cls: "lva-pending" });
+		this.pendingEl.hide();
+
 		// Composer
 		const composer = root.createDiv({ cls: "lva-composer" });
 		this.inputEl = composer.createEl("textarea", {
@@ -202,6 +210,29 @@ export class AgentView extends ItemView {
 			}
 		});
 		this.inputEl.addEventListener("input", () => this.autoGrow());
+		// A picture from the clipboard is saved as an attachment and read with the vision model.
+		this.inputEl.addEventListener("paste", (e) => {
+			const data = e.clipboardData;
+			const files = Array.from(data?.files ?? []).filter((f) => f.type.startsWith("image/"));
+			// Text copied from an office document comes with a picture of itself: the text is what is pasted.
+			if (files.length === 0 || data?.getData("text/plain")) return;
+			e.preventDefault();
+			void this.addImages(files);
+		});
+		composer.addEventListener("dragover", (e) => {
+			if (!e.dataTransfer?.types.includes("Files")) return;
+			e.preventDefault();
+			composer.addClass("lva-drop");
+		});
+		composer.addEventListener("dragleave", () => composer.removeClass("lva-drop"));
+		composer.addEventListener("drop", (e) => {
+			composer.removeClass("lva-drop");
+			const files = Array.from(e.dataTransfer?.files ?? []);
+			if (files.length === 0) return;
+			e.preventDefault();
+			e.stopPropagation();
+			void this.addImages(files);
+		});
 		this.inputEl.addEventListener("focus", () => {
 			this.updateMic();
 			this.syncApproveAll();
@@ -416,14 +447,62 @@ export class AgentView extends ItemView {
 	}
 
 	/** Takes a message: sends it now, or queues it (visibly) while the model is busy. */
-	private async accept(text: string, attach: boolean): Promise<void> {
+	private async accept(text: string, attach: boolean, images: string[] = []): Promise<void> {
 		if (!text) return;
 		if (this.mustWait(text)) {
-			this.queue.add(text, attach);
+			this.queue.add(text, attach, images);
 			this.renderQueue();
 			return;
 		}
-		await this.deliver({ text, attach });
+		await this.deliver({ text, attach, images });
+	}
+
+	/**
+	 * Pictures pasted or dropped into the message box: each is saved where Obsidian keeps
+	 * attachments (a new file, never over an existing one) and waits above the box for the message.
+	 */
+	private async addImages(files: File[]): Promise<void> {
+		if (!this.plugin.visionAvailable) {
+			new Notice(t("notice.image.noVision"), 8000);
+			return;
+		}
+		for (const file of files) {
+			if (this.pendingImages.length >= MAX_IMAGES_PER_MESSAGE) {
+				new Notice(t("notice.image.tooMany", { n: MAX_IMAGES_PER_MESSAGE }), 8000);
+				break;
+			}
+			const check = checkImage(file);
+			if (!check.ok) {
+				new Notice(t(`notice.image.${check.reason}`, { name: file.name || t("notice.image.unnamed") }), 8000);
+				continue;
+			}
+			try {
+				this.pendingImages.push(await this.plugin.saveAttachment(attachmentName(file, check.extension, new Date()), await file.arrayBuffer()));
+			} catch (err) {
+				new Notice(t("notice.image.saveFailed", { error: (err as Error).message ?? String(err) }), 8000);
+			}
+		}
+		this.renderPending();
+		this.inputEl.focus();
+	}
+
+	/** Draws the pictures waiting for the next message, each with a button that leaves it out (the file stays in the vault). */
+	private renderPending(): void {
+		this.pendingEl.empty();
+		this.pendingEl.toggle(this.pendingImages.length > 0);
+		for (const path of this.pendingImages) {
+			const name = path.slice(path.lastIndexOf("/") + 1);
+			const chip = this.pendingEl.createDiv({ cls: "lva-pending-image" });
+			const src = this.plugin.attachmentPreview(path);
+			if (src) chip.createEl("img", { attr: { src, alt: "" } });
+			chip.createSpan({ cls: "lva-pending-name", text: name });
+			const remove = chip.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.image.remove", { name }) } });
+			setIcon(remove, "x");
+			remove.addEventListener("click", () => {
+				this.pendingImages = this.pendingImages.filter((p) => p !== path);
+				this.renderPending();
+			});
+		}
 	}
 
 	/** Draws the waiting messages above the message box, each with a button that takes it back. */
@@ -436,7 +515,7 @@ export class AgentView extends ItemView {
 		for (const item of this.queue.list) {
 			const row = this.queueEl.createDiv({ cls: "lva-queued" });
 			setIcon(row.createSpan({ cls: "lva-queued-icon" }), "clock");
-			row.createSpan({ cls: "lva-queued-text", text: queuePreview(item.text) });
+			row.createSpan({ cls: "lva-queued-text", text: queuePreview(item.text) + (item.images.length ? ` · ${t("view.queue.images", { n: item.images.length })}` : "") });
 			const back = row.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.queue.takeBack") } });
 			setIcon(back, "undo-2");
 			back.addEventListener("click", () => {
@@ -447,11 +526,15 @@ export class AgentView extends ItemView {
 		}
 	}
 
-	/** Puts messages that will not be sent back into the message box, before what is being typed there. */
+	/** Puts messages that will not be sent back into the message box, before what is being typed there, with their pictures. */
 	private backToBox(messages: QueuedMessage[]): void {
 		if (messages.length === 0) return;
 		this.inputEl.value = restoredDraft(messages, this.inputEl.value);
 		this.autoGrow();
+		const images = messages.flatMap((m) => m.images);
+		if (images.length === 0) return;
+		this.pendingImages = [...images, ...this.pendingImages];
+		this.renderPending();
 	}
 
 	/** Empties the queue into the message box (Stop, or a turn that failed): nothing waiting is sent, nothing typed is lost. */
@@ -697,23 +780,36 @@ export class AgentView extends ItemView {
 
 	/** The message box was submitted: the message is sent, or queued while the model is busy. Either way the box is free for the next one. */
 	private async submit(): Promise<void> {
-		const text = this.inputEl.value.trim();
+		const images = this.pendingImages;
+		// A picture alone is a question too.
+		const text = this.inputEl.value.trim() || (images.length ? t(images.length === 1 ? "view.image.question" : "view.image.question.many") : "");
 		if (!text) return;
 		this.inputEl.value = "";
 		this.autoGrow();
-		await this.accept(text, true);
+		if (images.length) {
+			this.pendingImages = [];
+			this.renderPending();
+		}
+		await this.accept(text, true, images);
 	}
 
 	/** Sends one message now: a command, a quiz answer, a quiz request, or a turn of the agent. */
-	private async deliver(item: Pick<QueuedMessage, "text" | "attach">): Promise<void> {
-		const { text, attach } = item;
+	private async deliver(item: Pick<QueuedMessage, "text" | "attach" | "images">): Promise<void> {
+		const { text, attach, images } = item;
 		/** Back to the front of the queue: something took the model between the check and now. */
 		const requeue = () => {
-			this.queue.putBack({ id: 0, images: [], ...item });
+			this.queue.putBack({ id: 0, ...item });
 			this.renderQueue();
+		};
+		// Only a turn of the agent takes pictures; for anything else they stay with the message box.
+		const keepImages = () => {
+			if (images.length === 0) return;
+			this.pendingImages = [...images, ...this.pendingImages];
+			this.renderPending();
 		};
 		const slash = parseSlash(text);
 		if (slash) {
+			keepImages();
 			await this.runSlash(slash.id);
 			return;
 		}
@@ -726,10 +822,12 @@ export class AgentView extends ItemView {
 			return;
 		}
 		if (this.quiz) {
+			keepImages();
 			await this.answerQuiz(text);
 			return;
 		}
 		if (parseQuizRequest(text, new Date())) {
+			keepImages();
 			await this.startQuiz(text, this.plugin.settings.quizQuestions);
 			return;
 		}
@@ -767,11 +865,13 @@ export class AgentView extends ItemView {
 					askingLoaded = false;
 				});
 		};
+		/** The attached picture the vision model is reading, before the agent's turn starts. */
+		let reading: { n: number; total: number } | null = null;
 		const progress = () => {
 			const now = Date.now();
 			const phase = tp.phase(now);
-			if (phase.kind === "loading") askLoaded();
-			const parts = [phaseText(phase)];
+			if (phase.kind === "loading" && !reading) askLoaded();
+			const parts = [reading ? t("view.phase.image", reading) : phaseText(phase)];
 			if (calls > 0) parts.push(t("view.status.calls", { calls }));
 			parts.push(t("view.status.secs", { secs: Math.round((now - started) / 1000) }));
 			this.updateStatus(parts.join(" · "));
@@ -794,13 +894,47 @@ export class AgentView extends ItemView {
 			ticker = window.setInterval(progress, 1000);
 			const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
 			user.createDiv({ cls: "lva-bubble", text });
-			const { message, attached } = attach ? await attachMentions(text, this.plugin.vault, this.plugin.settings.maxToolResultChars * 2) : { message: text, attached: [] as string[] };
+			const noted = attach ? await attachMentions(text, this.plugin.vault, this.plugin.settings.maxToolResultChars * 2) : { message: text, attached: [] as string[] };
+			const attached = noted.attached;
+			let message = noted.message;
+			if (images.length) {
+				const strip = user.createDiv({ cls: "lva-attached-images" });
+				for (const path of images) {
+					const src = this.plugin.attachmentPreview(path);
+					if (src) strip.createEl("img", { attr: { src, alt: path } });
+					else strip.createSpan({ cls: "lva-attached", text: path });
+				}
+			}
 			if (attached.length) {
 				user.createDiv({ cls: "lva-attached", text: `Attached: ${attached.map((p) => p.replace(/\.md$/i, "")).join(", ")}` });
 			}
 			// The reader's own message: always shown, wherever they had scrolled to.
 			this.scrollToBottom(true);
-			// The notes attached to the message are read by the model too.
+			if (images.length) {
+				// Read as the agent's read_image tool reads a picture (and cached the same way), so the
+				// model starts with what is in it instead of having to ask.
+				const read: ReadImage[] = [];
+				for (const path of images) {
+					reading = { n: read.length + 1, total: images.length };
+					progress();
+					try {
+						read.push({ path, text: await this.plugin.vision.describe(path, { signal: lease.signal }) });
+					} catch (err) {
+						if (lease.stopped) break;
+						read.push({ path, error: (err as Error).message ?? String(err) });
+					}
+					if (lease.stopped) break;
+				}
+				reading = null;
+				if (lease.stopped) {
+					// Stopped before the agent saw the message: it goes back into the message box, pictures included.
+					user.remove();
+					this.backToBox([{ id: 0, text, attach, images }]);
+					return;
+				}
+				message = withImages(message, read, this.plugin.settings.maxToolResultChars);
+			}
+			// The notes and pictures attached to the message are read by the model too.
 			tp.added(message.length - text.length);
 			askLoaded();
 			await this.plugin.agent.run(

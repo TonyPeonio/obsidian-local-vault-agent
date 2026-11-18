@@ -17,8 +17,10 @@ interface Harness {
 	quiz: null;
 	lease: { stop(): void } | null;
 	inputEl: { value: string };
+	pendingImages: string[];
 	plugin: { busy: BusyGate };
 	delivered: string[];
+	deliveredImages: string[][];
 	submit(): Promise<void>;
 	send(text: string, attach?: boolean): Promise<void>;
 	stop(): void;
@@ -39,10 +41,14 @@ function view(): Harness {
 	v.inputEl = { value: "" };
 	v.plugin = { busy: new BusyGate() };
 	v.delivered = [];
+	v.deliveredImages = [];
+	v.pendingImages = [];
 	v.renderQueue = () => undefined;
+	v.renderPending = () => undefined;
 	v.autoGrow = () => undefined;
-	v.deliver = async (item: { text: string }) => {
+	v.deliver = async (item: { text: string; images: string[] }) => {
 		v.delivered.push(item.text);
+		v.deliveredImages.push(item.images);
 		// Commands end at once; anything else is a turn that runs until finishTurn().
 		if (!item.text.startsWith("/")) v.running = true;
 	};
@@ -153,6 +159,46 @@ describe("messages sent while the chat is busy", () => {
 		v.finishTurn();
 		await settle();
 		expect(v.delivered).toEqual(["first", "/help", "/history", "second"]);
+	});
+
+	it("sends the pictures waiting above the message box with the message, once", async () => {
+		const v = view();
+		v.pendingImages = ["Attachments/Pasted image 1.png"];
+		await type(v, "What number is this?");
+		expect(v.delivered).toEqual(["What number is this?"]);
+		expect(v.deliveredImages).toEqual([["Attachments/Pasted image 1.png"]]);
+		expect(v.pendingImages).toEqual([]);
+		v.finishTurn();
+		await settle();
+		await type(v, "And without a picture?");
+		expect(v.deliveredImages[1]).toEqual([]);
+	});
+
+	it("asks what is in a picture that is sent without any text", async () => {
+		const v = view();
+		v.pendingImages = ["a.png"];
+		await type(v, "");
+		expect(v.delivered).toEqual(["What is in the attached image?"]);
+		v.finishTurn();
+		v.pendingImages = ["a.png", "b.jpg"];
+		await type(v, "  ");
+		await settle();
+		expect(v.delivered[1]).toBe("What is in the attached images?");
+	});
+
+	it("keeps a queued message's pictures with it, and gives them back on Stop", async () => {
+		const v = view();
+		await type(v, "first");
+		v.pendingImages = ["Attachments/board.png"];
+		await type(v, "second, with a picture");
+		expect(v.queue.list[0].images).toEqual(["Attachments/board.png"]);
+		expect(v.pendingImages).toEqual([]);
+		v.pendingImages = ["Attachments/later.png"];
+		v.lease = { stop: () => undefined };
+		v.stop();
+		expect(v.inputEl.value).toBe("second, with a picture");
+		// The returned message's picture first, then the one added since.
+		expect(v.pendingImages).toEqual(["Attachments/board.png", "Attachments/later.png"]);
 	});
 
 	it("leaves the message box alone when a command sends a prompt for the user", async () => {

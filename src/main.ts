@@ -647,6 +647,27 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		return findEditorView(this.app);
 	}
 
+	/**
+	 * Saves a file pasted or dropped into the chat where Obsidian puts attachments (Settings → Files
+	 * and links, relative to the open note when the setting says so), under a name that is free.
+	 * Never replaces a file: Obsidian picks the free name, and creating a file that exists fails.
+	 * Returns the vault path.
+	 */
+	async saveAttachment(name: string, data: ArrayBuffer): Promise<string> {
+		const source = this.app.workspace.getActiveFile()?.path ?? "";
+		const path = normalizePath(await this.app.fileManager.getAvailablePathForAttachment(name, source));
+		const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+		if (folder && !this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
+		const file = await this.app.vault.createBinary(path, data);
+		return file.path;
+	}
+
+	/** A URL the chat can show a vault image from (a thumbnail of an attached picture), or null when the file is gone. */
+	attachmentPreview(path: string): string | null {
+		const file = this.app.vault.getFileByPath(normalizePath(path));
+		return file ? this.app.vault.getResourcePath(file) : null;
+	}
+
 	/** Asks for an instruction and has the agent rewrite the selected text (command and /edit). */
 	async editSelection(view?: AgentView | null): Promise<void> {
 		const editorView = this.activeEditorView();

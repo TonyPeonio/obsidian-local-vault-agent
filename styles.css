@@ -607,6 +607,52 @@
 	margin-top: var(--size-4-1);
 }
 
+/* Pictures pasted or dropped into the message box, waiting for the message */
+.lva-pending {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 6px 8px 0;
+}
+.lva-pending-image {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 100%;
+	padding: 2px 2px 2px 4px;
+	font-size: var(--font-ui-smaller);
+	border-radius: var(--radius-s);
+	background: var(--background-secondary);
+}
+.lva-pending-image img {
+	width: 32px;
+	height: 32px;
+	object-fit: cover;
+	border-radius: var(--radius-s);
+}
+.lva-pending-name {
+	max-width: 160px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.lva-composer.lva-drop {
+	outline: 2px dashed var(--interactive-accent);
+	outline-offset: -4px;
+}
+.lva-attached-images {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 4px;
+}
+.lva-attached-images img {
+	max-width: 120px;
+	max-height: 120px;
+	object-fit: cover;
+	border-radius: var(--radius-s);
+}
+
 /* Messages sent while the model was busy, waiting above the message box */
 .lva-queue {
 	display: flex;

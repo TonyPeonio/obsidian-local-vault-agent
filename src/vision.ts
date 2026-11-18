@@ -90,8 +90,8 @@ export class ImageReader {
 		}
 	}
 
-	/** Text and description of an image, or of one page of a PDF. Cached by content hash, model, page and question. */
-	async describe(path: string, opts: { page?: number; question?: string } = {}): Promise<string> {
+	/** Text and description of an image, or of one page of a PDF. Cached by content hash, model, page and question. `signal` stops the model call. */
+	async describe(path: string, opts: { page?: number; question?: string; signal?: AbortSignal } = {}): Promise<string> {
 		const model = await this.model();
 		if (!model) throw new ToolError("No vision model is available. Install one (for example `ollama pull qwen2.5vl:7b`) and set it under Settings → Local Vault Agent → Vision model.");
 		const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase() ?? "";
@@ -107,7 +107,7 @@ export class ImageReader {
 		const hit = this.data.entries[key];
 		if (hit) return hit.text;
 		const prompt = opts.question?.trim() ? `${VISION_PROMPT}\nAlso answer this question about it: ${opts.question.trim()}` : VISION_PROMPT;
-		const text = await this.ask(model, prompt, arrayBufferToBase64(image));
+		const text = await this.ask(model, prompt, arrayBufferToBase64(image), opts.signal);
 		this.data.entries[key] = { text, time: Date.now() };
 		const keys = Object.keys(this.data.entries);
 		if (keys.length > MAX_ENTRIES) {
@@ -118,7 +118,7 @@ export class ImageReader {
 		return text;
 	}
 
-	private async ask(model: string, prompt: string, image: string): Promise<string> {
+	private async ask(model: string, prompt: string, image: string, signal?: AbortSignal): Promise<string> {
 		let think: boolean | undefined = false;
 		for (let attempt = 0; attempt < 2; attempt++) {
 			try {
@@ -128,6 +128,7 @@ export class ImageReader {
 					think,
 					options: { num_ctx: 8192, temperature: 0.2 },
 					keep_alive: this.deps.keepAlive(),
+					signal,
 				});
 				const text = res.message.content.trim();
 				if (!text) throw new ToolError(`${model} returned nothing for this image.`);

@@ -91,6 +91,17 @@ describe("ImageReader", () => {
 		await expect(set.r.describe("a.gif")).rejects.toThrow(/Cannot read \.gif/);
 	});
 
+	it("hands the stop signal to the model call, and does not make it part of the cache key", async () => {
+		const { r, client, data } = reader(["vision"]);
+		const stop = new AbortController();
+		await r.describe("board.png", { signal: stop.signal });
+		expect(client.requests[0].signal).toBe(stop.signal);
+		// Read once: the same picture without a signal comes from the cache.
+		await r.describe("board.png");
+		expect(client.requests).toHaveLength(1);
+		expect(Object.keys(data.saved!.entries)).toHaveLength(1);
+	});
+
 	it("retries without think for models that reject it", async () => {
 		const { r, client } = reader(["vision", "no-think"]);
 		await r.describe("x.jpg");
