@@ -109,10 +109,30 @@ async function main() {
 	for (const n of vault.listNotes()) original.set(n.path, await vault.read(n.path));
 	// Notes a scenario plants for itself later on are the harness's own, not changes left by the agent.
 	const planted = new Set<string>();
+	/** Planted notes the index has been told of and has not been given to read yet (see `indexPlanted`). */
+	const unindexed = new Set<string>();
+	/** The index, once it is built: from then on it hears of planted notes as the plugin's index hears of created ones. */
+	let follower: SemanticIndex | null = null;
 	const seedNote = vault.seed.bind(vault);
 	vault.seed = (path: string, content: string, mtime?: number) => {
 		planted.add(path);
 		seedNote(path, content, mtime);
+		// The plugin's "create" event (src/main.ts): the index is told at once that it has not read
+		// this note. The fake vault fires no events, so the harness makes the same call. It passes on
+		// nothing the plugin would not know: the path, at the moment the note appears.
+		if (follower) {
+			follower.touch(path);
+			unindexed.add(path);
+		}
+	};
+	// The "delete" event, for the planted notes a scenario clears away afterwards.
+	const trashNote = vault.trash.bind(vault);
+	vault.trash = async (path: string) => {
+		await trashNote(path);
+		if (follower && planted.has(path)) {
+			follower.remove(path);
+			unindexed.delete(path);
+		}
 	};
 	const client = new OllamaClient(() => OLLAMA_URL);
 	// CHAT_URL=http://127.0.0.1:8091/v1 sends the chat to an OpenAI-compatible server (llama.cpp's
@@ -150,6 +170,26 @@ async function main() {
 		if (savedIndex) writeFileSync(indexCache, JSON.stringify(savedIndex));
 	}
 	console.log(`Index: ${is.indexedFiles} notes, ${is.totalChunks} chunks in ${((Date.now() - t) / 1000).toFixed(1)} s`);
+	follower = index;
+	/**
+	 * What the ten seconds after a change do in the plugin: the "create" event marks the note unread
+	 * at once and queues it for indexing after the pause (src/main.ts), so a question typed after
+	 * that is answered from an index that has read the note. Run before each scenario for the notes
+	 * planted since the last one. Until 0.9.0's closing runs the planted notes never reached the
+	 * index at all, which the plugin's index cannot be: the benchmark was asking every such question
+	 * in a state that lasts ten seconds in the product. PLANT_INDEX=0 asks within those ten seconds
+	 * on purpose: the notes are marked unread and not indexed (the state in which the 4B model was
+	 * told that no note contains "belts").
+	 */
+	const indexPlanted = async () => {
+		if (unindexed.size === 0 || process.env.PLANT_INDEX === "0") return;
+		const n = unindexed.size;
+		for (const p of unindexed) index.enqueue(p);
+		unindexed.clear();
+		await index.idle();
+		const s = index.status();
+		console.log(`  [index] ${n} planted note${n === 1 ? "" : "s"} indexed as a created note is (${s.indexedFiles} notes, ${index.unreadCount} unread${s.lastError ? `; error: ${s.lastError}` : ""})`);
+	};
 
 	let savedGists: GistData | null = null;
 	const gists = new GistCache(chat, vault, { load: async () => savedGists, save: async (d) => void (savedGists = d) }, {
@@ -276,6 +316,7 @@ async function main() {
 			return;
 		}
 		console.log(`\n=== [${id}] ${title}\n> ${prompt.slice(0, 160)}`);
+		await indexPlanted();
 		const start = Date.now();
 		const tools: string[] = [];
 		let answer = "";
@@ -796,8 +837,9 @@ async function main() {
 
 	// Notes of the awkward kinds a real vault has and the generated one does not: a log far longer
 	// than one tool result, a table, two notes with the same name, and facts kept in properties.
-	// Seeded here and removed afterwards, so the scenarios above run on the same notes as before;
-	// they are not in the index, which is right for these: each names its note or needs an exact search.
+	// Seeded here and removed afterwards, so the scenarios above run on the same notes as before.
+	// They reach the index as a created note does in the plugin (see `indexPlanted`); each question
+	// still names its note or needs an exact search.
 	if (!ONLY || ["long-note", "table-row", "same-name", "properties", "open-tasks"].some((id) => ONLY.split(",").includes(id))) {
 		const filler = (n: number) =>
 			["Reviewed the action items from last time; nothing blocking.", "Went through the budget line by line and moved two purchases to next month.", "Demo rehearsal went fine apart from the projector cable.", "Talked about who covers the booth on Saturday; rota is in the shared sheet.", "Sam showed the new wiring harness; cleaner than the old loom.", "Short discussion of the open pull requests; two merged during the meeting."][n % 6];

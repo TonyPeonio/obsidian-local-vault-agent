@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LexicalIndex, fuseKeyed, lexQueryTerms, lexTokens, stem } from "../src/retrieval";
+import { LexicalIndex, absentFrom, fuseKeyed, lexQueryTerms, lexTokens, stem } from "../src/retrieval";
 
 describe("stem", () => {
 	it("folds plurals and leaves names, short words and code alone", () => {
@@ -114,6 +114,28 @@ describe("LexicalIndex", () => {
 		expect(new LexicalIndex().absentWords("wheels")).toEqual([]);
 		// A word in a heading or a note's name is in the vault.
 		expect(lex.absentWords("hall sensors")).toEqual([]);
+	});
+
+	it("does not call a word absent because its plural is indexed in another form", () => {
+		const lex = new LexicalIndex();
+		lex.setFile("Lab.md", [{ heading: "", text: "The logs are on the bench. Two bodies of water. A party of cats." }], "Lab");
+		// "logs" and "cats" are indexed as "log" and "cat": too short to tell apart by their beginning, so never called absent.
+		expect(lex.absentWords("what do my logs say about the cats")).toEqual([]);
+		// "bodies" is indexed as "body", and found under it, whichever form the question uses.
+		expect(lex.absentWords("which bodies")).toEqual([]);
+		expect(lex.absentWords("which body")).toEqual([]);
+		expect(lex.absentWords("which parties")).toEqual([]);
+		// Words the notes do not have are still named.
+		expect(lex.absentWords("which bodies have wheels")).toEqual(["wheels"]);
+	});
+
+	it("checks a text for the words an index lacks, by the same rule", () => {
+		expect(absentFrom(["belts", "wheels"], "- **Decision:** replace the GT2 belts with GT3 on both axes.")).toEqual(["wheels"]);
+		expect(absentFrom(["belts"], "A new belt was fitted.")).toEqual([]);
+		expect(absentFrom(["decide"], "## Decisions")).toEqual([]);
+		expect(absentFrom(["bodies"], "one body")).toEqual([]);
+		expect(absentFrom(["wheels"], "")).toEqual(["wheels"]);
+		expect(absentFrom([], "anything")).toEqual([]);
 	});
 
 	it("returns nothing for a question made only of unknown words or an empty index", () => {

@@ -411,8 +411,9 @@ export const searchPassages: ToolDefinition = {
 			? `\nNone of these is a close match (best score ${best.toFixed(2)}): the vault may have nothing on this. If no passage answers the question, say the notes do not cover it rather than guessing; try grep_vault with an exact word if there is one.`
 			: "";
 		// A word of the question that no note contains at all is the strongest sign the notes do not
-		// cover it: the passages are then about the question's other words.
-		const absent = ctx.absentWords?.(query) ?? [];
+		// cover it: the passages are then about the question's other words. It has to be true of the
+		// vault as it is, not of the index as it was: the provider checks the notes not yet indexed.
+		const absent = (await ctx.absentWords?.(query)) ?? [];
 		const missing = absent.length
 			? `\nNo note in the vault contains ${absent.map((w) => `"${w}"`).join(" or ")} (nor a word that starts the same way), so these passages are about the rest of the question. If the question is about ${absent.length === 1 ? "that" : "those"}, say the notes do not cover it; do not answer it from a passage about something else.`
 			: "";

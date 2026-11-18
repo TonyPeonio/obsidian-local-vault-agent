@@ -27,6 +27,40 @@ export function lexQueryTerms(query: string): string[] {
 	return Array.from(new Set(queryTerms(query).map(stem)));
 }
 
+/** How many letters of a word decide whether the notes have it (see `LexicalIndex.absentWords`). */
+const ABSENT_PREFIX = 4;
+
+/**
+ * The beginnings an index term has when a note contains this word of a question, or null for a
+ * word that is never called absent: a short one, a number, an identifier, and a word whose index
+ * form is under four letters. The index holds plural-stemmed terms, so the word is looked for by
+ * its own beginning and by its stem's: "bodies" is indexed as "body", and "logs" as "log", which
+ * four letters cannot tell from nothing (before this, "logs" was called absent from a vault full
+ * of logs).
+ */
+function absenceKeys(word: string): string[] | null {
+	if (word.length < ABSENT_PREFIX || !/^\p{L}+$/u.test(word)) return null;
+	const s = stem(word);
+	if (s.length < ABSENT_PREFIX) return null;
+	const a = word.slice(0, ABSENT_PREFIX);
+	const b = s.slice(0, ABSENT_PREFIX);
+	return a === b ? [a] : [a, b];
+}
+
+/**
+ * Of `words` (as `LexicalIndex.absentWords` returned them), those that `text` does not contain
+ * either, by the same rule. For the notes the index has not read in their current version.
+ */
+export function absentFrom(words: string[], text: string): string[] {
+	if (words.length === 0) return words;
+	const starts = new Set<string>();
+	for (const t of tokenize(text)) starts.add(stem(t).slice(0, ABSENT_PREFIX));
+	return words.filter((w) => {
+		const keys = absenceKeys(w);
+		return keys !== null && !keys.some((k) => starts.has(k));
+	});
+}
+
 export interface LexHit {
 	path: string;
 	/** Index of the chunk within its note, in the order the chunker produced them. */
@@ -162,18 +196,21 @@ export class LexicalIndex {
 	 * the same four letters. "What did I decide about the wheels?" in a vault that never mentions
 	 * wheels is answered with passages about everything else in the question, and a small model
 	 * reads those as the answer; told that "wheels" appears nowhere, it can say so. Deliberately
-	 * cautious: words of four letters or more only, and "decide" counts as present when the notes
-	 * say "decided" or "decision".
+	 * cautious: words of four letters or more only (see `absenceKeys`), and "decide" counts as
+	 * present when the notes say "decided" or "decision". True of the notes in this index only: the
+	 * caller answers for the notes it has not read yet (`SemanticIndex.absentWords`).
 	 */
 	absentWords(query: string): string[] {
 		if (this.live === 0) return [];
-		const words = Array.from(new Set(queryTerms(query))).filter((w) => w.length >= 4 && /^\p{L}+$/u.test(w));
+		const words = Array.from(new Set(queryTerms(query))).filter((w) => absenceKeys(w) !== null);
 		if (words.length === 0) return [];
-		const missing = new Set(words.map((w) => w.slice(0, 4)));
+		const wanted = new Set(words.flatMap((w) => absenceKeys(w) ?? []));
+		const found = new Set<string>();
 		for (const term of this.postings.keys()) {
-			if (missing.delete(term.slice(0, 4)) && missing.size === 0) break;
+			const start = term.slice(0, ABSENT_PREFIX);
+			if (wanted.has(start) && found.add(start).size === wanted.size) break;
 		}
-		return words.filter((w) => missing.has(w.slice(0, 4)));
+		return words.filter((w) => !(absenceKeys(w) ?? []).some((k) => found.has(k)));
 	}
 
 	/**

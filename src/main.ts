@@ -416,6 +416,9 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		// than two: a note being typed in pauses every few seconds, and each pause woke the GPU.
 		const timers = new Map<string, number>();
 		const changed = (file: TFile) => {
+			// At once, not after the pause: until the note is indexed again, the index must know that
+			// its text of it is out of date (a search then reads the note before saying a word is in no note).
+			this.index.touch(file.path);
 			const existing = timers.get(file.path);
 			if (existing !== undefined) window.clearTimeout(existing);
 			timers.set(

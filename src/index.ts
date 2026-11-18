@@ -1,6 +1,6 @@
 import { chunkMarkdown } from "./chunker";
 import type { OllamaClient } from "./ollama";
-import { LexicalIndex, dateTerms, fuseKeyed } from "./retrieval";
+import { LexicalIndex, absentFrom, dateTerms, fuseKeyed } from "./retrieval";
 import { queryTerms, snippetNear } from "./search";
 import type { Passage, SearchHit, VaultAccess } from "./types";
 
@@ -139,6 +139,15 @@ interface MemChunk {
 /** A stored note from an older embed format is given this mtime, which no real note has, so the next sync chunks it again. */
 const STALE_MTIME = -1;
 
+/**
+ * Before a word is said to be in no note, the notes the index has not read in their current
+ * version are read and searched for it. That is done for up to this many notes and this much
+ * text; past either (a first index under way, the embedding server down for a whole vault) the
+ * statement is not made at all.
+ */
+export const UNREAD_CHECK_NOTES = 100;
+export const UNREAD_CHECK_CHARS = 2_000_000;
+
 export interface PassageSearchOptions {
 	/** false: embeddings only, as before 0.9.0. Default: embeddings and word matching together. */
 	lexical?: boolean;
@@ -197,7 +206,20 @@ export class SemanticIndex {
 	/** Kept in step with `files`, so status() costs nothing however large the vault is. */
 	private totalChunks = 0;
 	private queue = new Set<string>();
+	/**
+	 * Notes whose current text the index does not hold: created or edited since it last read them,
+	 * waiting in the queue, or not embedded because the server did not answer. Path → a mark that
+	 * changes with every new edit, so an indexing pass that read the older text does not clear it.
+	 * Kept from vault events and from `syncAll`, so it costs nothing per search and is as large as
+	 * what is out of date, not as the vault.
+	 */
+	private unread = new Map<string, number>();
+	private unreadSeq = 0;
+	/** Whether the index has been compared with the vault (`syncAll`) since it was loaded or switched on: before that, what it lacks is unknown. */
+	private compared = false;
 	private processing = false;
+	/** The indexing pass under way, or the last one. */
+	private running: Promise<void> = Promise.resolve();
 	private building = false;
 	private lastError: string | undefined;
 	private saveTimer: number | null = null;
@@ -375,11 +397,19 @@ export class SemanticIndex {
 			if (!this.opts.shouldIndex(note.path)) continue;
 			live.add(note.path);
 			const stored = this.files.get(note.path);
-			if (!stored || stored.mtime !== note.mtime) this.queue.add(note.path);
+			if (!stored || stored.mtime !== note.mtime) {
+				this.queue.add(note.path);
+				if (!this.unread.has(note.path)) this.unread.set(note.path, ++this.unreadSeq);
+			}
 		}
 		for (const path of Array.from(this.files.keys())) {
 			if (!live.has(path)) this.remove(path);
 		}
+		// A note marked unread that is gone, or no longer indexed (its folder was excluded), is nobody's to read.
+		for (const path of Array.from(this.unread.keys())) {
+			if (!live.has(path)) this.unread.delete(path);
+		}
+		this.compared = true;
 		this.building = this.queue.size > 0;
 		this.emit();
 		await this.process();
@@ -390,9 +420,35 @@ export class SemanticIndex {
 		this.abort?.abort();
 	}
 
+	/**
+	 * A note was created or changed just now. Called at once from the vault's events, while
+	 * `enqueue` follows after the typing pause: from this moment the index's text of the note is
+	 * known to be out of date, so nothing is claimed about the vault's words without reading it.
+	 */
+	touch(path: string): void {
+		if (!this.opts.shouldIndex(path)) return;
+		// Switched off, the index does not follow the vault; the next sync finds what changed.
+		if (!this.opts.isEnabled()) this.compared = false;
+		else this.unread.set(path, ++this.unreadSeq);
+	}
+
+	/**
+	 * Which notes are indexed has changed (the excluded folders were edited): a folder that was
+	 * left out may now be in view with notes the index never read, and no event says which. Until
+	 * the next `syncAll` compares the two, nothing is claimed about the vault's words.
+	 */
+	scopeChanged(): void {
+		this.compared = false;
+	}
+
 	enqueue(path: string): void {
-		if (!this.opts.isEnabled() || !this.opts.shouldIndex(path)) return;
+		if (!this.opts.shouldIndex(path)) return;
+		if (!this.opts.isEnabled()) {
+			this.compared = false;
+			return;
+		}
 		this.queue.add(path);
+		if (!this.unread.has(path)) this.unread.set(path, ++this.unreadSeq);
 		void this.process();
 	}
 
@@ -402,15 +458,21 @@ export class SemanticIndex {
 			this.scheduleSave();
 		}
 		this.queue.delete(path);
+		this.unread.delete(path);
 		this.emit();
 	}
 
 	rename(oldPath: string, newPath: string): void {
 		const entry = this.files.get(oldPath);
+		// Not read yet under its old name (just created, edited since, or moved in from a folder that is not indexed): not read under the new one either.
+		const unread = !entry || this.unread.has(oldPath);
 		this.remove(oldPath);
-		if (entry && this.opts.shouldIndex(newPath)) {
-			this.setFile(newPath, entry);
-			this.scheduleSave();
+		if (this.opts.shouldIndex(newPath)) {
+			if (entry) {
+				this.setFile(newPath, entry);
+				this.scheduleSave();
+			}
+			if (unread) this.unread.set(newPath, ++this.unreadSeq);
 		}
 		this.emit();
 	}
@@ -569,10 +631,46 @@ export class SemanticIndex {
 		return (await this.searchPassages(query, limit, 1, signal)).map((p) => ({ path: p.path, score: p.score, heading: (p.crumb ?? p.heading) || undefined, snippet: snippetNear(p.text, terms) }));
 	}
 
-	/** The question's words that appear in no indexed note (see `LexicalIndex.absentWords`). */
-	absentWords(query: string): string[] {
+	/** How many notes the index has not read in their current version (see `absentWords`). */
+	get unreadCount(): number {
+		return this.unread.size;
+	}
+
+	/**
+	 * The question's words that appear in no note of the vault as it is now (see
+	 * `LexicalIndex.absentWords`). The word index answers for the notes it has read. A note created
+	 * or edited since (the ten seconds before a change is indexed, an index still being built, an
+	 * embedding server that is down) is read here and searched for the words the index lacks: in the
+	 * benchmark a note made after indexing held "belts", the model was told no note did, and it
+	 * answered that the vault had nothing on them. A word is called absent only when that check
+	 * could be made: not before the index has been compared with the vault, and not while more is
+	 * unread than is cheap to read. The cost follows the unread notes, not the vault, and is paid
+	 * only for a question with a word the index lacks.
+	 */
+	async absentWords(query: string): Promise<string[]> {
 		// Only once the word index exists (a passage search builds it): an unbuilt index would call every word absent.
-		return this.ready && this.lexBuilt ? this.lex.absentWords(query) : [];
+		if (!this.ready || !this.lexBuilt || !this.compared) return [];
+		let absent = this.lex.absentWords(query);
+		if (absent.length === 0 || this.unread.size === 0) return absent;
+		if (this.unread.size > UNREAD_CHECK_NOTES) return [];
+		const seq = this.unreadSeq;
+		let chars = 0;
+		for (const path of Array.from(this.unread.keys())) {
+			// Gone without a word from the vault: there is no text to hold the word; the next sync forgets the note.
+			if (!this.vault.exists(path)) continue;
+			let text: string;
+			try {
+				text = await this.vault.read(path);
+			} catch {
+				return [];
+			}
+			chars += text.length;
+			if (chars > UNREAD_CHECK_CHARS) return [];
+			absent = absentFrom(absent, `${noteTitle(path)}\n${text}`);
+			if (absent.length === 0) return absent;
+		}
+		// A note changed while these were being read: what was checked is not the vault as it is now.
+		return this.unreadSeq === seq ? absent : [];
 	}
 
 	/** One unit vector per indexed note: the normalised mean of its chunk vectors. */
@@ -587,8 +685,18 @@ export class SemanticIndex {
 		return out;
 	}
 
-	private async process(): Promise<void> {
-		if (this.processing) return;
+	/** Resolves when no note is being indexed. For scripts and tests (the benchmark waits for a planted note as a user's next question waits out the pause); the plugin never waits for the index. */
+	async idle(): Promise<void> {
+		while (this.processing) await this.running;
+	}
+
+	private process(): Promise<void> {
+		if (this.processing) return Promise.resolve();
+		this.running = this.drain();
+		return this.running;
+	}
+
+	private async drain(): Promise<void> {
 		this.processing = true;
 		this.abort = new AbortController();
 		const signal = this.abort.signal;
@@ -611,6 +719,7 @@ export class SemanticIndex {
 					continue;
 				}
 				const mtime = mtimeOf(path);
+				const mark = this.unread.get(path);
 				const content = await this.vault.read(path);
 				const model = this.opts.getModel();
 				const chunks = chunkMarkdown(content);
@@ -632,6 +741,8 @@ export class SemanticIndex {
 					vectors.forEach((v, k) => (vecs[missing[i + k]] = normalize(new Float32Array(v))));
 				}
 				this.setFile(path, { mtime: mtime ?? Date.now(), chunks: chunks.map((c, i) => ({ heading: c.heading, crumb: c.crumb, text: c.text, vec: vecs[i] as Float32Array })) });
+				// The index now holds the text that was read, unless the note changed again meanwhile.
+				if (this.unread.get(path) === mark && !this.queue.has(path)) this.unread.delete(path);
 				this.lastError = undefined;
 				this.scheduleSave();
 				// During a long build: tell listeners a few times a second, not once per note, and put

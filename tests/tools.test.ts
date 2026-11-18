@@ -498,6 +498,10 @@ describe("search_passages", () => {
 		expect(out).toContain("say the notes do not cover it");
 		expect(out).toContain("--- [1] Projects/Chess Robot.md › Decisions (score 0.70)\nSwitch the gantry supply to 24V.");
 		expect(await searchPassages.execute({ query: "gantry supply" }, ctx)).not.toMatch(/No note in the vault/);
+		// The index answers after reading the notes it has not indexed yet, so the answer may come later.
+		ctx.absentWords = async (q) => (q.includes("wheels") ? ["wheels"] : []);
+		expect(await searchPassages.execute({ query: "the wheels" }, ctx)).toMatch(/No note in the vault contains "wheels"/);
+		expect(await searchPassages.execute({ query: "gantry supply" }, ctx)).not.toMatch(/No note in the vault/);
 	});
 	it("falls back to keyword snippets without an index", async () => {
 		const { ctx } = makeCtx(freshVault());

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chunkMarkdown } from "../src/chunker";
-import { EMBED_FORMAT, SemanticIndex, type IndexData } from "../src/index";
+import { EMBED_FORMAT, SemanticIndex, UNREAD_CHECK_CHARS, UNREAD_CHECK_NOTES, type IndexData } from "../src/index";
 import { dateTerms } from "../src/retrieval";
 import { FakeOllama, FakeVault } from "./fakes";
 
@@ -206,7 +206,7 @@ describe("the word index is built on the first search", () => {
 		const { index, vault } = setup(notes);
 		await index.syncAll();
 		// Nothing has searched yet: no word is called absent on the strength of an index that does not exist.
-		expect(index.absentWords("zebras")).toEqual([]);
+		expect(await index.absentWords("zebras")).toEqual([]);
 		// The build yields between slices; an edit, a new note and a removal land in the middle of it.
 		const first = index.searchPassages("topic777", 3);
 		await vault.modify("N/001.md", "now about marmots");
@@ -219,7 +219,174 @@ describe("the word index is built on the first search", () => {
 		expect((await index.searchPassages("marmots", 1))[0].path).toBe("N/001.md");
 		expect((await index.searchPassages("capybaras", 1))[0].path).toBe("N/new.md");
 		expect((await index.searchPassages("topic2", 3)).every((h) => h.path !== "N/002.md")).toBe(true);
-		expect(index.absentWords("zebras and marmots")).toEqual(["zebras"]);
+		expect(await index.absentWords("zebras and marmots")).toEqual(["zebras"]);
+	});
+});
+
+describe("a word is called absent only when the vault as it is now does not have it", () => {
+	const notes = {
+		"Projects/Chess Robot.md": "# Chess Robot\n\nSwitch the gantry supply to 24V.",
+		"Recipes/Pasta.md": "Boil water, add pasta, stir for nine minutes.",
+	};
+	const QUESTION = "What about the belts?";
+	const LOG = "# Robot club log\n\n## 2026-08-18\n\n- **Decision:** replace the GT2 belts with GT3 on both axes.";
+	/** An index that has read `notes` and built its word index. */
+	const built = async (store = new MemoryStore()) => {
+		const s = setup(notes, store);
+		await s.index.syncAll();
+		await s.index.searchPassages("gantry", 1);
+		return s;
+	};
+	/** A vault whose reads are counted. */
+	const countReads = (vault: FakeVault): string[] => {
+		const reads: string[] = [];
+		const read = vault.read.bind(vault);
+		vault.read = async (path: string) => {
+			reads.push(path);
+			return read(path);
+		};
+		return reads;
+	};
+
+	it("reads a note created after indexing before saying no note has the word (the benchmark's long-note failure)", async () => {
+		const { index, vault } = await built();
+		expect(await index.absentWords(QUESTION)).toEqual(["belts"]);
+		// The note is planted and the vault's event reaches the index at once; indexing waits for the pause.
+		vault.seed("Clubs/Robot club log 2026.md", LOG);
+		index.touch("Clubs/Robot club log 2026.md");
+		expect(index.unreadCount).toBe(1);
+		expect(await index.absentWords(QUESTION)).toEqual([]);
+		// A word neither the index nor the new note has is still named.
+		expect(await index.absentWords("What about the belts and the wheels?")).toEqual(["wheels"]);
+		// Once the note is indexed (the pause is over), the word index answers alone.
+		const reads = countReads(vault);
+		index.enqueue("Clubs/Robot club log 2026.md");
+		await index.idle();
+		expect(index.unreadCount).toBe(0);
+		reads.length = 0;
+		expect(await index.absentWords(QUESTION)).toEqual([]);
+		expect(await index.absentWords("the wheels")).toEqual(["wheels"]);
+		expect(reads).toEqual([]);
+	});
+
+	it("reads a note edited after indexing, and one the index knows under an older name", async () => {
+		const { index, vault } = await built();
+		await vault.modify("Recipes/Pasta.md", "Boil water. The mixer's belts squeak.");
+		index.touch("Recipes/Pasta.md");
+		expect(await index.absentWords(QUESTION)).toEqual([]);
+		// Renamed before it was indexed again: still unread under the new name.
+		await vault.rename("Recipes/Pasta.md", "Recipes/Mixer.md");
+		index.rename("Recipes/Pasta.md", "Recipes/Mixer.md");
+		expect(index.unreadCount).toBe(1);
+		expect(await index.absentWords(QUESTION)).toEqual([]);
+		// Deleted: the note and its word are gone.
+		await vault.trash("Recipes/Mixer.md");
+		index.remove("Recipes/Mixer.md");
+		expect(index.unreadCount).toBe(0);
+		expect(await index.absentWords(QUESTION)).toEqual(["belts"]);
+	});
+
+	it("reads only the notes that are out of date, and none when the index has the word", async () => {
+		const { index, vault } = await built();
+		const reads = countReads(vault);
+		vault.seed("Inbox/Zebras.md", "nothing of interest");
+		index.touch("Inbox/Zebras.md");
+		expect(await index.absentWords("the gantry supply")).toEqual([]);
+		expect(reads).toEqual([]);
+		expect(await index.absentWords(QUESTION)).toEqual(["belts"]);
+		expect(reads).toEqual(["Inbox/Zebras.md"]);
+		// A word only the unread note's name has is in the vault too.
+		expect(await index.absentWords("the zebras")).toEqual([]);
+	});
+
+	it("keeps a note unread when the embedding server does not answer, and when it changes while being indexed", async () => {
+		const { index, vault, ollama } = await built();
+		const embed = ollama.embed.bind(ollama);
+		// The server is down: the note is taken from the queue and not indexed.
+		ollama.embed = async () => {
+			throw new Error("connection refused");
+		};
+		vault.seed("Clubs/Log.md", LOG);
+		index.touch("Clubs/Log.md");
+		index.enqueue("Clubs/Log.md");
+		await index.idle();
+		expect(index.status()).toMatchObject({ pending: 0, lastError: "connection refused" });
+		expect(index.unreadCount).toBe(1);
+		// The queries need no document embedding: the word check still reads the note.
+		expect(await index.absentWords(QUESTION)).toEqual([]);
+		// The server is back, and the note is edited while its older text is being embedded.
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		ollama.embed = async (model: string, inputs: string[]) => {
+			if (inputs.some((i) => i.startsWith("search_document"))) await held;
+			return embed(model, inputs);
+		};
+		await vault.modify("Clubs/Log.md", "# Robot club log\n\nNo decisions yet.");
+		index.touch("Clubs/Log.md");
+		const sync = index.syncAll();
+		await Promise.resolve();
+		await vault.modify("Clubs/Log.md", LOG);
+		index.touch("Clubs/Log.md");
+		release();
+		await sync;
+		// The index holds "No decisions yet"; the note says belts, and is still marked unread.
+		expect(index.unreadCount).toBe(1);
+		expect(await index.absentWords(QUESTION)).toEqual([]);
+		index.enqueue("Clubs/Log.md");
+		await index.idle();
+		expect(index.unreadCount).toBe(0);
+		expect(await index.absentWords(QUESTION)).toEqual([]);
+	});
+
+	it("says nothing when more is unread than is cheap to read, or the index was never compared with the vault", async () => {
+		const store = new MemoryStore();
+		const first = await built(store);
+		await first.index.flush();
+		expect(await first.index.absentWords(QUESTION)).toEqual(["belts"]);
+		// Many notes arrive at once (a sync from another device, an import): too many to read for one sentence.
+		const reads = countReads(first.vault);
+		for (let i = 0; i <= UNREAD_CHECK_NOTES; i++) {
+			first.vault.seed(`Import/${i}.md`, `imported note ${i}`);
+			first.index.touch(`Import/${i}.md`);
+		}
+		expect(first.index.unreadCount).toBe(UNREAD_CHECK_NOTES + 1);
+		expect(await first.index.absentWords(QUESTION)).toEqual([]);
+		expect(reads).toEqual([]);
+		// One note too large to read for it.
+		const big = await built();
+		big.vault.seed("Dump.md", "x ".repeat(UNREAD_CHECK_CHARS / 2 + 1));
+		big.index.touch("Dump.md");
+		expect(await big.index.absentWords(QUESTION)).toEqual([]);
+		// Loaded from disk, searched, but not yet compared with the vault: a note made while the app was closed is unknown.
+		const later = setup({ ...notes, "Clubs/Log.md": LOG }, store);
+		await later.index.load();
+		await later.index.searchPassages("gantry", 1);
+		expect(await later.index.absentWords(QUESTION)).toEqual([]);
+		// Compared: the new note is queued, indexed, and the index has the word itself.
+		await later.index.syncAll();
+		expect(later.index.unreadCount).toBe(0);
+		expect(await later.index.absentWords(QUESTION)).toEqual([]);
+		expect(await later.index.absentWords("the wheels")).toEqual(["wheels"]);
+	});
+
+	it("does not read a note that is not indexed by choice, and says nothing once that choice changes until the next sync", async () => {
+		const vault = new FakeVault(notes);
+		let excluded = "Private/";
+		const index = new SemanticIndex(new FakeOllama([], 64).asClient(), vault, new MemoryStore(), { getModel: () => "nomic-embed-text", isEnabled: () => true, shouldIndex: (p) => !p.startsWith(excluded) });
+		await index.syncAll();
+		await index.searchPassages("gantry", 1);
+		vault.seed("Private/Diary.md", "the belts");
+		index.touch("Private/Diary.md");
+		expect(index.unreadCount).toBe(0);
+		expect(await index.absentWords(QUESTION)).toEqual(["belts"]);
+		// The folder is no longer excluded: its notes are in view, and the index has not read them.
+		excluded = "Nothing/";
+		index.scopeChanged();
+		expect(await index.absentWords(QUESTION)).toEqual([]);
+		expect(await index.absentWords("the wheels")).toEqual([]);
+		await index.syncAll();
+		expect(await index.absentWords(QUESTION)).toEqual([]);
+		expect(await index.absentWords("the wheels")).toEqual(["wheels"]);
 	});
 });
 

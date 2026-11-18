@@ -1,0 +1,59 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T19:35:54.079Z",
+  "model": "qwen3.5:4b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "ln4-4",
+  "only": "long-note",
+  "preSearch": true,
+  "commit": "c9c0e55+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 338,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 2,
+    "calls": 2,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 2,
+    "modelSeconds": 2,
+    "promptSeconds": 0,
+    "passed": 7,
+    "checks": 7,
+    "failures": 15
+  },
+  "failed": [],
+  "scenarios": [
+    {
+      "id": "long-note",
+      "ms": 1834,
+      "calls": 2,
+      "prompt": 12319,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 2,
+      "promptMs": 124,
+      "evalMs": 1587,
+      "pass": 7,
+      "fail": 0,
+      "seconds": 1.83,
+      "completionTokens": 221,
+      "readChars": 38102,
+      "loadMs": 13,
+      "failed": [],
+      "tools": [
+        "search_passages",
+        "read_section"
+      ],
+      "answer": "**Summary:**\n\nIn the **2026-08-18** meeting, the club decided to:\n- **Replace the GT2 belts with GT3 belts on both axes**, because the GT2 belts skipped teeth twice during the open day.\n- **Marcus** will order the GT3 belts.\n\nSources: [[Clubs/Robot club log 2026]]\n\nPassages: [[Clubs/Robot club log 2026#^cg65ik1|Robot club log 2026 › 2026-08-18]]"
+    }
+  ]
+}

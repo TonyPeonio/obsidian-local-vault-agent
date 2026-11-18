@@ -331,6 +331,8 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 						st.addTextArea((tx) =>
 							tx.setValue(s.excludedFolders.join("\n")).onChange(async (v) => {
 								s.excludedFolders = v.split("\n").map((l) => l.trim()).filter(Boolean);
+								// Notes that were out of view may now be in it, unread by the index (see SemanticIndex.scopeChanged).
+								p.index.scopeChanged();
 								await save();
 							}),
 						),
