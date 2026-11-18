@@ -169,3 +169,22 @@ export function isExcluded(path: string, excluded: string[]): boolean {
 		return p.length > 0 && (lower === p || lower.startsWith(p + "/"));
 	});
 }
+
+/**
+ * The test the vault guard makes before every read and write (`ObsidianVault.guard`), for a
+ * normalised vault path and the predicate the vault was given: the path is excluded, or, written
+ * without an extension, the note it names is ("Private/Diary" for Private/Diary.md).
+ */
+export function refusedByExclusion(path: string, excluded: (path: string) => boolean): boolean {
+	return excluded(path) || (!/\.[a-z0-9]+$/i.test(path) && excluded(`${path}.md`));
+}
+
+/**
+ * Whether a command of the plugin may act on this note: send its text or its name to the model, or
+ * edit it. Not when it is in an excluded folder; the command then does nothing and says so. The
+ * agent's tools are held to this by the vault guard; the commands read the open note and the
+ * editor's selection from Obsidian directly, so they ask here, and the test is the guard's own.
+ */
+export function commandAllowedOn(path: string, excludedFolders: string[]): boolean {
+	return !refusedByExclusion(path, (p) => isExcluded(p, excludedFolders));
+}

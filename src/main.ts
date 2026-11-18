@@ -5,7 +5,7 @@ import { BusyGate } from "./busy";
 import { LEGACY_SUGGESTIONS_NOTE, gardenFixes, gardenVault, planGardenAction, renderGardenChat, renderPlanResult, type GardenAction, type GardenReport, type PlannedChange } from "./gardener";
 import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, weakMatchThreshold, type IndexData, type IndexManifest, type IndexStatus, type StoredFile } from "./index";
-import { ObsidianVault, findEditorView } from "./obsidian-vault";
+import { ObsidianVault, excludedMessage, findEditorView } from "./obsidian-vault";
 import { OllamaClient, placementWarning, type ModelInfo } from "./ollama";
 import { effectiveContext } from "./openai";
 import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
@@ -24,7 +24,7 @@ import { SAMPLE_FOLDER, sampleNotes } from "./sample";
 import { checksServerAtStartup, evaluateSetup, guessTier, serverProblem, type MachineTier } from "./setup";
 import { editSelectionPrompt, processDailyNotesPrompt, reformatPrompt, summarizePrompt } from "./prompts";
 import { frontmatterText, keywordSearch } from "./search";
-import { DEFAULT_SETTINGS, SAMPLING, isExcluded, migrateSettings, type LocalVaultAgentSettings } from "./settings";
+import { DEFAULT_SETTINGS, SAMPLING, commandAllowedOn, isExcluded, migrateSettings, type LocalVaultAgentSettings } from "./settings";
 import { describeVault, refreshDescription } from "./describe-vault";
 import { LocalVaultAgentSettingTab } from "./settings-tab";
 import { ALL_TOOLS } from "./tools";
@@ -243,7 +243,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			describeImage: () => (this.visionAvailable ? (path, opts) => this.vision.describe(path, opts) : undefined),
 			dailyNote: async () => {
 				await this.loadDailyNoteSettings();
-				return this.dailyNote();
+				return this.dailyNoteForAgent();
 			},
 			readConventions: async () => {
 				const path = this.vault.resolve(this.settings.conventionsNote);
@@ -263,11 +263,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		this.addCommand({
 			id: "ask-about-selection",
 			name: t("cmd.askSelection"),
-			editorCallback: async (editor) => {
-				const sel = editor.getSelection();
-				const view = await this.activateView();
-				view?.prefill(sel ? `About this selected text:\n"""\n${sel}\n"""\n\n` : "");
-			},
+			editorCallback: (editor, ctx) => void this.askAboutSelection(editor.getSelection(), ctx.file?.path),
 		});
 		this.addCommand({
 			id: "reformat-current-note",
@@ -576,6 +572,30 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		}
 	}
 
+	/** Today's daily note as every message names it to the model: not named when the daily notes are in an excluded folder. */
+	dailyNoteForAgent(): { path: string; exists: boolean } | null {
+		const daily = this.dailyNote();
+		return daily && commandAllowedOn(daily.path, this.settings.excludedFolders) ? daily : null;
+	}
+
+	/**
+	 * The one rule for a command run on a note: when the note is in an excluded folder the command
+	 * does nothing (no text and no name of it goes to the model, and it is not edited) and a notice
+	 * says why. True when the command has to stop.
+	 */
+	private stopsOnExcluded(path: string): boolean {
+		if (commandAllowedOn(path, this.settings.excludedFolders)) return false;
+		new Notice(t("notice.excludedNote"), 8000);
+		return true;
+	}
+
+	/** Puts the selected text into the message box as a quotation to ask about (command "Ask about the selected text"). */
+	async askAboutSelection(selection: string, path: string | undefined): Promise<void> {
+		if (selection && path !== undefined && this.stopsOnExcluded(path)) return;
+		const view = await this.activateView();
+		view?.prefill(selection ? `About this selected text:\n"""\n${selection}\n"""\n\n` : "");
+	}
+
 	private ollamaChecked = false;
 
 	/**
@@ -622,6 +642,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	/** Text of a PDF (via Obsidian's bundled pdf.js) or a text-like attachment. */
 	async readAttachmentText(path: string): Promise<string> {
+		// The read_file tool only passes paths the vault resolved, which are never excluded; asked again here so no later caller can forget.
+		if (!commandAllowedOn(normalizePath(path), this.settings.excludedFolders)) throw new Error(excludedMessage(path));
 		const file = this.app.vault.getFileByPath(normalizePath(path));
 		if (!file) throw new Error(`File not found: ${path}`);
 		const ext = file.extension.toLowerCase();
@@ -658,6 +680,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			new Notice("Open a markdown note first.");
 			return;
 		}
+		if (this.stopsOnExcluded(file.path)) return;
 		const content = await this.app.vault.cachedRead(file);
 		const target = view ?? (await this.activateView());
 		await target?.send(reformatPrompt(file.path, content));
@@ -698,6 +721,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			new Notice("Select some text in a note first.");
 			return;
 		}
+		if (this.stopsOnExcluded(file.path)) return;
 		const modal = new InstructionModal(this.app, selection);
 		modal.open();
 		const instruction = await modal.result;
@@ -791,6 +815,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			new Notice("Open a markdown note first.");
 			return;
 		}
+		if (this.stopsOnExcluded(file.path)) return;
 		const target = view ?? (await this.activateView());
 		await target?.send(summarizePrompt(file.path));
 	}
@@ -1121,6 +1146,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			new Notice("Open a note first.");
 			return;
 		}
+		if (this.stopsOnExcluded(file.path)) return;
 		const content = await this.app.vault.read(file);
 		const folders = this.settings.conceptFolders;
 		const concepts = this.vault
@@ -1388,6 +1414,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	/** One page of a PDF as a PNG, for the vision model (scanned pages have no text layer). */
 	private async renderPdfPage(path: string, pageNumber: number): Promise<ArrayBuffer> {
+		// As in readAttachmentText: the tool's paths are already the vault's, and the rule is asked again here.
+		if (!commandAllowedOn(normalizePath(path), this.settings.excludedFolders)) throw new Error(excludedMessage(path));
 		const file = this.app.vault.getFileByPath(normalizePath(path));
 		if (!file) throw new Error(`File not found: ${path}`);
 		const pdfjs = (await loadPdfJs()) as {

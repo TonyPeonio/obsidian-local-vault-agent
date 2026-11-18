@@ -315,6 +315,7 @@ const en = {
 	// Notices (common)
 	"notice.openNote": "Open a markdown note first.",
 	"notice.selectText": "Select some text in a note first.",
+	"notice.excludedNote": "This note is in an excluded folder (Settings → Local Vault Agent → Excluded folders), so nothing was done with it.",
 	"notice.nothingUndo": "Nothing to undo.",
 	"notice.wait": "Wait for the current reply to finish, or stop it, first.",
 	"notice.image.noVision": "Pictures need a vision model. Set one under Settings → Local Vault Agent → Vision model (qwen3.5 can see, or use qwen2.5vl:7b).",

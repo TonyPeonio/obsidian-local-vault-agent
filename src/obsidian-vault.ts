@@ -1,5 +1,6 @@
 import { App, MarkdownView, TFile, getAllTags, normalizePath, type WorkspaceLeaf } from "obsidian";
 import { pickEditorTarget, selectionIsInActiveNote, type EditorCandidate } from "./editor-target";
+import { refusedByExclusion } from "./settings";
 import type { FileInfo, NoteInfo, NoteMetadata, VaultAccess } from "./types";
 
 /** What every refused operation on an excluded path says; it does not confirm that the path exists. */
@@ -23,7 +24,7 @@ export class ObsidianVault implements VaultAccess {
 
 	private guard(path: string): void {
 		const normalized = normalizePath(path);
-		if (this.isExcluded(normalized) || (!/\.[a-z0-9]+$/i.test(normalized) && this.isExcluded(`${normalized}.md`))) throw new Error(excludedMessage(path));
+		if (refusedByExclusion(normalized, this.isExcluded)) throw new Error(excludedMessage(path));
 	}
 
 	listNotes(): NoteInfo[] {

@@ -452,6 +452,8 @@ incrementally when you change notes. Search results merge semantic and keyword r
 - **Max tool calls per message** — default 40. A clean-up across many notes needs two or three
   calls per note; raise it if the agent reports it ran out.
 - **Excluded folders** — folders the agent never searches, indexes or edits (templates, etc.).
+  A command run on an open note in one of them (reformat, summarize, edit or ask about the
+  selection, concept links) does nothing and shows a notice.
 - **Extra instructions** — appended to the system prompt. Tell it about your vault's conventions.
 - **Paragraph citations** — *Block ids* (default: ids added on approval), *Headings only* (never
   writes) or *Off*.
