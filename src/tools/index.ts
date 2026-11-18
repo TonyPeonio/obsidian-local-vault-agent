@@ -527,48 +527,58 @@ export const grepVault: ToolDefinition = {
 			}
 		}
 		notes.sort((a, b) => a.path.localeCompare(b.path));
-		const texts = await Promise.all(notes.map((n) => ctx.vault.read(n.path)));
 
-		/** `find` returns where in the line the match starts, or -1. */
-		const scan = (find: (line: string) => number) => {
+		/**
+		 * `find` returns where in the line the match starts, or -1. Notes are read a batch at a
+		 * time, never the whole vault at once. With `timed` (a regular expression) the search
+		 * stops once the matching itself has taken REGEX_BUDGET_MS: this runs on the UI thread.
+		 */
+		const scan = async (find: (line: string) => number, timed: boolean) => {
 			/** One matching line with its context lines, for the first `limit` matches. */
 			const hits: { path: string; rows: string[] }[] = [];
 			let total = 0;
 			/** Every note with at least one matching line, shown or not, and how many it has. */
 			const perNote: { path: string; count: number }[] = [];
-			notes.forEach((n, k) => {
-				const lines = texts[k].split("\n");
-				let inNote = 0;
-				let heading = "";
-				let inFence = false;
-				for (let i = 0; i < lines.length; i++) {
-					if (/^\s*(```|~~~)/.test(lines[i])) inFence = !inFence;
-					const h = !inFence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
-					if (h) heading = `${h[1]} ${h[2].trim()}`;
-					const at = find(lines[i]);
-					if (at < 0) continue;
-					total++;
-					inNote++;
-					if (notesOnly || hits.length >= limit) continue;
-					const rows = [`${n.path}:${i + 1}${heading && !h ? ` [${heading}]` : ""}: ${clipLine(lines[i], GREP_LINE_CHARS, at)}`];
-					for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) rows.push(`${n.path}:${j + 1}- ${clipLine(lines[j], GREP_LINE_CHARS)}`);
-					hits.push({ path: n.path, rows });
+			let searched = 0;
+			let spent = 0;
+			/** Lines too long for a regular expression to be tried on all of. */
+			let capped = 0;
+			batches: for (let from = 0; from < notes.length; from += READ_BATCH) {
+				if (ctx.signal?.aborted) throw new ToolError("Stopped.");
+				const batch = notes.slice(from, from + READ_BATCH);
+				const texts = await Promise.all(batch.map((n) => ctx.vault.read(n.path)));
+				for (let k = 0; k < batch.length; k++) {
+					if (timed && spent > REGEX_BUDGET_MS) break batches;
+					const started = performance.now();
+					const n = batch[k];
+					const lines = texts[k].split("\n");
+					let inNote = 0;
+					let heading = "";
+					let inFence = false;
+					for (let i = 0; i < lines.length; i++) {
+						if (/^\s*(```|~~~)/.test(lines[i])) inFence = !inFence;
+						const h = !inFence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+						if (h) heading = `${h[1]} ${h[2].trim()}`;
+						if (timed && lines[i].length > MAX_REGEX_LINE) capped++;
+						const at = find(lines[i]);
+						if (at < 0) continue;
+						total++;
+						inNote++;
+						if (notesOnly || hits.length >= limit) continue;
+						const rows = [`${n.path}:${i + 1}${heading && !h ? ` [${heading}]` : ""}: ${clipLine(lines[i], GREP_LINE_CHARS, at)}`];
+						for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) rows.push(`${n.path}:${j + 1}- ${clipLine(lines[j], GREP_LINE_CHARS)}`);
+						hits.push({ path: n.path, rows });
+					}
+					if (inNote) perNote.push({ path: n.path, count: inNote });
+					searched++;
+					spent += performance.now() - started;
 				}
-				if (inNote) perNote.push({ path: n.path, count: inNote });
-			});
-			return { hits, total, perNote };
+			}
+			return { hits, total, perNote, searched, capped };
 		};
 		const literal = (p: string) => {
 			const lower = p.toLowerCase();
 			return (line: string) => line.toLowerCase().indexOf(lower);
-		};
-		const byRegex = (re: RegExp) => (line: string) => re.exec(line)?.index ?? -1;
-		const compile = (p: string): RegExp | null => {
-			try {
-				return new RegExp(p, "i");
-			} catch {
-				return null;
-			}
 		};
 
 		let note = "";
@@ -576,23 +586,24 @@ export const grepVault: ToolDefinition = {
 		let result;
 		if (useRegex) {
 			pattern = tidyAlternation(rawPattern);
-			const re = compile(pattern);
+			const re = compileRegex(pattern);
 			if (re) {
-				result = scan(byRegex(re));
+				result = await scan(regexFinder(re), true);
 			} else {
 				note = `(The pattern is not a valid regular expression: ${tryRegexError(pattern)}. Searched for it as literal text instead.)\n`;
-				result = scan(literal(rawPattern));
+				result = await scan(literal(rawPattern), false);
 			}
 		} else {
-			result = scan(literal(rawPattern));
+			result = await scan(literal(rawPattern), false);
 			if (result.total === 0 && looksLikeRegex(rawPattern)) {
 				// Models send `^\s*>` or `a|b` with regex:false. Nothing contains that literally, so
-				// try it as the regex it clearly is before reporting "no note contains".
+				// try it as the regex it clearly is before reporting "no note contains". One that
+				// is not safe to run is simply not tried: the literal search already answered.
 				pattern = tidyAlternation(rawPattern);
-				const re = compile(pattern);
+				const re = unsafeRegex(pattern) ? null : compileRegex(pattern);
 				if (re) {
-					const asRegex = scan(byRegex(re));
-					if (asRegex.total > 0) {
+					const asRegex = await scan(regexFinder(re), true);
+					if (asRegex.total > 0 || asRegex.searched < notes.length) {
 						note = `(No line contains that text literally; it looks like a regular expression, so it was searched as one${pattern !== rawPattern ? `, as ${JSON.stringify(pattern)}` : ""}.)\n`;
 						result = asRegex;
 					} else {
@@ -601,7 +612,14 @@ export const grepVault: ToolDefinition = {
 				}
 			}
 		}
-		if (result.total === 0) return `${note}No note contains "${rawPattern}"${folder ? ` under ${folder}/` : ""}.`;
+		// A regular expression that ran out of time: what follows is from the notes searched so far, and must say so.
+		const partial =
+			result.searched < notes.length
+				? `(This pattern is slow: the search was stopped after ${REGEX_BUDGET_MS / 1000} s with ${result.searched} of ${notes.length} notes searched, so the result is incomplete. Narrow with folder or use a simpler pattern.)\n`
+				: "";
+		note = partial + note;
+		if (result.capped) note += `(${result.capped} line${result.capped === 1 ? "" : "s"} longer than ${MAX_REGEX_LINE} characters ${result.capped === 1 ? "was" : "were"} only searched up to there.)\n`;
+		if (result.total === 0) return partial ? `${note}No match in the notes searched so far.` : `${note}No note contains "${rawPattern}"${folder ? ` under ${folder}/` : ""}.`;
 		const { hits, total, perNote } = result;
 		const counts = `${note}${total} matching line${total === 1 ? "" : "s"} in ${perNote.length} note${perNote.length === 1 ? "" : "s"}`;
 		if (notesOnly) {
@@ -647,6 +665,169 @@ function tryRegexError(pattern: string): string {
 	} catch (err) {
 		return (err as Error).message;
 	}
+}
+
+/*
+ * Regular expressions come from the model and run on the UI thread, where nothing can
+ * interrupt one. Three bounds keep a bad pattern from freezing Obsidian: patterns that can
+ * backtrack exponentially are refused before they run (unsafeRegex), a line is only matched
+ * up to MAX_REGEX_LINE characters, and a vault-wide search stops after REGEX_BUDGET_MS of
+ * matching and returns what it has.
+ */
+
+/** No search of notes needs a longer pattern, and compiling is not free either. */
+const MAX_REGEX_CHARS = 300;
+/** A regular expression only sees this much of one line (a polynomial pattern on a 100,000-character line is a freeze too). */
+const MAX_REGEX_LINE = 10_000;
+/** Matching time after which a vault-wide regular expression search returns what it has. */
+export const REGEX_BUDGET_MS = 3000;
+/** Notes read at a time by grep_vault. */
+const READ_BATCH = 32;
+
+/** The quantifier at `i` (`*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}`): its length in the pattern and how many rounds it allows. */
+function quantifierAt(pattern: string, i: number): { length: number; min: number; max: number } | null {
+	const c = pattern[i];
+	if (c === "*") return { length: 1, min: 0, max: Infinity };
+	if (c === "+") return { length: 1, min: 1, max: Infinity };
+	if (c === "?") return { length: 1, min: 0, max: 1 };
+	const m = /^\{(\d+)(?:(,)(\d*))?\}/.exec(pattern.slice(i, i + 24));
+	if (!m) return null;
+	const min = Number(m[1]);
+	return { length: m[0].length, min, max: m[2] ? (m[3] ? Number(m[3]) : Infinity) : min };
+}
+
+/** What is known about a group while its pattern is being read. */
+interface RegexGroup {
+	/** Source of every atom inside whose length can vary (`a+`, `b?`, `c{1,4}`): what makes a round of the group ambiguous. */
+	repeats: string[];
+	/** Has a top-level `|`, at these positions. */
+	alt: boolean;
+	bars: number[];
+	/** Too involved to reason about: a repeat inside a repeated or alternating group inside this one. */
+	deep: boolean;
+	/** The last atom: its literal character when it is one, and whether a quantifier follows it. */
+	last: { literal: string | null; quantified: boolean } | null;
+	/** Where the group opens, and where its contents start (after "(" or "(?:"). */
+	start: number;
+	body: number;
+}
+
+/**
+ * Why a regular expression must not be run, or null when it may. Refused: a pattern over
+ * MAX_REGEX_CHARS, and a repeated group that itself contains a repeat or an optional part —
+ * `(a+)+`, `(\w+\s?)*`, `(.*,)+`, `(ab?)+` — which JavaScript's backtracking matcher can take
+ * exponential time to fail on. One shape of that is safe and common enough to allow: a group
+ * that ends in a literal character none of its variable parts can match (`(\d+\.)+`,
+ * `([^,]*,)+`), since each round then ends at exactly one place. Repeated plain-text
+ * alternatives where one begins another (`(a|ab)+`) are refused as well. This is a guard
+ * against accidents, not a proof: nothing can interrupt a match once it runs, and the line cap
+ * and the time budget only bound patterns that are slow rather than explosive. An invalid
+ * pattern is not this function's business: null.
+ */
+export function unsafeRegex(pattern: string): string | null {
+	if (pattern.length > MAX_REGEX_CHARS) return `it is ${pattern.length} characters long (the most is ${MAX_REGEX_CHARS})`;
+	const nested = "it repeats a group that has a repeat inside it, like (a+)+ or (\\w+\\s?)*, which can freeze on a long line; use one repeat, such as [\\w ]+";
+	const matches = (atom: string, ch: string): boolean => {
+		try {
+			return new RegExp(`^(?:${atom})$`, "i").test(ch);
+		} catch {
+			return true;
+		}
+	};
+	const risky = (g: RegexGroup, end: number): boolean => {
+		if (g.repeats.length === 0) {
+			// Plain-text alternatives where one begins another, (a|ab)+, split the same text in many ways too.
+			if (!g.alt) return false;
+			const alts = [...g.bars, end].map((bar, k) => pattern.slice(k === 0 ? g.body : g.bars[k - 1] + 1, bar).toLowerCase());
+			if (alts.some((a) => /[\\()[\]{}.*+?^$]/.test(a))) return false;
+			return alts.some((a, k) => alts.some((b, j) => j !== k && b.startsWith(a)));
+		}
+		if (g.deep || g.alt || !g.last || g.last.quantified || g.last.literal === null) return true;
+		const last = g.last.literal;
+		return g.repeats.some((r) => matches(r, last));
+	};
+	const open = (start: number, body: number): RegexGroup => ({ repeats: [], alt: false, bars: [], deep: false, last: null, start, body });
+	const stack: RegexGroup[] = [open(0, 0)];
+	let i = 0;
+	while (i < pattern.length) {
+		const top = stack[stack.length - 1];
+		const c = pattern[i];
+		/** The atom that ends just before `i`: its source, its literal character if it is one, and the group it closed. */
+		let atom: { src: string; literal: string | null; group?: RegexGroup };
+		if (c === "\\") {
+			const src = pattern.slice(i, i + 2);
+			atom = { src, literal: /^\\[^a-zA-Z0-9]$/.test(src) ? src[1] : null };
+			i += 2;
+		} else if (c === "[") {
+			let j = i + 1;
+			if (pattern[j] === "^") j++;
+			if (pattern[j] === "]") j++;
+			while (j < pattern.length && pattern[j] !== "]") j += pattern[j] === "\\" ? 2 : 1;
+			atom = { src: pattern.slice(i, j + 1), literal: null };
+			i = j + 1;
+		} else if (c === "(") {
+			// "(?:", "(?=", "(?!", "(?<=", "(?<!", "(?<name>": the "?" is not a quantifier.
+			const prefix = /^\?(?:[:=!]|<[=!]|<[^>]*>)/.exec(pattern.slice(i + 1, i + 41));
+			stack.push(open(i, i + 1 + (prefix ? prefix[0].length : 0)));
+			i = stack[stack.length - 1].body;
+			continue;
+		} else if (c === ")") {
+			i++;
+			if (stack.length === 1) continue;
+			const group = stack.pop() as RegexGroup;
+			const parent = stack[stack.length - 1];
+			parent.repeats.push(...group.repeats);
+			if (group.deep || (group.alt && group.repeats.length > 0)) parent.deep = true;
+			atom = { src: pattern.slice(group.start, i), literal: null, group };
+		} else if (c === "|") {
+			top.alt = true;
+			top.bars.push(i);
+			top.last = null;
+			i++;
+			continue;
+		} else if (c === "^" || c === "$") {
+			top.last = null;
+			i++;
+			continue;
+		} else {
+			atom = c === "." ? { src: ".", literal: null } : { src: /[*+?{}]/.test(c) ? `\\${c}` : c, literal: c };
+			i++;
+		}
+		const parent = stack[stack.length - 1];
+		parent.last = { literal: atom.literal, quantified: false };
+		const q = quantifierAt(pattern, i);
+		if (!q) continue;
+		// Three or more rounds of a group that can be split up in more than one way is the danger.
+		if (q.max >= 3 && atom.group) {
+			if (risky(atom.group, i - 1)) return nested;
+			if (atom.group.repeats.length) parent.deep = true;
+		}
+		if (q.max > q.min) {
+			parent.repeats.push(atom.src);
+			parent.last.quantified = true;
+		}
+		// A lazy suffix ("+?", "*?") changes nothing here.
+		i += q.length + (pattern[i + q.length] === "?" ? 1 : 0);
+	}
+	return null;
+}
+
+/** The pattern compiled case-insensitively; null when it is not a valid regular expression. Throws for one that is not safe to run. */
+function compileRegex(pattern: string): RegExp | null {
+	let re: RegExp;
+	try {
+		re = new RegExp(pattern, "i");
+	} catch {
+		return null;
+	}
+	const why = unsafeRegex(pattern);
+	if (why) throw new ToolError(`This regular expression was not run: ${why}. Or search for a literal word.`);
+	return re;
+}
+
+/** Where in a line the expression first matches, or -1; only the first MAX_REGEX_LINE characters of a line are looked at. */
+function regexFinder(re: RegExp): (line: string) => number {
+	return (line) => re.exec(line.length > MAX_REGEX_LINE ? line.slice(0, MAX_REGEX_LINE) : line)?.index ?? -1;
 }
 
 /** True when a pattern sent as literal text is almost certainly meant as a regular expression. */
@@ -1420,29 +1601,30 @@ export const findInNote: ToolDefinition = {
 		/** Where in the line the match starts, or -1. */
 		let find: (line: string) => number;
 		let note = "";
-		let re: RegExp | null = null;
-		if (useRegex) {
-			try {
-				re = new RegExp(pattern, "i");
-			} catch (err) {
-				// Small models mangle escapes in regexes; a literal search is more useful than an error.
-				note = `(The pattern is not a valid regular expression: ${(err as Error).message}. Searched for it as literal text instead.)\n`;
-			}
-		}
-		if (re) {
-			const compiled = re;
-			find = (line) => compiled.exec(line)?.index ?? -1;
-		} else {
+		// Refused when it could freeze the app (see unsafeRegex); null when it is not a regular expression at all.
+		const re = useRegex ? compileRegex(pattern) : null;
+		if (re) find = regexFinder(re);
+		else {
+			// Small models mangle escapes in regexes; a literal search is more useful than an error.
+			if (useRegex) note = `(The pattern is not a valid regular expression: ${tryRegexError(pattern)}. Searched for it as literal text instead.)\n`;
 			const lower = pattern.toLowerCase();
 			find = (line) => line.toLowerCase().indexOf(lower);
 		}
 		const hits: { line: number; at: number }[] = [];
+		const started = performance.now();
+		let searched = lines.length;
 		for (let i = 0; i < lines.length; i++) {
+			// A slow expression on a very long note: stop and say so, as grep_vault does.
+			if (re && i % 200 === 199 && performance.now() - started > REGEX_BUDGET_MS) {
+				searched = i;
+				break;
+			}
 			const at = find(lines[i]);
 			if (at >= 0) hits.push({ line: i, at });
 		}
+		if (searched < lines.length) note = `(This pattern is slow: the search was stopped after ${REGEX_BUDGET_MS / 1000} s at line ${searched} of ${lines.length}, so the result is incomplete. Use a simpler pattern.)\n${note}`;
 		if (hits.length === 0) {
-			return `${note}No lines in ${path} contain "${pattern}". The note has ${lines.length} lines (${content.length} characters).`;
+			return searched < lines.length ? `${note}No match in the lines searched so far.` : `${note}No lines in ${path} contain "${pattern}". The note has ${lines.length} lines (${content.length} characters).`;
 		}
 		const blocks = hits.slice(0, limit).map(({ line: i, at }) => {
 			const rows: string[] = [];
