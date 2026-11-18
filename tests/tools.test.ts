@@ -15,6 +15,7 @@ import {
 	listNotes,
 	listSections,
 	looksLikeRegex,
+	missingFolderHint,
 	missingNoteHint,
 	moveNote,
 	tidyAlternation,
@@ -181,6 +182,44 @@ describe("missing-note hints", () => {
 		const vault = freshVault();
 		expect(missingNoteHint(vault, "Journal/Chess.md")).toMatch(/no folder "Journal\/".*Similar names: Projects\/Chess Robot.md.*Folders with notes: Ideas\/, Projects\//);
 		expect(missingNoteHint(vault, "Zzz")).toMatch(/No note is named "Zzz" in the vault root/);
+	});
+});
+
+describe("a folder argument that does not exist", () => {
+	function vault() {
+		const v = freshVault();
+		v.seed("Daily/2026-11-01.md", "## Capture\n\n- gantry idea\n");
+		v.seed("School/CSCI 406/Lectures.md", "## 2026-09-03\n\ngantry\n");
+		v.seedFile("Attachments/scan.pdf", 1000);
+		return v;
+	}
+	it("is named as missing with the closest folders, by every tool that takes one", async () => {
+		const { ctx } = makeCtx(vault());
+		// A typo, a nested folder asked for by its own name, and a name that only partly matches.
+		await expect(grepVault.execute({ pattern: "gantry", folder: "Dialy" }, ctx)).rejects.toThrow('There is no folder "Dialy/". Closest folders: Daily/. Nothing was searched.');
+		await expect(grepVault.execute({ pattern: "gantry", folder: "CSCI 406/" }, ctx)).rejects.toThrow('There is no folder "CSCI 406/". Closest folders: School/CSCI 406/. Nothing was searched.');
+		await expect(listSections.execute({ heading: "Capture", folder: "Daily Notes" }, ctx)).rejects.toThrow('There is no folder "Daily Notes/". Closest folders: Daily/. Nothing was searched.');
+		await expect(listNotes.execute({ folder: "Project" }, ctx)).rejects.toThrow('There is no folder "Project/". Closest folders: Projects/.');
+		await expect(listFiles.execute({ folder: "Attachment" }, ctx)).rejects.toThrow('There is no folder "Attachment/". Closest folders: Attachments/.');
+		// Nothing like it: the top-level folders.
+		await expect(listNotes.execute({ folder: "Zzz/Qqq" }, ctx)).rejects.toThrow('There is no folder "Zzz/Qqq/". Top-level folders: Attachments/, Daily/, Ideas/, Projects/, School/, Templates/.');
+	});
+	it("is told apart from a folder that exists and has nothing matching", async () => {
+		const { ctx } = makeCtx(vault());
+		expect(await grepVault.execute({ pattern: "zebra", folder: "daily" }, ctx)).toBe('No note contains "zebra" under daily/.');
+		expect(await listSections.execute({ heading: "Nope", folder: "Daily" }, ctx)).toBe('No section headed "nope" under daily/.');
+		expect(await listNotes.execute({ folder: "Daily", name_contains: "zebra" }, ctx)).toBe("No notes matched those filters.");
+		// A parent folder with notes only in its subfolders, and a folder with attachments but no notes, both exist.
+		expect(await listNotes.execute({ folder: "School", name_contains: "zebra" }, ctx)).toBe("No notes matched those filters.");
+		expect(await listNotes.execute({ folder: "Attachments" }, ctx)).toBe("No notes matched those filters.");
+		expect(await grepVault.execute({ pattern: "gantry", folder: "Attachments" }, ctx)).toBe('No note contains "gantry" under attachments/.');
+		expect(await listFiles.execute({ folder: "Daily" }, ctx)).toBe("No attachments matched those filters.");
+		expect(missingFolderHint(vault(), "School/CSCI 406")).toBeNull();
+		expect(missingFolderHint(vault(), "/school/")).toBeNull();
+	});
+	it("list_sections takes a note given as the folder, as grep_vault does", async () => {
+		const { ctx } = makeCtx(vault());
+		expect(await listSections.execute({ heading: "2026", folder: "Lectures" }, ctx)).toMatch(/^1 section .*:\nSchool\/CSCI 406\/Lectures\.md\n {2}## 2026-09-03 \(1 line, 6 chars\): gantry$/);
 	});
 });
 

@@ -146,6 +146,60 @@ export function missingNoteHint(vault: VaultAccess, input: string): string {
 	return parts.join(" ");
 }
 
+/** Every folder that holds a note or an attachment, with each of its parent folders. */
+function vaultFolders(vault: VaultAccess): string[] {
+	const set = new Set<string>();
+	const add = (folder: string) => {
+		for (let f = folder; f && !set.has(f); f = f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : "") set.add(f);
+	};
+	for (const n of vault.listNotes()) add(n.folder);
+	for (const f of vault.listAttachments()) add(f.folder);
+	return Array.from(set);
+}
+
+function editDistance(a: string, b: string): number {
+	let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+	for (let i = 1; i <= a.length; i++) {
+		const row = [i];
+		for (let j = 1; j <= b.length; j++) row.push(Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)));
+		prev = row;
+	}
+	return prev[b.length];
+}
+
+/**
+ * For a `folder` argument that matches nothing: null when the folder exists (so "nothing
+ * found" is true), otherwise a sentence saying that it does not, with the existing folders
+ * closest to it. Without this a mistyped folder reads as "the vault has no such text".
+ */
+export function missingFolderHint(vault: VaultAccess, input: string): string | null {
+	const wanted = input.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+	const lower = wanted.toLowerCase();
+	const folders = vaultFolders(vault);
+	if (!lower || folders.some((f) => f.toLowerCase() === lower)) return null;
+	const leaf = lower.slice(lower.lastIndexOf("/") + 1);
+	const close = folders
+		.map((folder) => {
+			const name = folder.toLowerCase().slice(folder.lastIndexOf("/") + 1);
+			// The same folder name somewhere else, a name that contains the other, or a typo of it.
+			let score = Infinity;
+			if (name === leaf) score = 0;
+			else if (Math.min(name.length, leaf.length) >= 3 && (name.includes(leaf) || leaf.includes(name))) score = 1;
+			else {
+				const d = editDistance(name, leaf);
+				if (d <= Math.max(2, Math.floor(leaf.length / 3)) && d < Math.min(name.length, leaf.length) * 0.6) score = 1 + d;
+			}
+			return { folder, score };
+		})
+		.filter((c) => c.score < Infinity)
+		.sort((a, b) => a.score - b.score || a.folder.length - b.folder.length || a.folder.localeCompare(b.folder))
+		.slice(0, 5)
+		.map((c) => `${c.folder}/`);
+	if (close.length) return `There is no folder "${wanted}/". Closest folders: ${close.join(", ")}.`;
+	const top = folders.filter((f) => !f.includes("/")).sort((a, b) => a.localeCompare(b));
+	return `There is no folder "${wanted}/".${top.length ? ` Top-level folders: ${top.slice(0, 15).map((f) => `${f}/`).join(", ")}${top.length > 15 ? ", …" : ""}.` : " The vault has no folders."}`;
+}
+
 function hashText(text: string): string {
 	let h = 2166136261;
 	for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
@@ -466,6 +520,9 @@ export const grepVault: ToolDefinition = {
 			if (inFolder.length) notes = inFolder;
 			else {
 				const single = ctx.vault.resolve(str(args, "folder", false));
+				// Neither a folder nor a note: say so, or "No note contains X under folder/" reads as a true negative.
+				const missing = single ? null : missingFolderHint(ctx.vault, str(args, "folder", false));
+				if (missing) throw new ToolError(`${missing} Nothing was searched.`);
 				notes = single ? notes.filter((n) => n.path === single) : [];
 			}
 		}
@@ -658,7 +715,14 @@ export const listSections: ToolDefinition = {
 			const p = resolveExisting(ctx.vault, only);
 			notes = notes.filter((n) => n.path === p);
 		}
-		if (folder) notes = notes.filter((n) => n.path.toLowerCase().startsWith(folder + "/"));
+		if (folder) {
+			const inFolder = notes.filter((n) => n.path.toLowerCase().startsWith(folder + "/"));
+			// As in grep_vault: a name that is no folder is taken as a note, and one that is neither is reported.
+			const single = inFolder.length || only ? null : ctx.vault.resolve(str(args, "folder", false));
+			const missing = inFolder.length || single ? null : missingFolderHint(ctx.vault, str(args, "folder", false));
+			if (missing) throw new ToolError(`${missing} Nothing was searched.`);
+			notes = single ? notes.filter((n) => n.path === single) : inFolder;
+		}
 		notes.sort((a, b) => a.path.localeCompare(b.path));
 		const lowers = needles.map((n) => n.toLowerCase());
 		const blocks: RowBlock[] = [];
@@ -916,6 +980,11 @@ export const listNotes: ToolDefinition = {
 		if (before !== null) notes = notes.filter((n) => n.mtime < before);
 		if (folder) {
 			const prefix = folder.toLowerCase() + "/";
+			// Checked against every note, before the other filters: only a folder that is not there is an error.
+			if (!ctx.vault.listNotes().some((n) => n.path.toLowerCase().startsWith(prefix))) {
+				const missing = missingFolderHint(ctx.vault, folder);
+				if (missing) throw new ToolError(missing);
+			}
 			notes = notes.filter((n) => n.path.toLowerCase().startsWith(prefix));
 		}
 		if (nameContains) notes = notes.filter((n) => n.basename.toLowerCase().includes(nameContains));
@@ -1416,6 +1485,8 @@ export const listFiles: ToolDefinition = {
 		else if (folder) {
 			const prefix = folder.toLowerCase() + "/";
 			files = files.filter((f) => f.path.toLowerCase().startsWith(prefix));
+			const missing = files.length ? null : missingFolderHint(ctx.vault, folder);
+			if (missing) throw new ToolError(missing);
 		}
 		if (extension) files = files.filter((f) => f.extension === extension);
 		if (nameContains) files = files.filter((f) => f.basename.toLowerCase().includes(nameContains));
