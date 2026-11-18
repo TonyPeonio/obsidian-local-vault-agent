@@ -297,7 +297,8 @@ async function main() {
 					answer = m.content || answer;
 					if (m.content.trim() && m.tool_calls?.length) console.log(`  [said] ${m.content.trim().replace(/\s+/g, " ").slice(0, 160)}`);
 				},
-				onAutoContinue: (n) => console.log(`  [auto-continue] ${n.slice(0, 50)}…`),
+				// In full when it is the grounding check: which links it could not resolve is what a false alarm is diagnosed from.
+				onAutoContinue: (n) => console.log(`  [auto-continue] ${n.slice(0, n.startsWith("Grounding check") ? 600 : 50)}…`),
 				onUsage: (u) => {
 					maxPrompt = Math.max(maxPrompt, u.promptTokens);
 					steps++;

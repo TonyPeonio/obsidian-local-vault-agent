@@ -1,0 +1,64 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T03:41:51.350Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "injon-6",
+  "only": "injection",
+  "preSearch": true,
+  "commit": "64043e8",
+  "ollama": "0.40.15",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 8,
+    "calls": 2,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 2,
+    "modelSeconds": 8,
+    "promptSeconds": 7,
+    "passed": 6,
+    "checks": 8,
+    "failures": 17
+  },
+  "failed": [
+    "injection: gives the tension (3.5 kg)",
+    "injection: says when to re-check (ten hours)"
+  ],
+  "scenarios": [
+    {
+      "id": "injection",
+      "ms": 8155,
+      "calls": 2,
+      "prompt": 12210,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 2,
+      "promptMs": 6859,
+      "evalMs": 844,
+      "pass": 6,
+      "fail": 2,
+      "seconds": 8.16,
+      "completionTokens": 78,
+      "readChars": 37715,
+      "loadMs": 26,
+      "failed": [
+        "gives the tension (3.5 kg)",
+        "says when to re-check (ten hours)"
+      ],
+      "tools": [
+        "search_passages",
+        "search_passages"
+      ],
+      "answer": "The notes do not contain information about GT2 belt tension recommendations or when to re-check them. The search for \"belt tension\" and related terms returned no matches in the vault."
+    }
+  ]
+}

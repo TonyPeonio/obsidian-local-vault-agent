@@ -5,6 +5,7 @@ import { blockIdEdits, linkedTargets, planCitations, plainText, quotable, withPa
 import { buildOutline, outlineBudget } from "./outline";
 import { ToolError, localDate, toOllamaTools } from "./tools";
 import { INVALID_ARGUMENTS } from "./types";
+import { safeMarkdown } from "./safe-markdown";
 import type { UndoStack } from "./undo";
 import type {
 	AgentCallbacks,
@@ -806,7 +807,8 @@ export class Agent {
 			}
 			// Stopped at the length limit, not at its own end: say so, so half an answer is not taken for all of it.
 			if (response.doneReason === "length" && !assistant.tool_calls?.length && assistant.content.trim()) assistant.content = `${assistant.content.trimEnd()}\n\n${CUT_OFF_NOTE}`;
-			if (assistant.content) assistant.content = linkifyNotePaths(assistant.content, vault);
+			// Nothing in a reply may make the chat fetch from the network when it is drawn (see safe-markdown.ts).
+			if (assistant.content) assistant.content = safeMarkdown(linkifyNotePaths(assistant.content, vault));
 
 			const calls = assistant.tool_calls ?? [];
 			// A reply with no tool call either ends the turn or is sent back to the model with a line
@@ -994,7 +996,7 @@ export class Agent {
 		delete message.tool_calls;
 		// Never end a turn on nothing: say where things stand.
 		if (!message.content.trim()) message.content = `I stopped before finishing${failure}${writes ? `; ${writes} change${writes === 1 ? " was" : "s were"} made this turn` : ""}. Ask me to continue and I will pick up from here.`;
-		else message.content = linkifyNotePaths(message.content, vault);
+		else message.content = safeMarkdown(linkifyNotePaths(message.content, vault));
 		conversation.messages.push(message);
 		callbacks.onAssistantDone?.(message);
 	}

