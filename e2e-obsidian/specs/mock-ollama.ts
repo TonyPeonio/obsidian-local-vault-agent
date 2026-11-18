@@ -28,6 +28,9 @@ export class MockOllama {
 	}
 
 	async stop(): Promise<void> {
+		// Chromium keeps a spare connection open that never carried a request; `close()` alone waits
+		// for it (for minutes), which timed out the "after all" hook in about two runs of three.
+		this.server?.closeAllConnections();
 		await new Promise<void>((resolve) => (this.server ? this.server.close(() => resolve()) : resolve()));
 	}
 

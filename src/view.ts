@@ -1,16 +1,26 @@
+import { chatModelOptions } from "./model-picker";
 import { sameModel } from "./ollama";
-import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
-import { AUTO_CONTINUE_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
+import { AUTO_CONTINUE_TEXT, FOLLOW_THROUGH_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
+import { unattendedWrites } from "./approval";
+import { recordOutcomes, restoredCards, type ToolOutcome } from "./chat-restore";
+import type { Lease } from "./busy";
+import { MAX_IMAGES_PER_MESSAGE, attachmentName, checkImage, withImages, type ReadImage } from "./composer-images";
 import { ComposerSuggest } from "./composer-suggest";
 import type { GardenFix, GardenReport } from "./gardener";
 import { HELP_TEXT, attachMentions, matchCommands, matchNotes, parseSlash } from "./mentions";
+import { MessageQueue, queuePreview, restoredDraft, type QueuedMessage } from "./message-queue";
 import { conversationToMarkdown } from "./transcript";
 import { QuizSession, isNonAnswer, parseQuizRequest, questionMarkdown, renderReview, resultMarkdown, reviewNotePath, selectQuizNotes } from "./quiz";
 import { VoiceRecorder } from "./voice";
 import { t, type I18nKey } from "./i18n";
 import { log } from "./log";
 import { SAMPLE_QUESTIONS } from "./sample";
+import { ScrollFollow } from "./scroll-follow";
+import { StreamRenderer, nextRenderDelay } from "./stream-blocks";
+import { describeCall, describeResult, iconFor } from "./tool-cards";
+import { TurnProgress, formatDuration, formatTokens, phaseText, shouldNotify, summaryText } from "./turn-progress";
 import { stillApplied } from "./undo";
 import type { ChangeRecord, ChatMessage, ToolCall, UsageInfo } from "./types";
 
@@ -25,24 +35,48 @@ export class AgentView extends ItemView {
 	private sendBtn!: HTMLButtonElement;
 	private statusEl!: HTMLElement;
 	private modelSelect!: HTMLSelectElement;
-	private abort: AbortController | null = null;
+	/** The bar above the message box that says changes are being written without a diff, with "Turn off". */
+	private approveAllEl!: HTMLElement;
+	private approveAllText!: HTMLElement;
+	private approveAllShown: "chat" | "setting" | null = null;
+	/** The bar that names a scheduled job while it runs, with "Stop". */
+	private jobBarEl!: HTMLElement;
+	private jobBarText!: HTMLElement;
+	private jobStopBtn!: HTMLButtonElement;
+	private unsubscribeBusy: (() => void) | null = null;
+	/** The right to use the model while a chat turn or a quiz step of this view runs; Stop aborts through it. */
+	private lease: Lease | null = null;
 	/** Turns (by their list of reported changes) that already show the partial-undo offer. */
 	private partialOffered = new WeakSet<ChangeRecord[]>();
 	private running = false;
 	/** True while a mechanical /garden fix is being applied (its diffs are open). */
 	private gardening = false;
-	/** Whether the next message gets the notes it links to attached; off for prompts that only list notes. */
-	private attachNext = true;
+	/** Messages sent while the model was busy; they go out, in order, when it is free. */
+	private queue = new MessageQueue();
+	private queueEl!: HTMLElement;
+	/** Vault paths of pictures pasted or dropped into the message box, sent with the next message. */
+	private pendingImages: string[] = [];
+	private pendingEl!: HTMLElement;
 	private unsubscribeStatus: (() => void) | null = null;
 	private unsubscribeGists: (() => void) | null = null;
 	private usage: UsageInfo | null = null;
+	/** Size of the prompt before any conversation (system prompt and tools), learned from the first call of a chat: the guess for "Reading about N tokens…" in a new chat. */
+	private prefixTokens: number | null = null;
 	private suggest: ComposerSuggest | null = null;
 	/** The quiz in progress: while set, the composer's messages are answers, graded instead of sent to the agent. */
 	private quiz: QuizSession | null = null;
 	private quizSources = new Map<string, string>();
 	private quizBusy = false;
 	private micBtn: HTMLButtonElement | null = null;
+	/** How each tool call of this session ended, written onto the saved chat so a restored one is drawn as it was. */
+	private outcomes = new WeakMap<ToolCall, ToolOutcome>();
 	private recorder = new VoiceRecorder();
+	/** Not visible: what a screen reader is told once, such as a reply that has finished streaming. */
+	private announcerEl!: HTMLElement;
+	/** Whether new text pulls the list to the bottom: only while the reader is there. */
+	private follow = new ScrollFollow();
+	private jumpBtn!: HTMLButtonElement;
+	private resized: ResizeObserver | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -72,6 +106,8 @@ export class AgentView extends ItemView {
 		this.modelSelect.addEventListener("change", () => {
 			this.plugin.settings.model = this.modelSelect.value;
 			void this.plugin.saveSettings();
+			// As the settings tab does: whether read_image is offered depends on the chat model when no vision model is set.
+			void this.plugin.refreshVision();
 		});
 		void this.populateModels();
 		const newChat = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.newChat") } });
@@ -93,10 +129,83 @@ export class AgentView extends ItemView {
 		refresh.addEventListener("click", () => void this.populateModels(true));
 
 		// Messages
-		// A live region: screen readers announce new messages as they arrive.
+		// A live region: screen readers announce new messages as they arrive. A reply that is being
+		// written is kept out of it (it changes several times a second) and read once when it is finished.
 		this.messagesEl = root.createDiv({ cls: "lva-messages", attr: { role: "log", "aria-live": "polite", "aria-label": t("view.messages") } });
+		this.announcerEl = root.createDiv({ cls: "lva-sr-only", attr: { role: "status", "aria-live": "polite" } });
+		// Scrolled up to read: new text stays below, and this button goes to it.
+		this.messagesEl.addEventListener(
+			"scroll",
+			() => {
+				this.follow.onScroll(this.messagesEl);
+				this.syncJump();
+			},
+			{ passive: true },
+		);
+		// The list gets shorter when a bar, the queue or a taller message box appears under it: a reader
+		// who was at the end stays at the end.
+		this.resized?.disconnect();
+		this.resized = new ResizeObserver(() => {
+			if (this.follow.pinned) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+		});
+		this.resized.observe(this.messagesEl);
+		// The wheel, a key or a finger says "up" before the list has moved; taken at its word, so that
+		// text arriving in the same instant does not pull the list back down first.
+		const up = () => {
+			this.follow.scrollingUp(this.messagesEl);
+			this.syncJump();
+		};
+		this.messagesEl.addEventListener("wheel", (e) => e.deltaY < 0 && up(), { passive: true });
+		this.messagesEl.addEventListener("keydown", (e) => ["PageUp", "ArrowUp", "Home"].includes(e.key) && up());
+		let touchY: number | null = null;
+		this.messagesEl.addEventListener("touchstart", (e) => void (touchY = e.touches[0]?.clientY ?? null), { passive: true });
+		this.messagesEl.addEventListener(
+			"touchmove",
+			(e) => {
+				const y = e.touches[0]?.clientY;
+				// The finger moves down to bring earlier text into view.
+				if (touchY !== null && y !== undefined && y > touchY + 4) up();
+			},
+			{ passive: true },
+		);
+		this.jumpBtn = root.createDiv({ cls: "lva-jump-row" }).createEl("button", { cls: "lva-jump" });
+		setIcon(this.jumpBtn.createSpan({ cls: "lva-jump-icon" }), "arrow-down");
+		this.jumpBtn.createSpan({ text: t("view.jump") });
+		this.jumpBtn.addEventListener("click", () => {
+			this.scrollToBottom(true);
+			this.inputEl.focus();
+		});
+		this.jumpBtn.hide();
 		this.renderWelcome();
 		void this.restoreChat();
+
+		// "Approve all" is never silent: while changes are written without a diff, this bar says so.
+		this.approveAllEl = root.createDiv({ cls: "lva-approve-all", attr: { role: "status" } });
+		setIcon(this.approveAllEl.createSpan({ cls: "lva-approve-all-icon" }), "alert-triangle");
+		this.approveAllText = this.approveAllEl.createSpan({ cls: "lva-approve-all-text" });
+		const approveOff = this.approveAllEl.createEl("button", { cls: "lva-chip", text: t("view.approveAll.off") });
+		approveOff.addEventListener("click", () => this.turnOffApproveAll());
+		this.approveAllEl.hide();
+
+		// A scheduled job has the model: the chat says so (a message sent now waits in the queue) and can stop it.
+		this.jobBarEl = root.createDiv({ cls: "lva-job-bar", attr: { role: "status" } });
+		setIcon(this.jobBarEl.createSpan({ cls: "lva-job-bar-icon" }), "clock");
+		this.jobBarText = this.jobBarEl.createSpan({ cls: "lva-job-bar-text" });
+		this.jobStopBtn = this.jobBarEl.createEl("button", { cls: "lva-chip", text: t("job.stop") });
+		this.jobStopBtn.addEventListener("click", () => this.plugin.stopJob());
+		// Messages sent while the model is busy wait here, visibly, until it is free.
+		this.queueEl = root.createDiv({ cls: "lva-queue", attr: { role: "status" } });
+		this.queueEl.hide();
+		this.unsubscribeBusy = this.plugin.busy.onChange(() => {
+			this.syncJobBar();
+			this.renderQueue();
+			this.scheduleDrain();
+		});
+		this.syncJobBar();
+
+		// Pictures pasted or dropped into the message box wait here until the message is sent.
+		this.pendingEl = root.createDiv({ cls: "lva-pending" });
+		this.pendingEl.hide();
 
 		// Composer
 		const composer = root.createDiv({ cls: "lva-composer" });
@@ -128,9 +237,35 @@ export class AgentView extends ItemView {
 			}
 		});
 		this.inputEl.addEventListener("input", () => this.autoGrow());
-		this.inputEl.addEventListener("focus", () => this.updateMic());
-		// About to write a message: have the model loaded and its prompt read by the time it is sent.
-		this.inputEl.addEventListener("focus", () => this.plugin.warmModel());
+		// A picture from the clipboard is saved as an attachment and read with the vision model.
+		this.inputEl.addEventListener("paste", (e) => {
+			const data = e.clipboardData;
+			const files = Array.from(data?.files ?? []).filter((f) => f.type.startsWith("image/"));
+			// Text copied from an office document comes with a picture of itself: the text is what is pasted.
+			if (files.length === 0 || data?.getData("text/plain")) return;
+			e.preventDefault();
+			void this.addImages(files);
+		});
+		composer.addEventListener("dragover", (e) => {
+			if (!e.dataTransfer?.types.includes("Files")) return;
+			e.preventDefault();
+			composer.addClass("lva-drop");
+		});
+		composer.addEventListener("dragleave", () => composer.removeClass("lva-drop"));
+		composer.addEventListener("drop", (e) => {
+			composer.removeClass("lva-drop");
+			const files = Array.from(e.dataTransfer?.files ?? []);
+			if (files.length === 0) return;
+			e.preventDefault();
+			e.stopPropagation();
+			void this.addImages(files);
+		});
+		this.inputEl.addEventListener("focus", () => {
+			this.updateMic();
+			this.syncApproveAll();
+			// About to write a message: have the model loaded and its prompt read by the time it is sent.
+			this.plugin.warmModel();
+		});
 		// Voice input goes through Lecture Companion's whisper server; without it there is no button.
 		this.micBtn = composer.createEl("button", { cls: "clickable-icon lva-mic", attr: { "aria-label": t("view.mic") } });
 		setIcon(this.micBtn, "mic");
@@ -159,11 +294,17 @@ export class AgentView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.stop();
+		// A model list still on its way must not fill a picker that is gone.
+		this.modelListRequest++;
 		this.recorder.cancel();
 		this.unsubscribeStatus?.();
 		this.unsubscribeStatus = null;
 		this.unsubscribeGists?.();
 		this.unsubscribeGists = null;
+		this.unsubscribeBusy?.();
+		this.unsubscribeBusy = null;
+		this.resized?.disconnect();
+		this.resized = null;
 	}
 
 	/** Put text into the composer and focus it (used by commands). */
@@ -173,31 +314,53 @@ export class AgentView extends ItemView {
 		this.inputEl.focus();
 	}
 
-	/** Send a message programmatically (used by commands). */
+	/**
+	 * Send a message programmatically (used by commands). `attachMentioned` is off for prompts that
+	 * only list notes. What the user is typing in the message box is left alone.
+	 */
 	async send(text: string, attachMentioned = true): Promise<void> {
-		this.inputEl.value = text;
-		this.attachNext = attachMentioned;
-		await this.submit();
+		await this.accept(text.trim(), attachMentioned);
 	}
 
+	private modelListRequest = 0;
+
+	/**
+	 * Fills the model picker: the models the agent can use, each with its size and whether it is in
+	 * memory now (one request for the list, one for what is loaded). Called when the panel opens, by
+	 * the refresh button and after each reply, when the chosen model has just been loaded.
+	 */
 	private async populateModels(notify = false): Promise<void> {
+		const request = ++this.modelListRequest;
+		const client = this.plugin.client;
+		let models: Awaited<ReturnType<typeof client.listModels>> | null = null;
+		let running: Awaited<ReturnType<typeof client.ps>> = [];
+		let error = "";
+		try {
+			// What is loaded is a nicety: a server without /api/ps still gets its list.
+			[models, running] = await Promise.all([client.listModels(), client.ps().catch(() => [])]);
+		} catch (err) {
+			error = (err as Error).message ?? String(err);
+		}
+		// A newer refresh is on its way, or the panel was closed meanwhile.
+		if (request !== this.modelListRequest) return;
+		// Read now, not before the requests: the user may have picked another model while they ran.
 		const current = this.plugin.settings.model;
 		this.modelSelect.empty();
-		try {
-			const models = await this.plugin.client.listModels();
-			const chatModels = models.filter((m) => !/embed/i.test(m.name));
-			for (const m of chatModels) {
-				this.modelSelect.createEl("option", { value: m.name, text: m.name });
-			}
-			if (!chatModels.some((m) => sameModel(m.name, current))) {
-				this.modelSelect.createEl("option", { value: current, text: `${current} (not installed)` });
-			}
-			if (notify) new Notice(`Found ${chatModels.length} chat model${chatModels.length === 1 ? "" : "s"}.`);
-		} catch (err) {
+		if (!models) {
 			this.modelSelect.createEl("option", { value: current, text: current });
-			if (notify) new Notice(`Could not reach Ollama: ${(err as Error).message}`);
+			this.modelSelect.value = current;
+			if (notify) new Notice(t(client.provider === "ollama" ? "notice.models.unreachable.ollama" : "notice.models.unreachable.server", { error }));
+			return;
 		}
-		this.modelSelect.value = current;
+		const options = chatModelOptions(models, running, current);
+		for (const o of options) {
+			const el = this.modelSelect.createEl("option", { value: o.value, text: o.label });
+			if (o.current) el.selected = true;
+		}
+		if (notify) {
+			const n = options.filter((o) => o.usable).length;
+			new Notice(t(n === 1 ? "notice.models.found.one" : "notice.models.found", { n }));
+		}
 	}
 
 	private renderWelcome(): void {
@@ -222,16 +385,24 @@ export class AgentView extends ItemView {
 		const messages = await this.plugin.loadChat();
 		if (!messages || messages.length === 0 || this.conversation.messages.length > 0) return;
 		this.conversation = { id: this.plugin.lastChatId ?? newConversation().id, messages, approveAll: false };
+		this.usage = this.plugin.lastChatUsage;
 		this.messagesEl.querySelector(".lva-welcome")?.remove();
 		await this.renderHistory(messages);
-		this.scrollToBottom();
+		this.updateStatus();
+		this.scrollToBottom(true);
+	}
+
+	/** Saves the conversation, with how each tool call ended, so it can be drawn again after a restart. */
+	private saveChat(): void {
+		recordOutcomes(this.conversation.messages, this.outcomes);
+		this.plugin.saveChat(this.conversation.messages, this.conversation.id, this.usage);
 	}
 
 	private async renderHistory(messages: ChatMessage[]): Promise<void> {
 		for (let i = 0; i < messages.length; i++) {
 			const m = messages[i];
 			if (m.role === "user") {
-				if (m.content === AUTO_CONTINUE_TEXT || m.content.startsWith(GROUNDING_PREFIX) || /^Your reply was empty/.test(m.content)) {
+				if (m.content === AUTO_CONTINUE_TEXT || m.content.startsWith(GROUNDING_PREFIX) || m.content.startsWith(FOLLOW_THROUGH_TEXT) || /^Your reply was empty/.test(m.content)) {
 					this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: "(auto-continued)" });
 				} else {
 					const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
@@ -239,20 +410,21 @@ export class AgentView extends ItemView {
 				}
 			} else if (m.role === "assistant") {
 				const root = this.messagesEl.createDiv({ cls: "lva-msg lva-assistant" });
-				if (m.content.trim()) await this.renderMarkdown(m.content, root.createDiv({ cls: "lva-bubble lva-markdown" }));
-				for (const call of m.tool_calls ?? []) {
-					// The tool results follow the assistant message in call order.
-					const candidate = messages[i + 1 + (m.tool_calls ?? []).indexOf(call)];
-					const resultMsg = candidate?.role === "tool" ? candidate : undefined;
-					const card = root.createEl("details", { cls: "lva-tool lva-tool-ok" });
-					const summary = card.createEl("summary");
-					const icon = summary.createSpan({ cls: "lva-tool-icon" });
-					setIcon(icon, iconFor(call.function.name));
-					summary.createSpan({ cls: "lva-tool-name", text: describeCall(call) });
-					summary.createSpan({ cls: "lva-tool-args", text: resultMsg ? describeResult(call, resultMsg.content) : "" });
-					const body = card.createDiv({ cls: "lva-tool-body" });
-					body.createEl("pre", { cls: "lva-tool-pre", text: JSON.stringify(call.function.arguments, null, 2) });
-					if (resultMsg) body.createEl("pre", { cls: "lva-tool-pre lva-tool-result", text: resultMsg.content.length > 3000 ? resultMsg.content.slice(0, 3000) + "\n…" : resultMsg.content });
+				if (m.content.trim()) {
+					await this.renderMarkdown(m.content, root.createDiv({ cls: "lva-bubble lva-markdown" }));
+					addAnswerActions(this, root, m.content);
+				}
+				// Each card as it ended: failed calls red, a call the turn never finished marked as stopped,
+				// and the Undo button of every write that is still in the change history.
+				for (const restored of restoredCards(messages, i)) {
+					const card = createToolCard(root, restored.call, restored.state === "ok" ? "lva-tool-ok" : restored.state === "error" ? "lva-tool-error" : "lva-tool-unfinished");
+					if (restored.result === null) card.querySelector(".lva-tool-args")?.setText(t("view.tool.stopped"));
+					else fillToolResult(card, restored.call, restored.result, restored.state === "ok");
+					for (const id of restored.changes) {
+						const change = this.plugin.undo.byId(id);
+						// The id alone is not proof: a history file that was reset numbers its changes from 1 again.
+						if (change && change.chat === this.conversation.id) addUndoButton(this.plugin, card, change);
+					}
 				}
 			}
 		}
@@ -265,8 +437,11 @@ export class AgentView extends ItemView {
 		this.quizSources.clear();
 		void this.plugin.clearChat();
 		this.conversation = newConversation();
+		this.syncApproveAll();
 		this.usage = null;
 		this.messagesEl.empty();
+		this.follow.jump();
+		this.syncJump();
 		this.renderWelcome();
 		this.inputEl.focus();
 	}
@@ -284,12 +459,189 @@ export class AgentView extends ItemView {
 		this.sendBtn.toggleClass("lva-stop", running);
 	}
 
+	/**
+	 * Stops this view's running turn or quiz step. The lease is kept until that code has unwound, so
+	 * it can tell it was stopped. Messages waiting in the queue are not sent either: they go back
+	 * into the message box.
+	 */
 	private stop(): void {
-		this.abort?.abort();
-		this.abort = null;
+		this.returnQueue();
+		this.lease?.stop();
+	}
+
+	/** Whether a message has to wait: this chat is busy, or (for anything that needs the model) something else has it. */
+	private mustWait(text: string): boolean {
+		if (this.running || this.gardening || this.quizBusy) return true;
+		if (!this.plugin.busy.busy) return false;
+		// Commands and ending a quiz need no model: they run while a scheduled job has it.
+		return !parseSlash(text) && !(this.quiz !== null && QUIZ_END.test(text));
+	}
+
+	/** Takes a message: sends it now, or queues it (visibly) while the model is busy. */
+	private async accept(text: string, attach: boolean, images: string[] = []): Promise<void> {
+		if (!text) return;
+		if (this.mustWait(text)) {
+			this.queue.add(text, attach, images);
+			this.renderQueue();
+			return;
+		}
+		await this.deliver({ text, attach, images });
+	}
+
+	/**
+	 * Pictures pasted or dropped into the message box: each is saved where Obsidian keeps
+	 * attachments (a new file, never over an existing one) and waits above the box for the message.
+	 */
+	private async addImages(files: File[]): Promise<void> {
+		if (!this.plugin.visionAvailable) {
+			new Notice(t("notice.image.noVision"), 8000);
+			return;
+		}
+		for (const file of files) {
+			if (this.pendingImages.length >= MAX_IMAGES_PER_MESSAGE) {
+				new Notice(t("notice.image.tooMany", { n: MAX_IMAGES_PER_MESSAGE }), 8000);
+				break;
+			}
+			const check = checkImage(file);
+			if (!check.ok) {
+				new Notice(t(`notice.image.${check.reason}`, { name: file.name || t("notice.image.unnamed") }), 8000);
+				continue;
+			}
+			try {
+				this.pendingImages.push(await this.plugin.saveAttachment(attachmentName(file, check.extension, new Date()), await file.arrayBuffer()));
+			} catch (err) {
+				new Notice(t("notice.image.saveFailed", { error: (err as Error).message ?? String(err) }), 8000);
+			}
+		}
+		this.renderPending();
+		this.inputEl.focus();
+	}
+
+	/** Draws the pictures waiting for the next message, each with a button that leaves it out (the file stays in the vault). */
+	private renderPending(): void {
+		this.pendingEl.empty();
+		this.pendingEl.toggle(this.pendingImages.length > 0);
+		for (const path of this.pendingImages) {
+			const name = path.slice(path.lastIndexOf("/") + 1);
+			const chip = this.pendingEl.createDiv({ cls: "lva-pending-image" });
+			const src = this.plugin.attachmentPreview(path);
+			if (src) chip.createEl("img", { attr: { src, alt: "" } });
+			chip.createSpan({ cls: "lva-pending-name", text: name });
+			const remove = chip.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.image.remove", { name }) } });
+			setIcon(remove, "x");
+			remove.addEventListener("click", () => {
+				this.pendingImages = this.pendingImages.filter((p) => p !== path);
+				this.renderPending();
+			});
+		}
+	}
+
+	/** Draws the waiting messages above the message box, each with a button that takes it back. */
+	private renderQueue(): void {
+		this.queueEl.empty();
+		this.queueEl.toggle(this.queue.size > 0);
+		if (this.queue.size === 0) return;
+		const holder = this.plugin.busy.holder;
+		this.queueEl.createDiv({ cls: "lva-queue-hint", text: holder?.owner === "job" ? t("view.queue.hint.job", { job: holder.label }) : t("view.queue.hint") });
+		for (const item of this.queue.list) {
+			const row = this.queueEl.createDiv({ cls: "lva-queued" });
+			setIcon(row.createSpan({ cls: "lva-queued-icon" }), "clock");
+			row.createSpan({ cls: "lva-queued-text", text: queuePreview(item.text) + (item.images.length ? ` · ${t("view.queue.images", { n: item.images.length })}` : "") });
+			const back = row.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.queue.takeBack") } });
+			setIcon(back, "undo-2");
+			back.addEventListener("click", () => {
+				const taken = this.queue.remove(item.id);
+				if (taken) this.backToBox([taken]);
+				this.renderQueue();
+			});
+		}
+	}
+
+	/** Puts messages that will not be sent back into the message box, before what is being typed there, with their pictures. */
+	private backToBox(messages: QueuedMessage[]): void {
+		if (messages.length === 0) return;
+		this.inputEl.value = restoredDraft(messages, this.inputEl.value);
+		this.autoGrow();
+		const images = messages.flatMap((m) => m.images);
+		if (images.length === 0) return;
+		this.pendingImages = [...images, ...this.pendingImages];
+		this.renderPending();
+	}
+
+	/** Empties the queue into the message box (Stop, or a turn that failed): nothing waiting is sent, nothing typed is lost. */
+	private returnQueue(): boolean {
+		const waiting = this.queue.clear();
+		if (waiting.length === 0) return false;
+		this.backToBox(waiting);
+		this.renderQueue();
+		return true;
+	}
+
+	/** Sends the next waiting message once the code that just finished has unwound. */
+	private scheduleDrain(): void {
+		if (this.queue.size === 0) return;
+		window.setTimeout(() => this.drain(), 0);
+	}
+
+	private drain(): void {
+		if (this.queue.size === 0 || this.mustWait(this.queue.list[0].text)) return;
+		const item = this.queue.next();
+		this.renderQueue();
+		// A command ends without a turn ending, so the one after it is looked at from here.
+		if (item) void this.deliver(item).finally(() => this.scheduleDrain());
+	}
+
+	/**
+	 * A turn or quiz step of this chat has ended. After a stop or a failure the waiting messages are
+	 * handed back (the next one would likely fail the same way, or is no longer wanted); otherwise
+	 * the next one is sent.
+	 */
+	private turnEnded(stopped: boolean, failed: boolean): void {
+		if (stopped) this.returnQueue();
+		else if (failed) {
+			if (this.returnQueue()) new Notice(t("notice.queue.returned"), 8000);
+		} else this.scheduleDrain();
+	}
+
+	/** Says why a message cannot be sent right now. */
+	private noticeBusy(): void {
+		const holder = this.plugin.busy.holder;
+		new Notice(holder?.owner === "job" ? t("notice.jobRunning", { job: holder.label }) : t("notice.wait"));
+	}
+
+	/** Shows the running scheduled job, if any, with its Stop button ("Stopping…" once it was pressed). */
+	private syncJobBar(): void {
+		const holder = this.plugin.busy.holder;
+		const job = holder?.owner === "job" ? holder : null;
+		this.jobBarEl.toggle(job !== null);
+		if (!job) return;
+		this.jobBarText.setText(t(job.stopped ? "job.stopping" : "job.running", { job: job.label }));
+		this.jobStopBtn.disabled = job.stopped;
+	}
+
+	/** Shows or hides the "written without a diff" bar to match this chat's approve-all and the global setting. */
+	private syncApproveAll(): void {
+		const why = unattendedWrites(this.conversation.approveAll, this.plugin.settings.autoApproveEdits);
+		if (why === this.approveAllShown) return;
+		this.approveAllShown = why;
+		if (why) this.approveAllText.setText(t(why === "chat" ? "view.approveAll.chat" : "view.approveAll.setting"));
+		this.approveAllEl.toggle(why !== null);
+	}
+
+	/** One click: diffs are shown again, from the next change on (also of a turn that is running). */
+	private turnOffApproveAll(): void {
+		this.conversation.approveAll = false;
+		if (this.plugin.settings.autoApproveEdits) {
+			this.plugin.settings.autoApproveEdits = false;
+			void this.plugin.saveSettings();
+		}
+		this.syncApproveAll();
+		this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.approveAll.offNote") });
+		this.scrollToBottom();
 	}
 
 	private updateStatus(extra?: string): void {
+		this.syncApproveAll();
 		const s = this.plugin.index.status();
 		const parts: string[] = [];
 		if (extra) parts.push(extra);
@@ -308,14 +660,27 @@ export class AgentView extends ItemView {
 			const used = this.usage.promptTokens + this.usage.completionTokens;
 			const pct = Math.round((used / this.usage.numCtx) * 100);
 			warn = pct >= 85;
-			parts.push(t("view.status.context", { used: fmtK(used), total: fmtK(this.usage.numCtx), pct }));
+			parts.push(t("view.status.context", { used: formatTokens(used), total: formatTokens(this.usage.numCtx), pct }));
 		}
 		this.statusEl.setText(parts.join(" · "));
 		this.statusEl.toggleClass("lva-ctx-warn", warn);
 	}
 
-	private scrollToBottom(): void {
-		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+	/**
+	 * Follows what was just added to the conversation, when the reader is at the bottom. When they
+	 * have scrolled up, the list stays where it is and the "jump to latest" button is shown. `force`
+	 * goes to the bottom regardless (the user's own message, or the button).
+	 */
+	private scrollToBottom(force = false): void {
+		if (force) this.follow.jump();
+		if (this.follow.contentAdded()) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+		this.syncJump();
+	}
+
+	private syncJump(): void {
+		this.jumpBtn.toggle(this.follow.showJump);
+		this.jumpBtn.toggleClass("lva-jump-new", this.follow.hasUnseen);
+		this.jumpBtn.setAttribute("aria-label", t(this.follow.hasUnseen ? "view.jump.new" : "view.jump"));
 	}
 
 	/** Runs a `/command` from the composer. */
@@ -370,7 +735,7 @@ export class AgentView extends ItemView {
 				this.messagesEl.querySelector(".lva-welcome")?.remove();
 				const el = this.messagesEl.createDiv({ cls: "lva-msg lva-assistant" });
 				await this.renderMarkdown(HELP_TEXT, el.createDiv({ cls: "lva-bubble lva-markdown" }));
-				this.scrollToBottom();
+				this.scrollToBottom(true);
 				break;
 			}
 			default:
@@ -387,8 +752,8 @@ export class AgentView extends ItemView {
 		await this.renderMarkdown(markdown, root.createDiv({ cls: "lva-bubble lva-markdown" }));
 		// History must start with a user message, hence the pair.
 		this.conversation.messages.push({ role: "user", content: userText }, { role: "assistant", content: markdown });
-		this.plugin.saveChat(this.conversation.messages, this.conversation.id);
-		this.scrollToBottom();
+		this.saveChat();
+		this.scrollToBottom(true);
 		return root;
 	}
 
@@ -440,93 +805,226 @@ export class AgentView extends ItemView {
 			new Notice((err as Error).message ?? String(err), 8000);
 		} finally {
 			this.gardening = false;
+			this.scheduleDrain();
 		}
 	}
 
+	/** The message box was submitted: the message is sent, or queued while the model is busy. Either way the box is free for the next one. */
 	private async submit(): Promise<void> {
-		const text = this.inputEl.value.trim();
-		const attach = this.attachNext;
-		this.attachNext = true;
-		if (!text || this.running || this.gardening || this.quizBusy) return;
+		const images = this.pendingImages;
+		// A picture alone is a question too.
+		const text = this.inputEl.value.trim() || (images.length ? t(images.length === 1 ? "view.image.question" : "view.image.question.many") : "");
+		if (!text) return;
+		this.inputEl.value = "";
+		this.autoGrow();
+		if (images.length) {
+			this.pendingImages = [];
+			this.renderPending();
+		}
+		await this.accept(text, true, images);
+	}
+
+	/** Sends one message now: a command, a quiz answer, a quiz request, or a turn of the agent. */
+	private async deliver(item: Pick<QueuedMessage, "text" | "attach" | "images">): Promise<void> {
+		const { text, attach, images } = item;
+		/** Back to the front of the queue: something took the model between the check and now. */
+		const requeue = () => {
+			this.queue.putBack({ id: 0, ...item });
+			this.renderQueue();
+		};
+		// Only a turn of the agent takes pictures; for anything else they stay with the message box.
+		const keepImages = () => {
+			if (images.length === 0) return;
+			this.pendingImages = [...images, ...this.pendingImages];
+			this.renderPending();
+		};
 		const slash = parseSlash(text);
 		if (slash) {
-			this.inputEl.value = "";
+			keepImages();
 			await this.runSlash(slash.id);
 			return;
 		}
+		// A panel restored with the workspace was never "opened": the first message is when a missing server is reported.
+		void this.plugin.checkOllamaOnce();
+		// Everything below calls the model, one job at a time: a scheduled job may be running.
+		// (Ending a quiz needs no model.)
+		if (this.plugin.busy.busy && !(this.quiz && QUIZ_END.test(text))) {
+			requeue();
+			return;
+		}
 		if (this.quiz) {
-			this.inputEl.value = "";
+			keepImages();
 			await this.answerQuiz(text);
 			return;
 		}
 		if (parseQuizRequest(text, new Date())) {
-			this.inputEl.value = "";
+			keepImages();
 			await this.startQuiz(text, this.plugin.settings.quizQuestions);
 			return;
 		}
-		this.messagesEl.querySelector(".lva-welcome")?.remove();
-		this.inputEl.value = "";
-		this.autoGrow();
-
-		const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
-		user.createDiv({ cls: "lva-bubble", text });
-		const { message, attached } = attach ? await attachMentions(text, this.plugin.vault, this.plugin.settings.maxToolResultChars * 2) : { message: text, attached: [] as string[] };
-		if (attached.length) {
-			user.createDiv({ cls: "lva-attached", text: `Attached: ${attached.map((p) => p.replace(/\.md$/i, "")).join(", ")}` });
+		const lease = this.plugin.busy.acquire("chat");
+		if (!lease) {
+			requeue();
+			return;
 		}
-		this.scrollToBottom();
-
-		this.abort = new AbortController();
-		this.setSendState(true);
-		this.plugin.agentBusy = true;
+		this.lease = lease;
 		/** The changes the agent reports for this message. Not looked up by turn number: the agent
 		 * numbers the turn after compacting the history, so the view cannot know that number. */
 		const made: ChangeRecord[] = [];
-		let turn: TurnRenderer | null = null;
+		/** The reply being drawn; null between the model's steps. In an object so the code after the turn can reach it. */
+		const live: { turn: TurnRenderer | null } = { turn: null };
 		const started = Date.now();
 		let calls = 0;
-		const progress = () => this.updateStatus(t("view.status.working", { calls, secs: Math.round((Date.now() - started) / 1000) }));
-		const ticker = window.setInterval(progress, 1000);
+		let failed = false;
+		/** No model call was made in this chat yet: the first one tells how large the fixed part of the prompt is. */
+		const firstCall = this.usage === null;
+		const tp = new TurnProgress(started, {
+			contextTokens: this.usage ? this.usage.promptTokens + this.usage.completionTokens : this.prefixTokens,
+			messageChars: text.length,
+		});
+		/** The attached picture the vision model is reading, before the agent's turn starts. */
+		let reading: { n: number; total: number } | null = null;
+		/** Writes what the turn is doing into the status line. */
+		const draw = () => {
+			const now = Date.now();
+			const parts = [reading ? t("view.phase.image", reading) : phaseText(tp.phase(now))];
+			if (calls > 0) parts.push(t("view.status.calls", { calls }));
+			parts.push(t("view.status.secs", { secs: Math.round((now - started) / 1000) }));
+			this.updateStatus(parts.join(" · "));
+		};
+		let askingLoaded = false;
+		/** Whether the chat model is in memory, so a wait of a minute says "Loading the model…" instead of nothing; asked again while it loads. */
+		const askLoaded = () => {
+			if (askingLoaded || this.plugin.client.provider !== "ollama") return;
+			askingLoaded = true;
+			this.plugin.client
+				.ps()
+				.then((running) => {
+					tp.setLoaded(running.some((r) => sameModel(r.name, this.plugin.settings.model)));
+					// Shown at once, not at the next tick of the clock.
+					draw();
+				})
+				// A server that cannot say: the line says "Reading the prompt…".
+				.catch(() => undefined)
+				.finally(() => {
+					askingLoaded = false;
+				});
+		};
+		const progress = () => {
+			if (tp.phase(Date.now()).kind === "loading" && !reading) askLoaded();
+			draw();
+		};
+		/** What the model is streaming right now, so the status line changes when it does and not on every piece. */
+		let streaming: "thinking" | "content" | null = null;
+		const piece = (kind: "thinking" | "content", chars: number) => {
+			tp.delta(Date.now(), kind, chars);
+			if (streaming === kind) return;
+			streaming = kind;
+			progress();
+		};
+		let ticker: number | null = null;
 
+		// From here to the `finally` that gives the gate back, everything is inside the try: a
+		// lease that leaked would leave the chat refusing messages until Obsidian is restarted.
 		try {
+			this.messagesEl.querySelector(".lva-welcome")?.remove();
+			this.setSendState(true);
+			ticker = window.setInterval(progress, 1000);
+			const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
+			user.createDiv({ cls: "lva-bubble", text });
+			const noted = attach ? await attachMentions(text, this.plugin.vault, this.plugin.settings.maxToolResultChars * 2) : { message: text, attached: [] as string[] };
+			const attached = noted.attached;
+			let message = noted.message;
+			if (images.length) {
+				const strip = user.createDiv({ cls: "lva-attached-images" });
+				for (const path of images) {
+					const src = this.plugin.attachmentPreview(path);
+					if (src) strip.createEl("img", { attr: { src, alt: path } });
+					else strip.createSpan({ cls: "lva-attached", text: path });
+				}
+			}
+			if (attached.length) {
+				user.createDiv({ cls: "lva-attached", text: `Attached: ${attached.map((p) => p.replace(/\.md$/i, "")).join(", ")}` });
+			}
+			// The reader's own message: always shown, wherever they had scrolled to.
+			this.scrollToBottom(true);
+			if (images.length) {
+				// Read as the agent's read_image tool reads a picture (and cached the same way), so the
+				// model starts with what is in it instead of having to ask.
+				const read: ReadImage[] = [];
+				for (const path of images) {
+					reading = { n: read.length + 1, total: images.length };
+					progress();
+					try {
+						read.push({ path, text: await this.plugin.vision.describe(path, { signal: lease.signal }) });
+					} catch (err) {
+						if (lease.stopped) break;
+						read.push({ path, error: (err as Error).message ?? String(err) });
+					}
+					if (lease.stopped) break;
+				}
+				reading = null;
+				if (lease.stopped) {
+					// Stopped before the agent saw the message: it goes back into the message box, pictures included.
+					user.remove();
+					this.backToBox([{ id: 0, text, attach, images }]);
+					return;
+				}
+				message = withImages(message, read, this.plugin.settings.maxToolResultChars);
+			}
+			// The notes and pictures attached to the message are read by the model too.
+			tp.added(message.length - text.length);
+			askLoaded();
 			await this.plugin.agent.run(
 				this.conversation,
 				message,
 				{
 					onStatus: () => progress(),
 					onAssistantStart: () => {
-						turn = new TurnRenderer(this, this.messagesEl, this.plugin);
+						live.turn = new TurnRenderer(this, this.messagesEl, this.plugin);
+						tp.stepStart();
+						streaming = null;
+						progress();
 						this.scrollToBottom();
 					},
 					onThinkingDelta: (d) => {
-						turn?.appendThinking(d);
-						this.scrollToBottom();
+						piece("thinking", d.length);
+						live.turn?.appendThinking(d);
 					},
+					// The renderer says when it has drawn something (contentAdded): the text is not on screen yet here.
 					onAssistantDelta: (d) => {
-						turn?.appendContent(d);
-						this.scrollToBottom();
+						piece("content", d.length);
+						live.turn?.appendContent(d);
 					},
 					onAssistantDone: (m) => {
-						void turn?.finish(m);
-						this.scrollToBottom();
+						tp.stepDone(Date.now());
+						void live.turn?.finish(m);
 					},
 					onToolStart: (call) => {
-						turn?.toolStart(call);
+						live.turn?.toolStart(call);
 						this.scrollToBottom();
 					},
 					onToolDone: (call, result, ok) => {
 						calls++;
+						this.outcomes.set(call, { ...this.outcomes.get(call), ok });
 						// Only the tool's name goes into the log: results and errors can quote notes.
 						if (!ok) log.warn(`Tool ${call.function.name} returned an error`);
-						turn?.toolDone(call, result, ok);
+						tp.added(result.length);
+						live.turn?.toolDone(call, result, ok);
 						this.scrollToBottom();
 					},
 					onChange: (change, call) => {
 						made.push(change);
-						turn?.attachUndo(call, change);
+						// The first write after "Approve all" was granted: show the bar at once.
+						this.syncApproveAll();
+						const seen = this.outcomes.get(call);
+						this.outcomes.set(call, { ok: seen?.ok ?? true, changes: [...(seen?.changes ?? []), change.id] });
+						live.turn?.attachUndo(call, change);
 					},
 					onUsage: (u) => {
+						if (firstCall && this.usage === null) this.prefixTokens = Math.max(0, u.promptTokens - Math.ceil(message.length / 3.2));
 						this.usage = u;
+						tp.usage(u);
 						progress();
 					},
 					onAutoContinue: (nudge) => {
@@ -537,12 +1035,12 @@ export class AgentView extends ItemView {
 						this.scrollToBottom();
 					},
 				},
-				this.abort.signal,
+				lease.signal,
 			);
-			log.info(`Turn finished: ${calls} tool calls in ${Math.round((Date.now() - started) / 1000)} s${this.abort?.signal.aborted ? " (stopped)" : ""}`);
-			if (!this.abort?.signal.aborted && (await this.plugin.countAnswer())) this.showSurvey();
+			if (!lease.stopped && (await this.plugin.countAnswer())) this.showSurvey();
 		} catch (err) {
-			if (!this.abort?.signal.aborted) {
+			if (!lease.stopped) {
+				failed = true;
 				const message = (err as Error).message ?? String(err);
 				log.error(`Chat turn failed: ${message}`);
 				const errEl = this.messagesEl.createDiv({ cls: "lva-msg lva-error", attr: { role: "alert" } });
@@ -552,19 +1050,48 @@ export class AgentView extends ItemView {
 			}
 			this.offerPartialUndo(made);
 		} finally {
-			window.clearInterval(ticker);
-			if (this.abort?.signal.aborted) {
+			// First of all: the lease still says whether it was stopped after it is released.
+			lease.release();
+			this.lease = null;
+			if (ticker !== null) window.clearInterval(ticker);
+			if (lease.stopped) {
+				// What was being drawn when Stop was pressed is left as it is, not as if it were still coming.
+				live.turn?.abandon();
 				this.offerPartialUndo(made);
 				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.stopped") });
 			}
-			this.abort = null;
+			// How it went: the wait for the first words, the speed, the size of the prompt.
+			const summary = tp.summary(Date.now());
+			const stats = summaryText(summary);
+			// Not announced: a screen reader has just been given the reply itself.
+			if (stats) this.messagesEl.createDiv({ cls: "lva-stats", text: stats, attr: { "aria-live": "off" } });
+			// Numbers only in the log, never what was asked or answered.
+			log.info(`Turn ${lease.stopped ? "stopped" : failed ? "failed" : "finished"}: ${calls} tool calls, ${summary.steps} model calls${stats ? `, ${stats}` : ` in ${formatDuration(summary.totalMs)}`}`);
+			if (!lease.stopped) this.notifyIfAway(summary.totalMs, failed);
 			this.setSendState(false);
-			this.plugin.agentBusy = false;
-			this.plugin.saveChat(this.conversation.messages, this.conversation.id);
+			this.saveChat();
 			void this.plugin.checkPlacementOnce();
+			// The picker says which model is loaded; after a reply that is the one just used.
+			void this.populateModels();
 			this.updateStatus();
 			this.scrollToBottom();
+			this.turnEnded(lease.stopped, failed);
 		}
+	}
+
+	/**
+	 * A long turn that ends while the user is in another application: a notice that waits for them
+	 * (it stays until Obsidian has the focus again, and a few seconds more).
+	 */
+	private notifyIfAway(totalMs: number, failed: boolean): void {
+		const win = this.containerEl.win;
+		if (!shouldNotify(totalMs, win.document.hasFocus())) return;
+		const notice = new Notice(t(failed ? "notice.turnFailed" : "notice.turnDone", { time: formatDuration(totalMs) }), 0);
+		const back = () => {
+			win.removeEventListener("focus", back);
+			win.setTimeout(() => notice.hide(), 8000);
+		};
+		win.addEventListener("focus", back);
 	}
 
 	/** Shows/hides the mic: it needs Lecture Companion's transcription. */
@@ -680,7 +1207,7 @@ export class AgentView extends ItemView {
 	private addUser(text: string): void {
 		this.messagesEl.querySelector(".lva-welcome")?.remove();
 		this.messagesEl.createDiv({ cls: "lva-msg lva-user" }).createDiv({ cls: "lva-bubble", text });
-		this.scrollToBottom();
+		this.scrollToBottom(true);
 	}
 
 	private async addAssistant(markdown: string): Promise<void> {
@@ -692,7 +1219,7 @@ export class AgentView extends ItemView {
 
 	private remember(userText: string, markdown: string): void {
 		this.conversation.messages.push({ role: "user", content: userText }, { role: "assistant", content: markdown });
-		this.plugin.saveChat(this.conversation.messages, this.conversation.id);
+		this.saveChat();
 	}
 
 	/**
@@ -705,17 +1232,25 @@ export class AgentView extends ItemView {
 			new Notice(t("notice.wait"));
 			return;
 		}
-		const req = parseQuizRequest(text, new Date()) ?? { topic: text };
-		this.addUser(text);
+		const lease = this.plugin.busy.acquire("quiz");
+		if (!lease) {
+			this.noticeBusy();
+			return;
+		}
+		this.lease = lease;
 		this.quizBusy = true;
-		this.setSendState(true);
-		this.updateStatus("Writing quiz questions…");
 		const started = Date.now();
+		let failed = false;
 		try {
+			const req = parseQuizRequest(text, new Date()) ?? { topic: text };
+			this.addUser(text);
+			this.setSendState(true);
+			this.updateStatus("Writing quiz questions…");
 			const lc = this.plugin.lectureCompanion();
 			let paths = selectQuizNotes(this.plugin.vault.listNotes(), req, lc?.lectures() ?? []);
 			if (paths.length === 0 && req.topic) {
 				const hits = await this.plugin.hybridSearch(req.topic, 10);
+				if (lease.stopped) return;
 				const since = req.since ?? "0000-00-00";
 				paths = hits.map((h) => h.path).filter((p) => {
 					const n = this.plugin.vault.listNotes().find((x) => x.path === p);
@@ -731,7 +1266,10 @@ export class AgentView extends ItemView {
 			}
 			this.quizSources.clear();
 			for (const p of paths) this.quizSources.set(p, await this.plugin.vault.read(p));
-			const questions = await this.plugin.quiz.questions(req.topic, Array.from(this.quizSources, ([path, content]) => ({ path, content })), count, this.abort?.signal);
+			if (lease.stopped) return;
+			const questions = await this.plugin.quiz.questions(req.topic, Array.from(this.quizSources, ([path, content]) => ({ path, content })), count, lease.signal);
+			// Stopped while the model was writing: whatever came back is not a quiz.
+			if (lease.stopped) return;
 			if (questions.length === 0) {
 				const md = "The model did not write any questions I could check against your notes. Try again, or a narrower topic.";
 				await this.addAssistant(md);
@@ -748,12 +1286,22 @@ export class AgentView extends ItemView {
 			await this.addAssistant(md);
 			this.remember(text, md);
 		} catch (err) {
-			const message = (err as Error).message ?? String(err);
-			this.messagesEl.createDiv({ cls: "lva-msg lva-error" }).createDiv({ cls: "lva-bubble", text: message });
+			if (!lease.stopped) {
+				failed = true;
+				const message = (err as Error).message ?? String(err);
+				this.messagesEl.createDiv({ cls: "lva-msg lva-error" }).createDiv({ cls: "lva-bubble", text: message });
+			}
 		} finally {
+			lease.release();
+			this.lease = null;
 			this.quizBusy = false;
+			if (lease.stopped) {
+				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.stopped") });
+				this.scrollToBottom();
+			} else this.notifyIfAway(Date.now() - started, failed);
 			this.setSendState(false);
 			this.updateStatus();
+			this.turnEnded(lease.stopped, failed);
 		}
 	}
 
@@ -762,17 +1310,31 @@ export class AgentView extends ItemView {
 		const quiz = this.quiz;
 		const q = quiz?.current();
 		if (!quiz || !q) return;
-		this.addUser(text);
-		if (/^(stop|quit|end( the)? quiz|cancel|done)[.!]*$/i.test(text.trim())) {
+		if (QUIZ_END.test(text.trim())) {
+			this.addUser(text);
 			await this.finishQuiz(text, "");
 			return;
 		}
+		const lease = this.plugin.busy.acquire("quiz");
+		if (!lease) {
+			// Not graded and not shown yet: back into the message box, to send again.
+			this.noticeBusy();
+			this.inputEl.value = text;
+			return;
+		}
+		this.lease = lease;
 		this.quizBusy = true;
-		this.setSendState(true);
-		this.updateStatus("Grading…");
+		let graded = false;
+		let failed = false;
 		try {
+			this.addUser(text);
+			this.setSendState(true);
+			this.updateStatus("Grading…");
 			const source = this.quizSources.get(q.source) ?? "";
-			const grade = isNonAnswer(text) ? { verdict: "wrong" as const, feedback: "Skipped." } : await this.plugin.quiz.grade(q, text, source.slice(0, 6000));
+			const grade = isNonAnswer(text) ? { verdict: "wrong" as const, feedback: "Skipped." } : await this.plugin.quiz.grade(q, text, source.slice(0, 6000), lease.signal);
+			// Stopped while grading: nothing is recorded, the question stays the current one.
+			if (lease.stopped) return;
+			graded = true;
 			const result = quiz.record(text, grade.verdict, grade.feedback);
 			const md = resultMarkdown(result);
 			if (quiz.done()) {
@@ -783,11 +1345,21 @@ export class AgentView extends ItemView {
 			await this.addAssistant(next);
 			this.remember(text, next);
 		} catch (err) {
-			new Notice(`Grading failed: ${(err as Error).message}`, 8000);
+			if (!lease.stopped) {
+				failed = true;
+				new Notice(`Grading failed: ${(err as Error).message}`, 8000);
+			}
 		} finally {
+			lease.release();
+			this.lease = null;
 			this.quizBusy = false;
+			if (lease.stopped && !graded) {
+				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.quiz.stoppedGrading") });
+				this.scrollToBottom();
+			}
 			this.setSendState(false);
 			this.updateStatus();
+			this.turnEnded(lease.stopped, failed);
 		}
 	}
 
@@ -814,6 +1386,16 @@ export class AgentView extends ItemView {
 		this.remember(userText, md);
 	}
 
+	/** Says `text` to screen readers once, without showing it. */
+	announce(text: string): void {
+		this.announcerEl.setText(text);
+	}
+
+	/** Called after something was added to the conversation: follows it when the reader is at the end. */
+	contentAdded(): void {
+		this.scrollToBottom();
+	}
+
 	async renderMarkdown(markdown: string, el: HTMLElement): Promise<void> {
 		el.empty();
 		await MarkdownRenderer.render(this.app, markdown, el, this.plugin.vault.getActiveNotePath() ?? "", this);
@@ -826,16 +1408,21 @@ export class AgentView extends ItemView {
 		});
 	}
 
+	/** Puts `text` at the cursor (over the selection) of the note the user was last in; the chat has the focus when this is clicked. */
 	insertAtCursor(text: string): void {
-		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		const view = this.plugin.activeEditorView();
 		if (!view) {
-			new Notice("Open a note in the editor first.");
+			new Notice(t("notice.insert.noNote"));
 			return;
 		}
 		view.editor.replaceSelection(text);
-		new Notice("Inserted into the note.");
+		// Named, because the note is not the panel the user is looking at.
+		new Notice(t("notice.insert.done", { note: view.file?.basename ?? "" }));
 	}
 }
+
+/** What ends a quiz when typed as an answer; needs no model call. */
+const QUIZ_END = /^(stop|quit|end( the)? quiz|cancel|done)[.!]*$/i;
 
 /** Renders one assistant turn: thinking, streaming content, tool cards, actions. */
 class TurnRenderer {
@@ -846,7 +1433,18 @@ class TurnRenderer {
 	private content = "";
 	private thinking = "";
 	private renderTimer: number | null = null;
+	private thinkingTimer: number | null = null;
 	private toolCards = new Map<ToolCall, HTMLDetailsElement>();
+	/** Draws the reply block by block while it arrives, so finished paragraphs are not drawn again. */
+	private stream: StreamRenderer<Node>;
+	/** Renders run one after another; this is the last one. */
+	private work: Promise<void> = Promise.resolve();
+	private rendering = false;
+	/** Text arrived while a render was running. */
+	private dirty = false;
+	private lastRenderMs = 0;
+	/** The reply is finished or was stopped: nothing more is drawn from the stream. */
+	private closed = false;
 
 	constructor(
 		private view: AgentView,
@@ -854,36 +1452,106 @@ class TurnRenderer {
 		private plugin: LocalVaultAgentPlugin,
 	) {
 		this.root = parent.createDiv({ cls: "lva-msg lva-assistant" });
-		this.contentEl = this.root.createDiv({ cls: "lva-bubble lva-markdown lva-streaming" });
+		// Not announced while it is being written; the finished reply is read once (see finish).
+		this.contentEl = this.root.createDiv({ cls: "lva-bubble lva-markdown lva-streaming", attr: { "aria-live": "off" } });
+		const contentEl = this.contentEl;
+		this.stream = new StreamRenderer<Node>({
+			render: async (markdown) => {
+				// Rendered off screen and moved in afterwards, so the bubble never shows a half-built block.
+				const holder = createDiv();
+				await view.renderMarkdown(markdown, holder);
+				// Obsidian puts a line break between the blocks of one render. Blocks rendered one by one
+				// have none between them, so it is dropped: otherwise the finished reply would differ from
+				// what is on screen at the second node, and everything after the first block would be
+				// drawn again (taking a selection with it).
+				return Array.from(holder.childNodes).filter((n) => n.nodeType !== Node.TEXT_NODE || (n.textContent ?? "").trim() !== "");
+			},
+			append: (nodes) => contentEl.append(...nodes),
+			remove: (nodes) => {
+				for (const n of nodes) n.parentNode?.removeChild(n);
+			},
+			same: (a, b) => a.isEqualNode(b),
+		});
 	}
 
 	appendThinking(delta: string): void {
 		this.thinking += delta;
 		if (!this.plugin.settings.showThinking) return;
 		if (!this.thinkingEl) {
-			this.thinkingEl = this.root.createEl("details", { cls: "lva-thinking" });
+			this.thinkingEl = this.root.createEl("details", { cls: "lva-thinking", attr: { "aria-live": "off" } });
 			this.thinkingEl.open = true;
 			this.thinkingEl.createEl("summary", { text: "Thinking…" });
 			this.thinkingBody = this.thinkingEl.createDiv({ cls: "lva-thinking-body" });
 			this.root.insertBefore(this.thinkingEl, this.contentEl);
 		}
-		this.thinkingBody!.setText(this.thinking);
+		// Like the reply: drawn a few times a second, not once per token (each draw lays the list out again).
+		if (this.thinkingTimer !== null) return;
+		this.thinkingTimer = window.setTimeout(() => this.drawThinking(), 120);
+	}
+
+	/** Shows the thinking that has arrived. */
+	private drawThinking(): void {
+		if (this.thinkingTimer !== null) {
+			window.clearTimeout(this.thinkingTimer);
+			this.thinkingTimer = null;
+		}
+		if (!this.thinkingBody) return;
+		this.thinkingBody.setText(this.thinking);
+		this.view.contentAdded();
 	}
 
 	appendContent(delta: string): void {
 		this.content += delta;
-		if (this.renderTimer) return;
-		this.renderTimer = window.setTimeout(() => {
-			this.renderTimer = null;
-			void this.view.renderMarkdown(this.content, this.contentEl);
-		}, 120);
+		this.schedule();
 	}
 
-	async finish(message: ChatMessage): Promise<void> {
+	/** Draws what has arrived, soon: not more often than every 120 ms, and less often when drawing is slow. */
+	private schedule(): void {
+		if (this.closed) return;
+		if (this.rendering) {
+			this.dirty = true;
+			return;
+		}
+		if (this.renderTimer !== null) return;
+		this.renderTimer = window.setTimeout(() => {
+			this.renderTimer = null;
+			void this.renderNow();
+		}, nextRenderDelay(this.lastRenderMs));
+	}
+
+	private async renderNow(): Promise<void> {
+		this.rendering = true;
+		this.dirty = false;
+		const started = performance.now();
+		const text = this.content;
+		await this.enqueue(async () => {
+			if (!this.closed) await this.stream.update(text);
+		});
+		this.lastRenderMs = performance.now() - started;
+		this.rendering = false;
+		if (this.closed) return;
+		this.view.contentAdded();
+		if (this.dirty) this.schedule();
+	}
+
+	/** Runs `job` after every render started before it: two renders at once would each place their own nodes. */
+	private enqueue(job: () => Promise<void>): Promise<void> {
+		this.work = this.work.then(job).catch((err) => log.warn(`Drawing the reply failed: ${(err as Error).message ?? String(err)}`));
+		return this.work;
+	}
+
+	/** Nothing more is drawn from the stream; a render that is under way still completes. */
+	private close(): void {
+		this.closed = true;
 		if (this.renderTimer !== null) {
 			window.clearTimeout(this.renderTimer);
 			this.renderTimer = null;
 		}
+	}
+
+	async finish(message: ChatMessage): Promise<void> {
+		this.close();
+		this.drawThinking();
 		if (this.thinkingEl) {
 			this.thinkingEl.open = false;
 			this.thinkingEl.querySelector("summary")!.setText("Thinking (click to show)");
@@ -891,52 +1559,48 @@ class TurnRenderer {
 		this.content = message.content;
 		this.contentEl.removeClass("lva-streaming");
 		if (this.content.trim()) {
-			await this.view.renderMarkdown(this.content, this.contentEl);
-			const actions = this.root.createDiv({ cls: "lva-actions" });
-			const copy = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.copy") } });
-			setIcon(copy, "copy");
-			copy.addEventListener("click", () => {
-				void navigator.clipboard.writeText(this.content);
-				new Notice("Copied.");
-			});
-			const insert = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.insert") } });
-			setIcon(insert, "file-input");
-			insert.addEventListener("click", () => this.view.insertAtCursor(this.content));
+			// The whole reply, rendered once more as one text; what is on screen and already matches stays (and keeps a selection).
+			const text = this.content;
+			await this.enqueue(() => this.stream.finish(text));
+			addAnswerActions(this.view, this.root, this.content);
+			// innerText, not textContent: one block per line, as it is read on screen.
+			this.view.announce(this.contentEl.innerText);
 		} else {
 			// A pure tool-call turn: nothing to show in the bubble.
 			this.contentEl.remove();
 		}
+		this.view.contentAdded();
 	}
 
 	toolStart(call: ToolCall): void {
-		const card = this.root.createEl("details", { cls: "lva-tool lva-tool-running" });
-		const summary = card.createEl("summary");
-		const icon = summary.createSpan({ cls: "lva-tool-icon" });
-		setIcon(icon, iconFor(call.function.name));
-		summary.createSpan({ cls: "lva-tool-name", text: describeCall(call) });
-		summary.createSpan({ cls: "lva-tool-args", text: "" });
-		const body = card.createDiv({ cls: "lva-tool-body" });
-		body.createEl("pre", { cls: "lva-tool-pre", text: JSON.stringify(call.function.arguments, null, 2) });
-		this.toolCards.set(call, card);
+		this.toolCards.set(call, createToolCard(this.root, call, "lva-tool-running"));
+	}
+
+	/**
+	 * The turn was stopped while this reply was being drawn: show the text that had arrived without
+	 * the "still writing" cursor, and mark tool calls that never answered as stopped instead of running.
+	 */
+	abandon(): void {
+		this.drawThinking();
+		if (this.contentEl.hasClass("lva-streaming")) {
+			this.contentEl.removeClass("lva-streaming");
+			const text = this.content;
+			this.close();
+			if (text.trim()) void this.enqueue(() => this.stream.finish(text));
+			else this.contentEl.remove();
+		}
+		for (const card of this.toolCards.values()) {
+			if (!card.hasClass("lva-tool-running")) continue;
+			card.removeClass("lva-tool-running");
+			card.addClass("lva-tool-unfinished");
+			card.querySelector(".lva-tool-args")?.setText(t("view.tool.stopped"));
+		}
 	}
 
 	/** Adds an "Undo" button to the tool card whose write produced `change`. */
 	attachUndo(call: ToolCall, change: ChangeRecord): void {
 		const card = this.toolCards.get(call);
-		if (!card) return;
-		const summary = card.querySelector("summary");
-		if (!summary) return;
-		const btn = summary.createEl("button", { cls: "lva-undo-btn", text: t("view.undo"), attr: { "aria-label": `${t("view.undo")}: ${change.path}` } });
-		btn.addEventListener("click", (e) => {
-			e.preventDefault();
-			e.stopPropagation();
-			void this.plugin.revert(change).then((done) => {
-				if (done) {
-					btn.disabled = true;
-					btn.setText(t("view.undone"));
-				}
-			});
-		});
+		if (card) addUndoButton(this.plugin, card, change);
 	}
 
 	toolDone(call: ToolCall, result: string, ok: boolean): void {
@@ -944,131 +1608,68 @@ class TurnRenderer {
 		if (!card) return;
 		card.removeClass("lva-tool-running");
 		card.addClass(ok ? "lva-tool-ok" : "lva-tool-error");
-		const args = card.querySelector(".lva-tool-args");
-		if (args) args.setText(ok ? describeResult(call, result) : "failed");
-		const body = card.querySelector(".lva-tool-body") as HTMLElement;
-		body.createEl("pre", {
-			cls: "lva-tool-pre lva-tool-result",
-			text: result.length > 3000 ? result.slice(0, 3000) + "\n…" : result,
+		fillToolResult(card, call, result, ok);
+	}
+}
+
+/** Copy and "Insert at cursor" under an answer. */
+function addAnswerActions(view: AgentView, root: HTMLElement, content: string): void {
+	const actions = root.createDiv({ cls: "lva-actions" });
+	const copy = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.copy") } });
+	setIcon(copy, "copy");
+	copy.addEventListener("click", () => {
+		void navigator.clipboard.writeText(content);
+		new Notice("Copied.");
+	});
+	const insert = actions.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.insert") } });
+	setIcon(insert, "file-input");
+	insert.addEventListener("click", () => view.insertAtCursor(content));
+}
+
+/** A collapsed card for one tool call: icon, sentence, room for the result summary, and the raw arguments inside. */
+function createToolCard(parent: HTMLElement, call: ToolCall, stateClass: string): HTMLDetailsElement {
+	const card = parent.createEl("details", { cls: `lva-tool ${stateClass}` });
+	const summary = card.createEl("summary");
+	const icon = summary.createSpan({ cls: "lva-tool-icon" });
+	setToolIcon(icon, call.function.name);
+	summary.createSpan({ cls: "lva-tool-name", text: describeCall(call) });
+	summary.createSpan({ cls: "lva-tool-args", text: "" });
+	const body = card.createDiv({ cls: "lva-tool-body" });
+	body.createEl("pre", { cls: "lva-tool-pre", text: JSON.stringify(call.function.arguments, null, 2) });
+	return card;
+}
+
+/** The result on a card: a few words in the summary line, the first 3000 characters inside. */
+function fillToolResult(card: HTMLElement, call: ToolCall, result: string, ok: boolean): void {
+	card.querySelector(".lva-tool-args")?.setText(ok ? describeResult(call, result) : t("view.tool.failed"));
+	card.querySelector(".lva-tool-body")?.createEl("pre", {
+		cls: "lva-tool-pre lva-tool-result",
+		text: result.length > 3000 ? result.slice(0, 3000) + "\n…" : result,
+	});
+}
+
+/** An "Undo" button on the card of the call that made `change`; already "Undone" when it was taken back. */
+function addUndoButton(plugin: LocalVaultAgentPlugin, card: HTMLElement, change: ChangeRecord): void {
+	const summary = card.querySelector("summary");
+	if (!summary) return;
+	const btn = summary.createEl("button", { cls: "lva-undo-btn", text: t("view.undo"), attr: { "aria-label": `${t("view.undo")}: ${change.path}` } });
+	const markUndone = () => {
+		btn.disabled = true;
+		btn.setText(t("view.undone"));
+	};
+	if (change.undone) markUndone();
+	btn.addEventListener("click", (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+		void plugin.revert(change).then((done) => {
+			if (done) markUndone();
 		});
-	}
+	});
 }
 
-function fmtK(n: number): string {
-	return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
-}
-
-function iconFor(tool: string): string {
-	switch (tool) {
-		case "search_notes":
-			return "search";
-		case "read_note":
-		case "get_active_note":
-			return "file-text";
-		case "list_notes":
-		case "vault_overview":
-			return "folder-tree";
-		case "create_note":
-			return "file-plus";
-		default:
-			return "pencil";
-	}
-}
-
-function short(v: unknown, max = 48): string {
-	const s = typeof v === "string" ? v : v === undefined ? "" : JSON.stringify(v);
-	const noExt = s.replace(/\.md$/i, "");
-	return noExt.length > max ? noExt.slice(0, max) + "…" : noExt;
-}
-
-/** "Searched “magnet problems”" instead of `search_notes {"query":…}`. */
-function describeCall(call: ToolCall): string {
-	const a = call.function.arguments ?? {};
-	switch (call.function.name) {
-		case "search_notes":
-			return `Searched notes for “${short(a.query)}”`;
-		case "search_passages":
-			return `Searched passages for “${short(a.query)}”`;
-		case "read_note":
-			return `Read ${short(a.path)}${a.offset ? ` (from ${short(a.offset)})` : ""}`;
-		case "read_section":
-			return `Read ${short(a.path)} › ${short(a.heading, 30)}`;
-		case "find_in_note":
-			return `Looked for “${short(a.pattern, 30)}” in ${short(a.path)}`;
-		case "grep_vault":
-			return `Grepped the vault for “${short(a.pattern, 30)}”${a.folder ? ` in ${short(a.folder)}` : ""}`;
-		case "list_sections":
-			return `Checked sections for ${Array.isArray(a.containing) ? a.containing.map((t) => `“${short(t, 20)}”`).join(" / ") : ""}`;
-		case "list_notes":
-			return `Listed notes${a.folder ? ` in ${short(a.folder)}` : ""}${a.tag ? ` tagged ${short(a.tag)}` : ""}${a.name_contains ? ` matching “${short(a.name_contains)}”` : ""}`;
-		case "list_files":
-			return `Listed attachments${a.extension ? ` (.${short(a.extension)})` : ""}${a.folder ? ` in ${short(a.folder)}` : ""}`;
-		case "vault_overview":
-			return "Looked at the vault overview";
-		case "get_active_note":
-			return "Read the open note";
-		case "create_note":
-			return `Created ${short(a.path)}`;
-		case "edit_note":
-			return `Edited ${short(a.path)}`;
-		case "edit_notes": {
-			const n = Array.isArray(a.edits) ? a.edits.length : 0;
-			return `Applied ${n} edit${n === 1 ? "" : "s"} across notes`;
-		}
-		case "append_to_note":
-			return `Appended to ${short(a.path)}`;
-		case "replace_note":
-			return `Rewrote ${short(a.path)}`;
-		case "move_note":
-			return `Moved ${short(a.path)} → ${short(a.new_path)}`;
-		case "delete_file":
-			return `Deleted ${short(a.path)}`;
-		case "read_file":
-			return `Read attachment ${short(a.path)}`;
-		default:
-			return call.function.name;
-	}
-}
-
-/** A few words about what came back, for the card's right-hand side. */
-function describeResult(call: ToolCall, result: string): string {
-	switch (call.function.name) {
-		case "search_notes": {
-			if (result.startsWith("No notes")) return "no results";
-			// "3 notes, best first…"; chats saved by earlier versions hold a JSON list instead.
-			const m = /^(\d+) note/.exec(result);
-			const n = m ? Number(m[1]) : (result.match(/"path":/g) ?? []).length;
-			return `${n} result${n === 1 ? "" : "s"}`;
-		}
-		case "search_passages": {
-			const m = /^(\d+) passage/.exec(result);
-			return m ? `${m[1]} passage${m[1] === "1" ? "" : "s"}` : result.startsWith("No passages") ? "no results" : "";
-		}
-		case "list_notes":
-		case "list_files": {
-			const m = /^(\d+) (note|file)/.exec(result);
-			return m ? `${m[1]} ${m[2]}${m[1] === "1" ? "" : "s"}` : "none";
-		}
-		case "read_note":
-		case "read_section":
-		case "get_active_note":
-		case "read_file": {
-			const m = /length: (\d+) characters/.exec(result);
-			return m ? `${Math.round(Number(m[1]) / 1000)}k chars` : result.startsWith("(unchanged") ? "unchanged" : "";
-		}
-		case "find_in_note": {
-			const m = /^(\d+) match/.exec(result);
-			return m ? `${m[1]} match${m[1] === "1" ? "" : "es"}` : "no match";
-		}
-		case "grep_vault": {
-			const m = /^(\d+) matching lines? in (\d+) note/.exec(result);
-			return m ? `${m[1]} lines in ${m[2]} notes` : "no match";
-		}
-		case "list_sections": {
-			const m = /^(\d+) sections?/.exec(result);
-			return m ? `${m[1]} section${m[1] === "1" ? "" : "s"}` : "none";
-		}
-		default:
-			return result.length > 70 ? result.slice(0, 70) + "…" : result;
-	}
+/** Draws a tool's icon; when this Obsidian is older than the icon, the one every version has. */
+function setToolIcon(el: HTMLElement, tool: string): void {
+	const { icon, fallback } = iconFor(tool);
+	setIcon(el, icon);
+	if (!el.firstChild) setIcon(el, fallback);
 }

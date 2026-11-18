@@ -34,13 +34,58 @@ export function guessTier(deviceMemoryGb: number | undefined): MachineTier {
 }
 
 /** Models that are probably embedding models (by capability, else by name). */
-function isEmbedding(m: ModelInfo): boolean {
+export function isEmbedding(m: ModelInfo): boolean {
 	return m.capabilities ? m.capabilities.includes("embedding") && !m.capabilities.includes("completion") : /embed|bge|e5-|gte-|minilm/i.test(m.name);
 }
 
 /** Models that can call tools (by capability when the server says, else every non-embedding model). */
-function canCallTools(m: ModelInfo): boolean {
+export function canCallTools(m: ModelInfo): boolean {
 	return m.capabilities ? m.capabilities.includes("tools") : !isEmbedding(m);
+}
+
+/** What the plugin knows about the server when it checks it outside the setup checklist. */
+export interface ServerCheck {
+	provider: "ollama" | "openai";
+	baseUrl: string;
+	/** null when the server could not be reached. */
+	models: ModelInfo[] | null;
+	serverError?: string;
+	chatModel: string;
+	embeddingModel: string;
+	semanticSearch: boolean;
+}
+
+/**
+ * One sentence for the user when the server or a chosen model is missing, or null when all is
+ * there. `log` is the same for the plugin's log, without the advice.
+ */
+export function serverProblem(c: ServerCheck): { message: string; log: string } | null {
+	if (!c.models) {
+		const why = c.serverError ? ` (${c.serverError})` : "";
+		return {
+			message: `Local Vault Agent cannot reach ${c.provider === "ollama" ? "Ollama" : "the model server"} at ${c.baseUrl}${why}. Start it or fix the URL in settings.`,
+			log: `Server unreachable at ${c.baseUrl}${why}`,
+		};
+	}
+	const models = c.models;
+	const missing: string[] = [];
+	if (!models.some((m) => sameModel(m.name, c.chatModel))) missing.push(c.chatModel);
+	if (c.semanticSearch && !models.some((m) => sameModel(m.name, c.embeddingModel))) missing.push(c.embeddingModel);
+	if (missing.length === 0) return null;
+	const one = missing.length === 1;
+	return {
+		message: `Local Vault Agent: model${one ? "" : "s"} not installed: ${missing.join(", ")}. Open the setup checklist to download ${one ? "it" : "them"}, or pick another model in settings.`,
+		log: `Models not installed: ${missing.join(", ")}`,
+	};
+}
+
+/**
+ * Whether to look at the server when Obsidian starts. Only when a scheduled job is switched on,
+ * and then without a notice: someone who never opens the chat in a session is not told, on every
+ * launch, that Ollama is not running.
+ */
+export function checksServerAtStartup(s: { nightlyDaily: boolean; weeklyDigest: boolean }): boolean {
+	return s.nightlyDaily || s.weeklyDigest;
 }
 
 export interface SetupInput {

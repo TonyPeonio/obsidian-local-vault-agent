@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OverlayVault, PendingQueue, dailyNotesBefore, digestPath, ensureSources, digestPrompt, dueJobs, lastScheduled, localDate, parseTime, planPending, recentNotes, renderDigest, type ScheduleSettings } from "../src/scheduler";
+import { OverlayVault, PendingQueue, RETRY_DELAYS_MS, afterRun, dailyNotesBefore, digestPath, digestPrompt, dueJobs, ensureSources, lastScheduled, localDate, parseTime, planPending, recentNotes, renderDigest, type JobRetry, type ScheduleSettings } from "../src/scheduler";
 import { FakeVault } from "./fakes";
 
 const S: ScheduleSettings = { nightlyDaily: true, nightlyTime: "02:00", weeklyDigest: true, digestDay: 0, digestTime: "18:00", digestFolder: "Digests" };
@@ -80,6 +80,53 @@ describe("what a nightly run may see and what it leaves behind", () => {
 	it("leaves a run with nothing to add exactly as it was", () => {
 		const changes = [{ path: "Topics/A.md", tool: "create_note" as const, before: "", after: "# A\n" }];
 		expect(ensureSources(changes, "Daily")).toEqual(changes);
+	});
+});
+
+describe("a scheduled run that failed, was stopped or finished", () => {
+	// Wednesday 2026-11-18 02:00: the nightly job is due (last run the night before).
+	const lastRuns = { daily: new Date(2026, 10, 17, 2, 5).getTime() };
+	const at = (h: number, m: number) => new Date(2026, 10, 18, h, m);
+
+	it("is recorded as run only when it finished or was stopped by the user", () => {
+		expect(afterRun("done", 1000)).toEqual({ record: true, gaveUp: false });
+		expect(afterRun("stopped", 1000)).toEqual({ record: true, gaveUp: false });
+		// A success after earlier failures clears them.
+		expect(afterRun("done", 1000, { failures: 2, retryAt: 500 })).toEqual({ record: true, gaveUp: false });
+		expect(afterRun("failed", 1000).record).toBe(false);
+	});
+
+	it("is retried after 5, 15 and 60 minutes, then given up until the next scheduled time", () => {
+		expect(RETRY_DELAYS_MS).toEqual([300_000, 900_000, 3_600_000]);
+		const start = at(2, 0).getTime();
+		const first = afterRun("failed", start);
+		expect(first).toEqual({ record: false, retry: { failures: 1, retryAt: start + 300_000 }, gaveUp: false });
+		const second = afterRun("failed", first.retry!.retryAt, first.retry);
+		expect(second.retry).toEqual({ failures: 2, retryAt: start + 300_000 + 900_000 });
+		const third = afterRun("failed", second.retry!.retryAt, second.retry);
+		expect(third.retry?.failures).toBe(3);
+		expect(third.retry!.retryAt - second.retry!.retryAt).toBe(3_600_000);
+		// The fourth failure in a row ends it: recorded, and the user is told once.
+		expect(afterRun("failed", third.retry!.retryAt, third.retry)).toEqual({ record: true, gaveUp: true });
+	});
+
+	it("stays due while it has not been recorded, but not before its retry time", () => {
+		// Before the fix the run was recorded when it started, so a failure was not due again.
+		expect(dueJobs(at(2, 1), S, lastRuns)).toEqual(["daily"]);
+		const retry: JobRetry = afterRun("failed", at(2, 1).getTime()).retry!;
+		expect(dueJobs(at(2, 2), S, lastRuns, { daily: retry })).toEqual([]);
+		expect(dueJobs(at(2, 5), S, lastRuns, { daily: retry })).toEqual([]);
+		expect(dueJobs(at(2, 6), S, lastRuns, { daily: retry })).toEqual(["daily"]);
+		// Once recorded (success, stop or giving up) it is not due until the next night.
+		const recorded = { daily: at(2, 7).getTime() };
+		expect(dueJobs(at(2, 8), S, recorded)).toEqual([]);
+		expect(dueJobs(new Date(2026, 10, 19, 2, 0), S, recorded)).toEqual(["daily"]);
+	});
+
+	it("does not hold back the other job", () => {
+		const both = { daily: new Date(2026, 10, 17, 2, 5).getTime(), digest: new Date(2026, 10, 10).getTime() };
+		const retry: JobRetry = { failures: 1, retryAt: at(9, 30).getTime() };
+		expect(dueJobs(at(9, 0), S, both, { daily: retry })).toEqual(["digest"]);
 	});
 });
 

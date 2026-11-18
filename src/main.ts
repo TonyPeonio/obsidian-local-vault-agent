@@ -1,32 +1,33 @@
 import { FileSystemAdapter, MarkdownView, Notice, Platform, Plugin, TFile, WorkspaceLeaf, apiVersion, loadPdfJs, moment, normalizePath, requestUrl } from "obsidian";
 import { Agent, type AgentConfig } from "./agent";
 import { ApprovalModal } from "./approval-modal";
+import { BusyGate } from "./busy";
 import { LEGACY_SUGGESTIONS_NOTE, gardenFixes, gardenVault, planGardenAction, renderGardenChat, renderPlanResult, type GardenAction, type GardenReport, type PlannedChange } from "./gardener";
 import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, weakMatchThreshold, type IndexData, type IndexManifest, type IndexStatus, type StoredFile } from "./index";
-import { ObsidianVault } from "./obsidian-vault";
-import { OllamaClient, placementWarning, sameModel } from "./ollama";
+import { ObsidianVault, findEditorView } from "./obsidian-vault";
+import { OllamaClient, placementWarning, type ModelInfo } from "./ollama";
 import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
 import { applyConceptLinks, conceptNames, isConceptNote, suggestConcepts } from "./concepts";
 import { ConceptModal, HistoryModal, QuizModal } from "./feature-modals";
 import { cosine } from "./index";
 import { LECTURE_TOOLS, lectureCompanionApi, type LectureCompanionApi, type LocalVaultAgentApi } from "./lecture-companion";
 import { QuizEngine } from "./quiz";
-import { JOB_NAMES, OverlayVault, PendingQueue, dailyNotesBefore, digestPath, ensureSources, digestPrompt, dueJobs, localDate, planPending, recentNotes, renderDigest, type JobId } from "./scheduler";
+import { JOB_NAMES, OverlayVault, PendingQueue, afterRun, dailyNotesBefore, digestPath, digestPrompt, dueJobs, ensureSources, localDate, planPending, recentNotes, renderDigest, type JobId, type JobOutcome, type JobRetry } from "./scheduler";
 import { ImageReader, readImage, type VisionData } from "./vision";
 import { ReportModal, SetupModal } from "./help-modals";
 import { setLocale, t } from "./i18n";
 import { log } from "./log";
 import { buildReport, chatTranscript, reportTitle, surveyUrl, type ReportInfo } from "./report";
 import { SAMPLE_FOLDER, sampleNotes } from "./sample";
-import { evaluateSetup, guessTier, type MachineTier } from "./setup";
+import { checksServerAtStartup, evaluateSetup, guessTier, serverProblem, type MachineTier } from "./setup";
 import { editSelectionPrompt, processDailyNotesPrompt, reformatPrompt, summarizePrompt } from "./prompts";
 import { frontmatterText, keywordSearch } from "./search";
 import { DEFAULT_SETTINGS, SAMPLING, isExcluded, migrateSettings, type LocalVaultAgentSettings } from "./settings";
 import { describeVault, refreshDescription } from "./describe-vault";
 import { LocalVaultAgentSettingTab } from "./settings-tab";
 import { ALL_TOOLS } from "./tools";
-import type { ApprovalRequest, ChangeRecord, ChatMessage, NoteInfo, SearchHit } from "./types";
+import type { ApprovalRequest, ChangeRecord, ChatMessage, NoteInfo, SearchHit, UsageInfo } from "./types";
 import { RevertError, UndoStack, describeChange, planRevert } from "./undo";
 import { AgentView, VIEW_TYPE } from "./view";
 
@@ -40,8 +41,12 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	index!: SemanticIndex;
 	gists!: GistCache;
 	agent!: Agent;
-	/** True while a chat turn is running; background gist generation pauses. */
-	agentBusy = false;
+	/** One model job at a time: chat turns, quiz steps and scheduled jobs take this gate, and whoever holds it can be stopped. */
+	readonly busy = new BusyGate();
+	/** True while a chat turn, a quiz step or a scheduled job is running; background gist generation pauses. */
+	get agentBusy(): boolean {
+		return this.busy.busy;
+	}
 	/** Every approved write, newest last; saved to history.json, so it survives "New chat" and restarts. */
 	readonly undo = new UndoStack();
 	/** Changes scheduled jobs produced, waiting for the user's approval (pending.json). */
@@ -56,6 +61,9 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	/** Last time the user typed or clicked in Obsidian (ms), to know they are present. */
 	private lastActivity = Date.now();
 	private jobRunning = false;
+	private unloaded = false;
+	/** Scheduled runs that failed and wait to be tried again (in memory: after a restart they are simply due). */
+	private jobRetries: Partial<Record<JobId, JobRetry>> = {};
 	private pendingNotified = 0;
 	private statusListeners = new Set<(s: IndexStatus) => void>();
 	private gistListeners = new Set<(s: GistStatus) => void>();
@@ -215,7 +223,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			weakMatchBelow: () => weakMatchThreshold(this.settings.embeddingModel),
 			absentWords: (q) => this.index.absentWords(q),
 			approve: (req) => {
-				const modal = new ApprovalModal(this.app, req);
+				const modal = new ApprovalModal(this.app, req, "chat");
 				modal.open();
 				return modal.result;
 			},
@@ -369,6 +377,15 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			callback: () => void this.runJob("digest", true),
 		});
 		this.addCommand({
+			id: "stop-scheduled-job",
+			name: t("cmd.stopJob"),
+			checkCallback: (checking) => {
+				if (this.busy.holder?.owner !== "job") return false;
+				if (!checking) this.stopJob();
+				return true;
+			},
+		});
+		this.addCommand({
 			id: "rebuild-gists",
 			name: t("cmd.gists"),
 			callback: async () => {
@@ -428,7 +445,9 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			// closed are found by syncAll below.
 			this.registerEvent(this.app.vault.on("create", (f) => f instanceof TFile && f.extension === "md" && changed(f)));
 			await this.loadDailyNoteSettings();
-			void this.checkOllamaOnce();
+			// No notice at start-up: the server is checked aloud when the chat is opened or a command is run.
+			// With a scheduled job switched on it is looked at now, for the log only.
+			if (checksServerAtStartup(this.settings)) void this.checkOllamaOnce(true);
 			await this.index.load();
 			await this.gists.load();
 			// Embeddings first (fast, small model), then gists (chat model), so they never run together.
@@ -452,7 +471,12 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		// Scheduled jobs: checked every minute while Obsidian is open; the user's presence is a key or click.
 		this.statusBar = this.addStatusBarItem();
 		this.statusBar.addClass("lva-pending-badge");
-		this.registerDomEvent(this.statusBar, "click", () => void this.reviewPending());
+		this.registerDomEvent(this.statusBar, "click", () => {
+			if (this.busy.holder?.owner === "job") this.offerStopJob();
+			else void this.reviewPending();
+		});
+		// The badge also shows a job while it runs.
+		this.register(this.busy.onChange(() => this.updateStatusBar()));
 		const seen = () => {
 			const away = Date.now() - this.lastActivity > 5 * 60_000;
 			this.lastActivity = Date.now();
@@ -464,6 +488,10 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		// A scheduled job must not keep the model busy for a plugin that was switched off. It is
+		// stopped without being recorded as run, so it is due again the next time the plugin loads.
+		this.unloaded = true;
+		this.busy.stop("job");
 		this.index.cancel();
 		void this.index.flush();
 		this.gists.cancel();
@@ -477,8 +505,10 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	async loadChat(): Promise<ChatMessage[] | null> {
 		try {
 			if (!this.chatPath || !(await this.app.vault.adapter.exists(this.chatPath))) return null;
-			const data = JSON.parse(await this.app.vault.adapter.read(this.chatPath)) as { messages?: ChatMessage[]; id?: string };
+			const data = JSON.parse(await this.app.vault.adapter.read(this.chatPath)) as { messages?: ChatMessage[]; id?: string; usage?: Partial<UsageInfo> | null };
 			if (typeof data.id === "string") this.lastChatId = data.id;
+			const u = data.usage;
+			this.lastChatUsage = u && typeof u.promptTokens === "number" && typeof u.completionTokens === "number" && typeof u.numCtx === "number" && u.numCtx > 0 ? { promptTokens: u.promptTokens, completionTokens: u.completionTokens, numCtx: u.numCtx } : null;
 			return Array.isArray(data.messages) ? data.messages : null;
 		} catch {
 			return null;
@@ -487,15 +517,17 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	/** The id of the chat restored from chat.json, so its changes stay grouped in the history. */
 	lastChatId: string | null = null;
+	/** The context use of the chat restored from chat.json, for the status line. */
+	lastChatUsage: UsageInfo | null = null;
 
-	saveChat(messages: ChatMessage[], id?: string): void {
+	saveChat(messages: ChatMessage[], id?: string, usage?: UsageInfo | null): void {
 		if (!this.chatPath) return;
 		if (this.chatSaveTimer !== null) window.clearTimeout(this.chatSaveTimer);
 		this.chatSaveTimer = window.setTimeout(() => {
 			this.chatSaveTimer = null;
 			// Thinking is dropped: it is large and never shown again.
 			const slim = messages.map((m) => (m.thinking || m.images ? { ...m, thinking: undefined, images: undefined } : m));
-			void this.app.vault.adapter.write(this.chatPath, JSON.stringify({ id, messages: slim }));
+			void this.app.vault.adapter.write(this.chatPath, JSON.stringify({ id, messages: slim, usage: usage ?? undefined }));
 		}, 500);
 	}
 
@@ -537,23 +569,28 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	private ollamaChecked = false;
 
-	/** One Notice per session when Ollama or the chosen model is not available, with the fix. */
-	private async checkOllamaOnce(): Promise<void> {
+	/**
+	 * One Notice per session when the server or a chosen model is not available, with the fix.
+	 * Called when the user opens the chat, runs an agent command or sends a message, never just
+	 * because Obsidian started. `quiet` (start-up, when a scheduled job is switched on) writes to
+	 * the log only and does not use up the session's one notice.
+	 */
+	async checkOllamaOnce(quiet = false): Promise<void> {
 		if (this.ollamaChecked) return;
-		this.ollamaChecked = true;
+		if (!quiet) this.ollamaChecked = true;
+		let models: ModelInfo[] | null = null;
+		let serverError: string | undefined;
 		try {
-			const models = await this.client.listModels();
-			const missing: string[] = [];
-			if (!models.some((m) => sameModel(m.name, this.settings.model))) missing.push(this.settings.model);
-			if (this.settings.semanticSearch && !models.some((m) => sameModel(m.name, this.settings.embeddingModel))) missing.push(this.settings.embeddingModel);
-			if (missing.length) {
-				log.warn(`Models not installed: ${missing.join(", ")}`);
-				this.notifyError(`Local Vault Agent: model${missing.length === 1 ? "" : "s"} not installed: ${missing.join(", ")}. Open the setup checklist to download ${missing.length === 1 ? "it" : "them"}, or pick another model in settings.`, { setup: true });
-			}
+			models = await this.client.listModels();
 		} catch (err) {
-			log.error(`Server unreachable at load: ${(err as Error).message}`);
-			this.notifyError(`Local Vault Agent cannot reach ${this.settings.provider === "ollama" ? "Ollama" : "the model server"} at ${this.client.baseUrl} (${(err as Error).message}). Start it or fix the URL in settings.`, { setup: true });
+			serverError = (err as Error).message ?? String(err);
 		}
+		const s = this.settings;
+		const problem = serverProblem({ provider: s.provider, baseUrl: this.client.baseUrl, models, serverError, chatModel: s.model, embeddingModel: s.embeddingModel, semanticSearch: s.semanticSearch });
+		if (!problem) return;
+		if (models) log.warn(problem.log);
+		else log.error(problem.log);
+		if (!quiet) this.notifyError(problem.message, { setup: true });
 	}
 
 	private placementChecked = false;
@@ -617,17 +654,30 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		await target?.send(reformatPrompt(file.path, content));
 	}
 
-	/** The markdown editor showing the active note, even when the chat panel has focus. */
-	private activeEditorView(): MarkdownView | null {
-		const direct = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (direct) return direct;
-		const path = this.activeNote()?.path;
-		if (!path) return null;
-		for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-			const view = leaf.view;
-			if (view instanceof MarkdownView && view.file?.path === path) return view;
-		}
-		return null;
+	/** The markdown editor the user means, even when the chat panel has the focus: the one they were last in. */
+	activeEditorView(): MarkdownView | null {
+		return findEditorView(this.app);
+	}
+
+	/**
+	 * Saves a file pasted or dropped into the chat where Obsidian puts attachments (Settings → Files
+	 * and links, relative to the open note when the setting says so), under a name that is free.
+	 * Never replaces a file: Obsidian picks the free name, and creating a file that exists fails.
+	 * Returns the vault path.
+	 */
+	async saveAttachment(name: string, data: ArrayBuffer): Promise<string> {
+		const source = this.app.workspace.getActiveFile()?.path ?? "";
+		const path = normalizePath(await this.app.fileManager.getAvailablePathForAttachment(name, source));
+		const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+		if (folder && !this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
+		const file = await this.app.vault.createBinary(path, data);
+		return file.path;
+	}
+
+	/** A URL the chat can show a vault image from (a thumbnail of an attached picture), or null when the file is gone. */
+	attachmentPreview(path: string): string | null {
+		const file = this.app.vault.getFileByPath(normalizePath(path));
+		return file ? this.app.vault.getResourcePath(file) : null;
 	}
 
 	/** Asks for an instruction and has the agent rewrite the selected text (command and /edit). */
@@ -700,7 +750,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		let stopped = false;
 		for (const change of plan.changes) {
 			if (!approveAll) {
-				const modal = new ApprovalModal(this.app, { tool: change.tool, path: change.path, before: change.before, after: change.after, summary: change.summary });
+				const modal = new ApprovalModal(this.app, { tool: change.tool, path: change.path, before: change.before, after: change.after, summary: change.summary }, "batch");
 				modal.open();
 				const decision = await modal.result;
 				if (decision === "reject") {
@@ -1108,8 +1158,9 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	/** Runs due scheduled jobs (at most one at a time) and reminds a present user of waiting changes. */
 	private async tick(): Promise<void> {
-		if (!this.jobRunning && !this.agentBusy) {
-			const due = dueJobs(new Date(), this.settings, this.settings.jobRuns);
+		// A job that comes due while a chat turn or a quiz step runs waits for the next check (a minute later).
+		if (!this.jobRunning && !this.busy.busy) {
+			const due = dueJobs(new Date(), this.settings, this.settings.jobRuns, this.jobRetries);
 			for (const job of due) await this.runJob(job, false);
 		}
 		this.notifyPending();
@@ -1124,26 +1175,90 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			if (manual) new Notice("A scheduled job is already running.");
 			return;
 		}
+		// The model does one thing at a time: never a job on top of a chat turn, nor the other way round.
+		const lease = this.busy.acquire("job", JOB_NAMES[job]);
+		if (!lease) {
+			if (manual) new Notice(t("notice.wait"));
+			return;
+		}
 		this.jobRunning = true;
-		this.settings.jobRuns[job] = Date.now();
-		await this.saveSettings();
 		if (manual) new Notice(`${JOB_NAMES[job]}: running in the background; the changes will wait for your review.`);
+		let outcome: JobOutcome = "failed";
+		let error = "";
 		try {
-			const changes = job === "daily" ? await this.runDailyJob() : await this.runDigestJob();
-			const added = this.pending.add(job, changes);
-			if (added.length) {
-				this.pendingNotified = 0;
-				this.notifyPending(manual);
-			} else if (manual) new Notice(`${JOB_NAMES[job]}: nothing to change.`);
+			const changes = job === "daily" ? await this.runDailyJob(lease.signal) : await this.runDigestJob(lease.signal);
+			// A run that was stopped is half a run: nothing of it is queued.
+			if (lease.stopped) outcome = "stopped";
+			else {
+				outcome = "done";
+				const added = this.pending.add(job, changes);
+				if (added.length) {
+					this.pendingNotified = 0;
+					this.notifyPending(manual);
+				} else if (manual) new Notice(`${JOB_NAMES[job]}: nothing to change.`);
+			}
 		} catch (err) {
-			log.error(`${JOB_NAMES[job]} failed: ${(err as Error).message}`);
-			this.notifyError(`${JOB_NAMES[job]} failed: ${(err as Error).message}`);
+			if (lease.stopped) outcome = "stopped";
+			else error = (err as Error).message ?? String(err);
 		} finally {
+			lease.release();
 			this.jobRunning = false;
 		}
+		await this.settleJob(job, manual, outcome, error);
 	}
 
-	private async runDailyJob() {
+	/** Stops the scheduled job that is running, if one is. Returns whether there was one. */
+	stopJob(): boolean {
+		return this.busy.stop("job");
+	}
+
+	/** A notice naming the running job with a Stop button (the status-bar badge was clicked). */
+	private offerStopJob(): void {
+		const holder = this.busy.holder;
+		if (holder?.owner !== "job") return;
+		const frag = createFragment();
+		frag.createSpan({ text: `${t(holder.stopped ? "job.stopping" : "job.running", { job: holder.label })} ` });
+		if (!holder.stopped) {
+			const btn = frag.createEl("button", { text: t("job.stop") });
+			btn.addEventListener("click", () => {
+				btn.disabled = true;
+				this.stopJob();
+			});
+		}
+		new Notice(frag, 10000);
+	}
+
+	/**
+	 * After a run: records it as the job's last run, or leaves it due and sets when to try again.
+	 * The run is recorded here, when it is over, never when it starts, so a failed run is retried
+	 * (after 5, 15 and 60 minutes) instead of being skipped until the next scheduled time.
+	 */
+	private async settleJob(job: JobId, manual: boolean, outcome: JobOutcome, error: string): Promise<void> {
+		// Stopped because the plugin is being unloaded: nothing to tell, nothing to record.
+		if (this.unloaded) return;
+		const name = JOB_NAMES[job];
+		if (outcome === "stopped") new Notice(t("job.stopped", { job: name }), 8000);
+		if (outcome === "failed") log.error(`${name} failed: ${error}`);
+		if (manual && outcome === "failed") {
+			// Run by hand: the user sees the error and decides; the schedule is left as it was.
+			this.notifyError(t("job.failed", { job: name, error }));
+			return;
+		}
+		const earlier = manual ? undefined : this.jobRetries[job];
+		const plan = afterRun(outcome, Date.now(), earlier);
+		if (plan.retry) this.jobRetries[job] = plan.retry;
+		else delete this.jobRetries[job];
+		if (plan.record) {
+			this.settings.jobRuns[job] = Date.now();
+			await this.saveSettings();
+		}
+		if (outcome !== "failed") return;
+		// One notice for the first failure and one when it is given up; the retries in between only go to the log.
+		if (plan.gaveUp) this.notifyError(t("job.failedGaveUp", { job: name, error, n: (earlier?.failures ?? 0) + 1 }));
+		else if (plan.retry?.failures === 1) this.notifyError(t("job.failedRetry", { job: name, error, minutes: Math.round((plan.retry.retryAt - Date.now()) / 60_000) }));
+	}
+
+	private async runDailyJob(signal?: AbortSignal) {
 		await this.loadDailyNoteSettings();
 		const since = localDate(new Date(Date.now() - 2 * 86_400_000));
 		const overlay = new OverlayVault(this.vault, dailyNotesBefore(this.dailyFolder, since));
@@ -1162,16 +1277,11 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		const s = this.settings;
 		const prompt = processDailyNotesPrompt({ folder: this.dailyFolder, heading: s.dailyInboxHeading, destination: s.dailyTopicsFolder, move: s.dailyMoveItems, since });
-		this.agentBusy = true;
-		try {
-			await agent.run({ id: "scheduled", messages: [], approveAll: true }, prompt, {});
-		} finally {
-			this.agentBusy = false;
-		}
+		await agent.run({ id: "scheduled", messages: [], approveAll: true }, prompt, {}, signal);
 		return ensureSources(await overlay.changes(), this.dailyFolder);
 	}
 
-	private async runDigestJob() {
+	private async runDigestJob(signal?: AbortSignal) {
 		const now = new Date();
 		const weekOf = localDate(now);
 		const path = digestPath(this.settings.digestFolder, weekOf);
@@ -1191,6 +1301,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			think: false,
 			options: { num_ctx: this.settings.numCtx, temperature: 0.4 },
 			keep_alive: this.settings.keepAlive,
+			signal,
 		});
 		const content = renderDigest(weekOf, res.message.content, notes);
 		if (this.vault.exists(path)) return [{ path, tool: "edit_note" as const, before: await this.vault.read(path), after: content }];
@@ -1215,9 +1326,11 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	private updateStatusBar(): void {
 		if (!this.statusBar) return;
 		const n = this.pending.size;
-		this.statusBar.setText(n ? `🤖 ${n} to review` : "");
-		this.statusBar.toggle(n > 0);
-		this.statusBar.setAttribute("aria-label", n ? `${n} change${n === 1 ? "" : "s"} from scheduled jobs: click to review` : "");
+		const holder = this.busy.holder;
+		const running = holder?.owner === "job" ? holder.label : null;
+		this.statusBar.setText(running ? `🤖 ${t("job.statusBar")}` : n ? `🤖 ${n} to review` : "");
+		this.statusBar.toggle(running !== null || n > 0);
+		this.statusBar.setAttribute("aria-label", running ? t("job.statusBar.label", { job: running }) : n ? `${n} change${n === 1 ? "" : "s"} from scheduled jobs: click to review` : "");
 	}
 
 	/** Walks the queued changes as diffs: approve writes, reject drops, a change that no longer fits is dropped with a notice. */
@@ -1236,7 +1349,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				continue;
 			}
 			if (!approveAll) {
-				const modal = new ApprovalModal(this.app, { tool: item.tool, path: item.path, before: plan.before, after: plan.after, summary: `${item.summary} (${new Date(item.time).toLocaleString()})` });
+				const modal = new ApprovalModal(this.app, { tool: item.tool, path: item.path, before: plan.before, after: plan.after, summary: `${item.summary} (${new Date(item.time).toLocaleString()})` }, "batch");
 				modal.open();
 				const decision = await modal.result;
 				if (decision === "reject") {
@@ -1314,7 +1427,10 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			keepAlive: s.keepAlive,
 			maxIterations: s.maxIterations,
 			maxToolResultChars: s.maxToolResultChars,
-			autoApprove: s.autoApproveEdits,
+			// Read at every write, not once per message: "Turn off" in the chat takes effect for the very next change of a running turn.
+			get autoApprove() {
+				return s.autoApproveEdits;
+			},
 			autoContinue: s.autoContinue,
 			preSearch: s.preSearch,
 			extraSystemPrompt: s.extraSystemPrompt,
@@ -1387,6 +1503,9 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	}
 
 	async activateView(): Promise<AgentView | null> {
+		// The user is opening the chat or running an agent command: now is when a missing server matters.
+		// (Not on the very first open: the setup checklist opens then and shows the same, with the fixes.)
+		if (this.settings.setupShown) void this.checkOllamaOnce();
 		const { workspace } = this.app;
 		let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(VIEW_TYPE)[0] ?? null;
 		if (!leaf) {

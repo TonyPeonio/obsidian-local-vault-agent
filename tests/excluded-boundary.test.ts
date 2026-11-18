@@ -35,7 +35,10 @@ function fakeApp() {
 		},
 		workspace: {
 			getActiveFile: () => (active ? files.get(active)! : null),
-			getActiveViewOfType: () => ({ editor: { getSelection: () => "CANARY selection" } }),
+			// The focused editor shows the active file, whichever note that is.
+			getActiveViewOfType: () => ({ file: active ? files.get(active)! : null, editor: { getSelection: () => "CANARY selection" } }),
+			getMostRecentLeaf: () => null,
+			getLeavesOfType: () => [],
 		},
 		fileManager: {
 			renameFile: async (f: { path: string }, to: string) => void log.push(`rename ${f.path} -> ${to}`),

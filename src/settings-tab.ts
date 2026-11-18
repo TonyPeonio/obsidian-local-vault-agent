@@ -1,3 +1,4 @@
+import { chatModelOptions } from "./model-picker";
 import { sameModel } from "./ollama";
 import { App, Notice, PluginSettingTab, Setting, normalizePath, requireApiVersion, type SettingDefinitionItem } from "obsidian";
 import { hasKey, t, type I18nKey } from "./i18n";
@@ -172,10 +173,10 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 							try {
 								const models = await p.client.listModels();
 								d.selectEl.empty();
-								const names = models.filter((m) => !/embed/i.test(m.name)).map((m) => m.name);
-								if (!names.some((n) => sameModel(n, s.model))) names.unshift(s.model);
-								for (const n of names) d.addOption(n, n);
-								d.setValue(s.model);
+								// The same list as the picker in the chat: only models the agent can use, with their size.
+								const options = chatModelOptions(models, [], s.model);
+								for (const o of options) d.addOption(o.value, o.label);
+								d.setValue(options.find((o) => o.current)?.value ?? s.model);
 							} catch {
 								// Keep the single current value when the server is unreachable.
 							}
