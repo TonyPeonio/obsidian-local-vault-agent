@@ -896,7 +896,7 @@ export const readSection: ToolDefinition = {
 export const readNote: ToolDefinition = {
 	name: "read_note",
 	description:
-		"Read the full contents of one note by path (or exact note name), with its tags, links, backlinks and headings. Long notes are paged with `offset`. Costs context: to find which notes mention something use grep_vault or search_passages instead; to read one heading use read_section.",
+		"Read the full contents of one note by path (or exact note name), with its tags, links and backlinks. Long notes are paged with `offset`. Costs context: to find which notes mention something use grep_vault or search_passages instead; to read one heading use read_section.",
 	parameters: {
 		type: "object",
 		properties: {
@@ -1462,7 +1462,7 @@ export const findInNote: ToolDefinition = {
 export const listFiles: ToolDefinition = {
 	name: "list_files",
 	description:
-		"List the non-markdown files in the vault (attachments: audio and video recordings, images, PDFs, …), optionally filtered by folder, extension or a substring of the name. Newest first. Use it when the user talks about recordings, media or files rather than notes. Attachments cannot be read or edited, only listed and deleted.",
+		"List the non-markdown files in the vault (attachments: audio and video recordings, images, PDFs, …), optionally filtered by folder, extension or a substring of the name. Newest first. Use it when the user talks about recordings, media or files rather than notes. read_file reads a PDF or text file; attachments cannot be edited.",
 	parameters: {
 		type: "object",
 		properties: {
