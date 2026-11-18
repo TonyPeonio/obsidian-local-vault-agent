@@ -768,7 +768,7 @@ async function main() {
 	// than one tool result, a table, two notes with the same name, and facts kept in properties.
 	// Seeded here and removed afterwards, so the scenarios above run on the same notes as before;
 	// they are not in the index, which is right for these: each names its note or needs an exact search.
-	if (!ONLY || ["long-note", "table-row", "same-name", "properties"].some((id) => ONLY.split(",").includes(id))) {
+	if (!ONLY || ["long-note", "table-row", "same-name", "properties", "open-tasks"].some((id) => ONLY.split(",").includes(id))) {
 		const filler = (n: number) =>
 			["Reviewed the action items from last time; nothing blocking.", "Went through the budget line by line and moved two purchases to next month.", "Demo rehearsal went fine apart from the projector cable.", "Talked about who covers the booth on Saturday; rota is in the shared sheet.", "Sam showed the new wiring harness; cleaner than the old loom.", "Short discussion of the open pull requests; two merged during the meeting."][n % 6];
 		const log: string[] = ["# Robot club log 2026", "", "Running minutes of the weekly meeting, newest at the bottom."];
@@ -820,6 +820,27 @@ async function main() {
 			["does not list the active one", !/Bike Computer/.test(a)],
 			["used ≤ 6 tool calls", tools.length <= 6],
 		]);
+		// Open tasks across notes: the unchecked action items of every meeting with one person.
+		{
+			const person = "Ana Rocha";
+			const open = new Set<string>();
+			let meetings = 0;
+			for (const n of vault.listNotes()) {
+				if (!n.path.startsWith("Meetings/") || !n.path.includes(person)) continue;
+				meetings++;
+				for (const m of (await vault.read(n.path)).matchAll(/^- \[ \] (.+?)(?: — .*)?$/gm)) open.add(m[1].trim().toLowerCase());
+			}
+			const wanted = Array.from(open);
+			await scenario("open-tasks", "Open tasks across notes", `Which action items from my meetings with ${person} are still open? List them with the meeting each is from.`, (a, tools) => {
+				const named = wanted.filter((t) => a.toLowerCase().includes(t));
+				const dates = new Set(Array.from(a.matchAll(/2026-\d{2}-\d{2}/g), (m) => m[0]));
+				return [
+					[`names ≥ 80% of the ${wanted.length} distinct open items (${named.length})`, named.length >= Math.ceil(wanted.length * 0.8)],
+					[`gives the meetings they are from (≥ ${Math.ceil(meetings * 0.6)} of ${meetings} dates, ${dates.size})`, dates.size >= Math.ceil(meetings * 0.6)],
+					["used ≤ 8 tool calls", tools.length <= 8],
+				];
+			});
+		}
 		for (const p of Object.values(paths)) if (vault.exists(p)) await vault.trash(p);
 	}
 
