@@ -119,11 +119,27 @@ Pick a chat model that supports tool calling and load an embedding model in the 
 its id as the *Embedding model*), or turn semantic search off. An API key can be set if your
 server asks for one; it is stored in the plugin's settings, sent only to that server, and never
 included in a problem report. Ollama stays the default and is what the benchmark measures: with
-other servers the context window is whatever you loaded the model with, the speed test, model
-download and the automatic vision check are not available (set a *Vision model* by hand), and
-tool calling is only as good as the server's chat template. This path is covered by unit tests
-against the wire format, not by a run against each of the four servers; if one misbehaves, use
-*Report a problem*.
+other servers the speed test, model download and the automatic vision check are not available
+(set a *Vision model* by hand), and tool calling is only as good as the server's chat template.
+
+**Load the model with a context window of 16384 tokens or more.** Ollama is told a context size
+with every request; these servers have the size the model was loaded with, and LM Studio's
+default is 4096. A prompt longer than the window loses its start, which is the plugin's
+instructions, and the server reports no error. So the plugin asks the server how large its
+window is (llama.cpp's server and LM Studio say; it asks once per server and model, and again
+when the model is warmed) and works within the smaller of that and the *Context window* setting.
+When its instructions and tool list do not fit, your message ends at once with the server's
+size, the least the plugin needs, and what to do: in LM Studio, the context length slider when
+loading the model; with llama.cpp, `-c 16384` or more. *Settings → Context window* shows the
+size the server reported. With a server that does not report one, the plugin assumes the
+setting, so load the model with at least that much.
+
+What was tried against real servers: llama.cpp's `llama-server` only (the one that ships with
+Ollama) with `qwen3.5:4b`: the request format by hand, and three benchmark scenarios through
+this path, 18 of 18 checks with a 32768 window, and the message above instead of an answer with
+a 4096 window. LM Studio, Jan and vLLM were not run; reading LM Studio's window follows its
+documentation. Beyond that this path is covered by unit tests against the wire format; if a
+server misbehaves, use *Report a problem*.
 
 ### Languages
 
