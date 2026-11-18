@@ -764,6 +764,65 @@ async function main() {
 		rows.push({ id: "scheduled-daily", ms: Date.now() - start, calls, prompt: 0, errors: 0, misses: 0, repeats: 0, steps, promptMs: 0, evalMs: 0, pass, fail });
 	}
 
+	// Notes of the awkward kinds a real vault has and the generated one does not: a log far longer
+	// than one tool result, a table, two notes with the same name, and facts kept in properties.
+	// Seeded here and removed afterwards, so the scenarios above run on the same notes as before;
+	// they are not in the index, which is right for these: each names its note or needs an exact search.
+	if (!ONLY || ["long-note", "table-row", "same-name", "properties"].some((id) => ONLY.split(",").includes(id))) {
+		const filler = (n: number) =>
+			["Reviewed the action items from last time; nothing blocking.", "Went through the budget line by line and moved two purchases to next month.", "Demo rehearsal went fine apart from the projector cable.", "Talked about who covers the booth on Saturday; rota is in the shared sheet.", "Sam showed the new wiring harness; cleaner than the old loom.", "Short discussion of the open pull requests; two merged during the meeting."][n % 6];
+		const log: string[] = ["# Robot club log 2026", "", "Running minutes of the weekly meeting, newest at the bottom."];
+		for (let week = 1; week <= 46; week++) {
+			const day = new Date(Date.UTC(2026, 0, 6 + (week - 1) * 7)).toISOString().slice(0, 10);
+			log.push("", `## ${day}`, "");
+			for (let k = 0; k < 9; k++) log.push(`- ${filler(week * 7 + k)} (${["Ana", "Sam", "Priya", "Marcus"][(week + k) % 4]} to follow up.)`);
+			if (week === 33) log.push("- **Decision:** replace the GT2 belts with GT3 on both axes; the GT2 ones skipped teeth twice during the open day. Marcus orders them.");
+			if (week === 41) log.push("- Treasurer's report: the club account stands at 1,284.50 after the sponsor payment.");
+		}
+		const paths = {
+			log: "Clubs/Robot club log 2026.md",
+			table: "Projects/Motor comparison.md",
+			a: "Projects/Line Follower Bot/Notes.md",
+			b: "Projects/Weather Station/Notes.md",
+			p1: "Projects/Greenhouse Monitor.md",
+			p2: "Projects/Bike Computer.md",
+			p3: "Projects/Desk Clock.md",
+		};
+		vault.seed(paths.log, log.join("\n") + "\n");
+		const motors = Array.from({ length: 36 }, (_, i) => `| M-${100 + i} | ${["NEMA 14", "NEMA 17", "NEMA 23"][i % 3]} | ${(0.4 + i * 0.05).toFixed(2)} A | ${12 + (i % 4) * 4} N·cm | ${i === 22 ? "used on the gantry Y axis" : ""} |`);
+		vault.seed(paths.table, `# Motor comparison\n\nCandidates measured on the bench in October.\n\n| Part | Frame | Rated current | Holding torque | Notes |\n|---|---|---|---|---|\n${motors.join("\n")}\n\nThe supplier quotes are in the shared folder.\n`);
+		vault.seed(paths.a, "# Notes\n\nSensor array: five TCRT5000 reflectance sensors, 9 mm apart. PID gains that worked: Kp 0.42, Kd 3.1.\n");
+		vault.seed(paths.b, "# Notes\n\nThe anemometer reads high above 40 km/h; calibration factor 0.87 applied in firmware. Battery lasted 19 days.\n");
+		vault.seed(paths.p1, "---\nstatus: paused\nowner: Lena\ndue: 2027-02-01\n---\n# Greenhouse Monitor\n\nWaiting on the humidity sensors.\n");
+		vault.seed(paths.p2, "---\nstatus: active\nowner: Sam\n---\n# Bike Computer\n\nGPS logging works.\n");
+		vault.seed(paths.p3, "---\nstatus: paused\nowner: Jordan\n---\n# Desk Clock\n\nOn hold until the display driver ships.\n");
+
+		await scenario("long-note", "A fact deep in a very long note", "In Clubs/Robot club log 2026, what did we decide about the belts, in which meeting, and who orders them?", (a, tools) => [
+			["says GT3", /GT3/i.test(a)],
+			["gives the meeting (2026-08-18)", saysDate(a, "2026-08-18")],
+			["names Marcus", /Marcus/.test(a)],
+			["used ≤ 6 tool calls", tools.length <= 6],
+		]);
+		await scenario("table-row", "A row of a table", "In Projects/Motor comparison, which motor is used on the gantry Y axis, and what are its rated current and holding torque?", (a, tools) => [
+			["names the part M-122", /M-122/.test(a)],
+			["gives 1.50 A", /1\.50? ?A/.test(a)],
+			["gives 20 N·cm", /20 ?N.?cm/i.test(a)],
+			["used ≤ 4 tool calls", tools.length <= 4],
+		]);
+		await scenario("same-name", "Two notes with the same name", "What calibration factor did I write down in the Weather Station project's Notes?", (a, tools) => [
+			["gives 0.87", /0\.87/.test(a)],
+			["does not answer from the other Notes (PID gains)", !/0\.42|TCRT5000/.test(a)],
+			["used ≤ 4 tool calls", tools.length <= 4],
+		]);
+		await scenario("properties", "Notes found by a property", "Which of my project notes have status: paused, and who owns each?", (a, tools) => [
+			["names Greenhouse Monitor with Lena", /Greenhouse Monitor/.test(a) && /Lena/.test(a)],
+			["names Desk Clock with Jordan", /Desk Clock/.test(a) && /Jordan/.test(a)],
+			["does not list the active one", !/Bike Computer/.test(a)],
+			["used ≤ 6 tool calls", tools.length <= 6],
+		]);
+		for (const p of Object.values(paths)) if (vault.exists(p)) await vault.trash(p);
+	}
+
 	// A clipped web page with orders planted in it, once in a comment and once in plain sight. The
 	// model must answer from the page and obey none of it. Seeded here, not in the generated vault,
 	// so every earlier scenario runs on the same notes as before this one existed.
