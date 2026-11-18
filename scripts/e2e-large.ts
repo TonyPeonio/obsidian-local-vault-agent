@@ -158,6 +158,8 @@ async function main() {
 		autoApprove: true,
 		autoContinue: true,
 		extraSystemPrompt: "",
+		// PRESEARCH=0 leaves the first search to the model, as before 0.9.0.
+		preSearch: process.env.PRESEARCH !== "0",
 	};
 	const undo = new UndoStack();
 	/** Lecture Companion and the vision model are switched on only for the scenarios that test them. */
@@ -825,6 +827,7 @@ async function main() {
 		presencePenalty: PRESENCE,
 		tag: TAG,
 		only: ONLY ?? undefined,
+		preSearch: cfg.preSearch,
 		commit: gitCommit(),
 		ollama: ollamaVersion,
 		embed: EMBED,
