@@ -607,6 +607,14 @@
 	margin-top: var(--size-4-1);
 }
 
+/* Under a finished reply: how long it took and how fast the model was */
+.lva-stats {
+	margin-top: -6px;
+	padding: 0 4px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
 /* Scrolled up while text arrives: the list stays put and this button goes to the latest */
 .lva-jump-row {
 	position: relative;

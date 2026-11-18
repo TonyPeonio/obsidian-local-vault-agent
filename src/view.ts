@@ -1,4 +1,5 @@
 import { chatModelOptions } from "./model-picker";
+import { sameModel } from "./ollama";
 import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
 import { AUTO_CONTINUE_TEXT, FOLLOW_THROUGH_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
@@ -17,6 +18,7 @@ import { SAMPLE_QUESTIONS } from "./sample";
 import { ScrollFollow } from "./scroll-follow";
 import { StreamRenderer, nextRenderDelay } from "./stream-blocks";
 import { describeCall, describeResult, iconFor } from "./tool-cards";
+import { TurnProgress, formatDuration, formatTokens, phaseText, shouldNotify, summaryText } from "./turn-progress";
 import { stillApplied } from "./undo";
 import type { ChangeRecord, ChatMessage, ToolCall, UsageInfo } from "./types";
 
@@ -52,6 +54,8 @@ export class AgentView extends ItemView {
 	private unsubscribeStatus: (() => void) | null = null;
 	private unsubscribeGists: (() => void) | null = null;
 	private usage: UsageInfo | null = null;
+	/** Size of the prompt before any conversation (system prompt and tools), learned from the first call of a chat: the guess for "Reading about N tokens…" in a new chat. */
+	private prefixTokens: number | null = null;
 	private suggest: ComposerSuggest | null = null;
 	/** The quiz in progress: while set, the composer's messages are answers, graded instead of sent to the agent. */
 	private quiz: QuizSession | null = null;
@@ -445,7 +449,7 @@ export class AgentView extends ItemView {
 			const used = this.usage.promptTokens + this.usage.completionTokens;
 			const pct = Math.round((used / this.usage.numCtx) * 100);
 			warn = pct >= 85;
-			parts.push(t("view.status.context", { used: fmtK(used), total: fmtK(this.usage.numCtx), pct }));
+			parts.push(t("view.status.context", { used: formatTokens(used), total: formatTokens(this.usage.numCtx), pct }));
 		}
 		this.statusEl.setText(parts.join(" · "));
 		this.statusEl.toggleClass("lva-ctx-warn", warn);
@@ -635,7 +639,44 @@ export class AgentView extends ItemView {
 		const live: { turn: TurnRenderer | null } = { turn: null };
 		const started = Date.now();
 		let calls = 0;
-		const progress = () => this.updateStatus(t("view.status.working", { calls, secs: Math.round((Date.now() - started) / 1000) }));
+		let failed = false;
+		/** No model call was made in this chat yet: the first one tells how large the fixed part of the prompt is. */
+		const firstCall = this.usage === null;
+		const tp = new TurnProgress(started, {
+			contextTokens: this.usage ? this.usage.promptTokens + this.usage.completionTokens : this.prefixTokens,
+			messageChars: text.length,
+		});
+		let askingLoaded = false;
+		/** Whether the chat model is in memory, so a wait of a minute says "Loading the model…" instead of nothing; asked again while it loads. */
+		const askLoaded = () => {
+			if (askingLoaded || this.plugin.client.provider !== "ollama") return;
+			askingLoaded = true;
+			this.plugin.client
+				.ps()
+				.then((running) => tp.setLoaded(running.some((r) => sameModel(r.name, this.plugin.settings.model))))
+				// A server that cannot say: the line says "Reading the prompt…".
+				.catch(() => undefined)
+				.finally(() => {
+					askingLoaded = false;
+				});
+		};
+		const progress = () => {
+			const now = Date.now();
+			const phase = tp.phase(now);
+			if (phase.kind === "loading") askLoaded();
+			const parts = [phaseText(phase)];
+			if (calls > 0) parts.push(t("view.status.calls", { calls }));
+			parts.push(t("view.status.secs", { secs: Math.round((now - started) / 1000) }));
+			this.updateStatus(parts.join(" · "));
+		};
+		/** What the model is streaming right now, so the status line changes when it does and not on every piece. */
+		let streaming: "thinking" | "content" | null = null;
+		const piece = (kind: "thinking" | "content", chars: number) => {
+			tp.delta(Date.now(), kind, chars);
+			if (streaming === kind) return;
+			streaming = kind;
+			progress();
+		};
 		let ticker: number | null = null;
 
 		// From here to the `finally` that gives the gate back, everything is inside the try: a
@@ -654,6 +695,9 @@ export class AgentView extends ItemView {
 			}
 			// The reader's own message: always shown, wherever they had scrolled to.
 			this.scrollToBottom(true);
+			// The notes attached to the message are read by the model too.
+			tp.added(message.length - text.length);
+			askLoaded();
 			await this.plugin.agent.run(
 				this.conversation,
 				message,
@@ -661,15 +705,25 @@ export class AgentView extends ItemView {
 					onStatus: () => progress(),
 					onAssistantStart: () => {
 						live.turn = new TurnRenderer(this, this.messagesEl, this.plugin);
+						tp.stepStart();
+						streaming = null;
+						progress();
 						this.scrollToBottom();
 					},
 					onThinkingDelta: (d) => {
+						piece("thinking", d.length);
 						live.turn?.appendThinking(d);
 						this.scrollToBottom();
 					},
 					// The renderer says when it has drawn something (contentAdded): the text is not on screen yet here.
-					onAssistantDelta: (d) => live.turn?.appendContent(d),
-					onAssistantDone: (m) => void live.turn?.finish(m),
+					onAssistantDelta: (d) => {
+						piece("content", d.length);
+						live.turn?.appendContent(d);
+					},
+					onAssistantDone: (m) => {
+						tp.stepDone(Date.now());
+						void live.turn?.finish(m);
+					},
 					onToolStart: (call) => {
 						live.turn?.toolStart(call);
 						this.scrollToBottom();
@@ -679,6 +733,7 @@ export class AgentView extends ItemView {
 						this.outcomes.set(call, { ...this.outcomes.get(call), ok });
 						// Only the tool's name goes into the log: results and errors can quote notes.
 						if (!ok) log.warn(`Tool ${call.function.name} returned an error`);
+						tp.added(result.length);
 						live.turn?.toolDone(call, result, ok);
 						this.scrollToBottom();
 					},
@@ -691,7 +746,9 @@ export class AgentView extends ItemView {
 						live.turn?.attachUndo(call, change);
 					},
 					onUsage: (u) => {
+						if (firstCall && this.usage === null) this.prefixTokens = Math.max(0, u.promptTokens - Math.ceil(message.length / 3.2));
 						this.usage = u;
+						tp.usage(u);
 						progress();
 					},
 					onAutoContinue: (nudge) => {
@@ -704,10 +761,10 @@ export class AgentView extends ItemView {
 				},
 				lease.signal,
 			);
-			log.info(`Turn finished: ${calls} tool calls in ${Math.round((Date.now() - started) / 1000)} s${lease.stopped ? " (stopped)" : ""}`);
 			if (!lease.stopped && (await this.plugin.countAnswer())) this.showSurvey();
 		} catch (err) {
 			if (!lease.stopped) {
+				failed = true;
 				const message = (err as Error).message ?? String(err);
 				log.error(`Chat turn failed: ${message}`);
 				const errEl = this.messagesEl.createDiv({ cls: "lva-msg lva-error", attr: { role: "alert" } });
@@ -727,6 +784,14 @@ export class AgentView extends ItemView {
 				this.offerPartialUndo(made);
 				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.stopped") });
 			}
+			// How it went: the wait for the first words, the speed, the size of the prompt.
+			const summary = tp.summary(Date.now());
+			const stats = summaryText(summary);
+			// Not announced: a screen reader has just been given the reply itself.
+			if (stats) this.messagesEl.createDiv({ cls: "lva-stats", text: stats, attr: { "aria-live": "off" } });
+			// Numbers only in the log, never what was asked or answered.
+			log.info(`Turn ${lease.stopped ? "stopped" : failed ? "failed" : "finished"}: ${calls} tool calls, ${summary.steps} model calls${stats ? `, ${stats}` : ` in ${formatDuration(summary.totalMs)}`}`);
+			if (!lease.stopped) this.notifyIfAway(summary.totalMs, failed);
 			this.setSendState(false);
 			this.saveChat();
 			void this.plugin.checkPlacementOnce();
@@ -735,6 +800,21 @@ export class AgentView extends ItemView {
 			this.updateStatus();
 			this.scrollToBottom();
 		}
+	}
+
+	/**
+	 * A long turn that ends while the user is in another application: a notice that waits for them
+	 * (it stays until Obsidian has the focus again, and a few seconds more).
+	 */
+	private notifyIfAway(totalMs: number, failed: boolean): void {
+		const win = this.containerEl.win;
+		if (!shouldNotify(totalMs, win.document.hasFocus())) return;
+		const notice = new Notice(t(failed ? "notice.turnFailed" : "notice.turnDone", { time: formatDuration(totalMs) }), 0);
+		const back = () => {
+			win.removeEventListener("focus", back);
+			win.setTimeout(() => notice.hide(), 8000);
+		};
+		win.addEventListener("focus", back);
 	}
 
 	/** Shows/hides the mic: it needs Lecture Companion's transcription. */
@@ -883,6 +963,7 @@ export class AgentView extends ItemView {
 		this.lease = lease;
 		this.quizBusy = true;
 		const started = Date.now();
+		let failed = false;
 		try {
 			const req = parseQuizRequest(text, new Date()) ?? { topic: text };
 			this.addUser(text);
@@ -929,6 +1010,7 @@ export class AgentView extends ItemView {
 			this.remember(text, md);
 		} catch (err) {
 			if (!lease.stopped) {
+				failed = true;
 				const message = (err as Error).message ?? String(err);
 				this.messagesEl.createDiv({ cls: "lva-msg lva-error" }).createDiv({ cls: "lva-bubble", text: message });
 			}
@@ -939,7 +1021,7 @@ export class AgentView extends ItemView {
 			if (lease.stopped) {
 				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.stopped") });
 				this.scrollToBottom();
-			}
+			} else this.notifyIfAway(Date.now() - started, failed);
 			this.setSendState(false);
 			this.updateStatus();
 		}
@@ -1279,10 +1361,6 @@ function addUndoButton(plugin: LocalVaultAgentPlugin, card: HTMLElement, change:
 			if (done) markUndone();
 		});
 	});
-}
-
-function fmtK(n: number): string {
-	return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
 }
 
 /** Draws a tool's icon; when this Obsidian is older than the icon, the one every version has. */
