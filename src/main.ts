@@ -12,7 +12,7 @@ import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
 import { applyConceptLinks, conceptNames, isConceptNote, suggestConcepts } from "./concepts";
 import { ConceptModal, HistoryModal, QuizModal } from "./feature-modals";
 import { cosine } from "./index";
-import { LECTURE_TOOLS, lectureCompanionApi, type LectureCompanionApi, type LocalVaultAgentApi } from "./lecture-companion";
+import { LECTURE_TOOLS, allowedLectures, lectureCompanionApi, type LectureCompanionApi, type LocalVaultAgentApi } from "./lecture-companion";
 import { QuizEngine, sourceBudget } from "./quiz";
 import { JOB_NAMES, OverlayVault, PendingQueue, afterRun, dailyNotesBefore, digestPath, digestPrompt, dueJobs, ensureSources, localDate, planPending, recentNotes, renderDigest, type JobId, type JobOutcome, type JobRetry } from "./scheduler";
 import { ImageReader, readImage, type VisionData } from "./vision";
@@ -28,7 +28,7 @@ import { DEFAULT_SETTINGS, SAMPLING, commandAllowedOn, isExcluded, migrateSettin
 import { describeVault, refreshDescription } from "./describe-vault";
 import { LocalVaultAgentSettingTab } from "./settings-tab";
 import { ALL_TOOLS } from "./tools";
-import type { ApprovalRequest, ChangeRecord, ChatMessage, NoteInfo, SearchHit, UsageInfo } from "./types";
+import type { ApprovalRequest, ChangeRecord, ChatMessage, LectureSource, NoteInfo, SearchHit, UsageInfo } from "./types";
 import { RevertError, UndoStack, describeChange, planRevert } from "./undo";
 import { AgentView, VIEW_TYPE } from "./view";
 
@@ -239,7 +239,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			scope: () => this.settings.excludedFolders.join("\n"),
 			readAttachmentText: (path) => this.readAttachmentText(path),
 			extraTools: () => this.extraTools(),
-			lectures: () => this.lectureCompanion() ?? undefined,
+			lectures: () => this.lecturesForAgent() ?? undefined,
 			describeImage: () => (this.visionAvailable ? (path, opts) => this.vision.describe(path, opts) : undefined),
 			dailyNote: async () => {
 				await this.loadDailyNoteSettings();
@@ -699,7 +699,13 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	 */
 	async saveAttachment(name: string, data: ArrayBuffer): Promise<string> {
 		const source = this.app.workspace.getActiveFile()?.path ?? "";
-		const path = normalizePath(await this.app.fileManager.getAvailablePathForAttachment(name, source));
+		let path = normalizePath(await this.app.fileManager.getAvailablePathForAttachment(name, source));
+		// With attachments kept beside the note and a note of an excluded folder open, that place is
+		// inside the excluded folder: the picture would be written there and its path named to the
+		// model. It was pasted into the chat, not into that note, so it goes where an attachment
+		// goes when no note is open. (An attachment folder that is itself excluded is kept: it is
+		// where the user has every attachment put.)
+		if (source && !commandAllowedOn(path, this.settings.excludedFolders)) path = normalizePath(await this.app.fileManager.getAvailablePathForAttachment(name, ""));
 		const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
 		if (folder && !this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
 		const file = await this.app.vault.createBinary(path, data);
@@ -1061,6 +1067,15 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		return lectureCompanionApi(this.app);
 	}
 
+	/**
+	 * Lecture Companion's lectures as the agent's tools and the quiz get them: without the lectures
+	 * whose notes are in an excluded folder (see `allowedLectures`). Null when it is not installed.
+	 */
+	lecturesForAgent(): LectureSource | null {
+		const lc = this.lectureCompanion();
+		return lc ? allowedLectures(lc, (path) => commandAllowedOn(normalizePath(path), this.settings.excludedFolders)) : null;
+	}
+
 	/** Tools that depend on other plugins and models: Lecture Companion's lectures, the vision model. */
 	extraTools() {
 		return [...(this.lectureCompanion() ? LECTURE_TOOLS : []), ...(this.visionAvailable ? [readImage] : [])];
@@ -1129,7 +1144,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	/** "Quiz me": asks for the topic and starts the quiz in the chat. */
 	async startQuiz(view?: AgentView | null): Promise<void> {
-		const lc = this.lectureCompanion();
+		const lc = this.lecturesForAgent();
 		const modal = new QuizModal(this.app, lc?.courses() ?? [], this.settings.quizQuestions);
 		modal.open();
 		const opts = await modal.result;

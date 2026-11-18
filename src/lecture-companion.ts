@@ -39,6 +39,30 @@ export function lectureCompanionApi(app: unknown): LectureCompanionApi | null {
 	return api as LectureCompanionApi;
 }
 
+/**
+ * A lecture source without the lectures whose notes the agent may not read (`allowed` is false for
+ * a note in an excluded folder). Lecture Companion answers from its own records, not through the
+ * vault, so the vault guard does not stand between its tools and an excluded note: list_lectures
+ * named such notes with their summary sentences and lecture_transcript returned what was said in
+ * them. Here they are not listed, their transcripts are refused, and a course is not named when
+ * every lecture of it is excluded (a course with no lecture yet is still named).
+ */
+export function allowedLectures(source: LectureSource, allowed: (path: string) => boolean): LectureSource {
+	return {
+		courses: () =>
+			source.courses().filter((course) => {
+				const all = source.lectures(course);
+				return all.length === 0 || all.some((l) => allowed(l.path));
+			}),
+		lectures: (course) => source.lectures(course).filter((l) => allowed(l.path)),
+		transcript: async (path) => {
+			// Worded as for a lecture that does not exist: it does not confirm that the note is there.
+			if (!allowed(path)) throw new ToolError(`No lecture found for "${path}". Use list_lectures to find its path.`);
+			return source.transcript(path);
+		},
+	};
+}
+
 /** Seconds → `m:ss` (or `h:mm:ss`), the way Lecture Companion writes `**[m:ss]**`. */
 export function formatTimestamp(sec: number): string {
 	const s = Math.max(0, Math.floor(sec));

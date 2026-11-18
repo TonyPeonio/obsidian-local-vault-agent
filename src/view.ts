@@ -1247,7 +1247,8 @@ export class AgentView extends ItemView {
 			this.addUser(text);
 			this.setSendState(true);
 			this.updateStatus("Writing quiz questions…");
-			const lc = this.plugin.lectureCompanion();
+			// Without the lectures whose notes are in an excluded folder: the quiz reads its notes through the vault, which refuses those.
+			const lc = this.plugin.lecturesForAgent();
 			let paths = selectQuizNotes(this.plugin.vault.listNotes(), req, lc?.lectures() ?? []);
 			if (paths.length === 0 && req.topic) {
 				const hits = await this.plugin.hybridSearch(req.topic, 10);

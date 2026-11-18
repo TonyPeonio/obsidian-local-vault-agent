@@ -523,6 +523,23 @@ export function offersChange(text: string): boolean {
 	);
 }
 
+/** A verb that changes the vault, by its stem, so that "compiling" and "updated" count as well as "compile" and "update". */
+const CHANGE_STEM = /\b(?:edit|updat|creat|mak|mov|renam|remov|delet|fix|appl|writ|add|append|insert|compil|collect|consolidat|merg|clean|tid(?:y|ie)|organi[sz]|reformat|rewrit|archiv|tag|link|sav|turn|put|replac|chang|draft|generat|build|summari[sz])\w*/i;
+
+/**
+ * True when the question a reply ends on asks only whether to go on reading or searching ("Should
+ * I read the remaining notes?", "Do you want me to check the rest?") and names no change. In a
+ * turn where the user asked only a question, such a question is answered with
+ * `QUESTION_CONTINUE_TEXT` again even when the model has called no tool since it was last sent:
+ * a model that asked twice before reading used to end the turn on its question, with no answer.
+ * "Shall I go ahead?" and "Shall I read them and update the list?" are not such questions.
+ */
+export function asksToReadOn(text: string): boolean {
+	// The sentence the reply ends on, when that is a question.
+	const last = (text.trim().slice(-300).match(/[^.!?\n]*\?$/) ?? [""])[0];
+	return /\b(?:read|open|look|check|search|scan|inspect|review|examin|go through|grep|list|find)\w*\b/i.test(last) && !CHANGE_STEM.test(last);
+}
+
 const READ_TOOLS = new Set(["read_note", "read_section", "get_active_note"]);
 
 /**
@@ -1226,16 +1243,17 @@ export class Agent {
 						// they want and every write is approved separately, so answer for them.
 						autoContinues++;
 						nudge = AUTO_CONTINUE_TEXT;
-					} else if (toolsUsed > toolsAtQuestionContinue) {
+					} else if (toolsUsed > toolsAtQuestionContinue || asksToReadOn(assistant.content)) {
 						// The user asked a question: what the model wants to go on with may be a change they
 						// never asked for, and saying yes to that is theirs to do. It is told to finish the
-						// reading and the answer, and to change nothing.
+						// reading and the answer, and to change nothing. The line accepts nothing, so it is
+						// also sent again to a model that only asks, a second time, whether to read on.
 						autoContinues++;
 						toolsAtQuestionContinue = toolsUsed;
 						nudge = QUESTION_CONTINUE_TEXT;
 					}
-					// Otherwise it was told that already and has read nothing since: this reply is its
-					// answer, and the question it ends on is its offer. That goes to the user.
+					// Otherwise it was told that already, has read nothing since and does not ask to read:
+					// this reply is its answer, and the question it ends on is its offer. That goes to the user.
 				}
 			}
 			// Only the reply that ends the turn is dressed: a reply about to be sent back used to get

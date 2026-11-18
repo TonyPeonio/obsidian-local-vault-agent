@@ -118,7 +118,7 @@ function fakeApp(opts: { folderExists: boolean; available: string; activeFile?: 
 	};
 	return { app, created, folders, asked, existing };
 }
-const save = (app: unknown, name: string, data: ArrayBuffer) => LocalVaultAgentPlugin.prototype.saveAttachment.call({ app } as unknown as LocalVaultAgentPlugin, name, data);
+const save = (app: unknown, name: string, data: ArrayBuffer) => LocalVaultAgentPlugin.prototype.saveAttachment.call({ app, settings: { excludedFolders: [] } } as unknown as LocalVaultAgentPlugin, name, data);
 
 describe("saving a pasted picture", () => {
 	it("saves at the path Obsidian gives for an attachment of the open note", async () => {
