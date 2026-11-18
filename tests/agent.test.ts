@@ -23,6 +23,8 @@ import {
 	turnBudget,
 	CUT_OFF_NOTE,
 	looksLikeVaultQuestion,
+	outlineDrift,
+	OUTLINE_DRIFT_LIMIT,
 	claimsUnmadeSearch,
 	UNMADE_SEARCH_NUDGE,
 	PRE_SEARCH_LIMIT,
@@ -757,6 +759,54 @@ describe("search before the first reply", () => {
 		await agent.run(newConversation(), "What did I decide about the power supply?", { onToolDone: (_c, r) => done.push(r) });
 		expect(queries).toHaveLength(1);
 		expect(done[1]).toMatch(/already called search_passages/);
+	});
+});
+
+describe("the system prompt of a conversation", () => {
+	it("is written once: a note created between two messages reaches the model as a line with the message, not as a new prompt", async () => {
+		const { agent, ollama, vault } = setup([{ content: "one" }, { content: "two" }, { content: "three" }]);
+		const conv = newConversation();
+		await agent.run(conv, "first", {});
+		vault.seed("Projects/New idea.md", "# New idea");
+		await vault.trash("Ideas/Sensors.md");
+		await agent.run(conv, "second", {});
+		const [a, b] = ollama.requests;
+		// Everything the model had already read is still how the request begins.
+		expect(b.messages[0].content).toBe(a.messages[0].content);
+		expect(b.messages[1].content).toBe(a.messages[1].content);
+		expect(b.messages[0].content).not.toContain("New idea");
+		const said = b.messages.at(-1)?.content ?? "";
+		expect(said).toContain("Notes created since the vault outline above was written: Projects/New idea.md.");
+		expect(said).toContain("No longer at these paths (renamed, moved or deleted): Ideas/Sensors.md.");
+		// A new conversation starts from the vault as it is now.
+		await agent.run(newConversation(), "fresh", {});
+		expect(ollama.requests[2].messages[0].content).toContain("New idea");
+		expect(ollama.requests[2].messages[1].content).not.toContain("Notes created since");
+	});
+
+	it("is written again when the settings that shape it change or the vault has changed a lot", async () => {
+		let extra = "";
+		const vault = new FakeVault({ "A.md": "a" });
+		const ollama = new FakeOllama([{ content: "1" }, { content: "2" }, { content: "3" }]);
+		const agent = new Agent({ client: ollama.asClient(), vault, tools: ALL_TOOLS, search: async () => [], approve: async () => "approve", getConfig: () => ({ ...config, extraSystemPrompt: extra }) });
+		const conv = newConversation();
+		await agent.run(conv, "first", {});
+		extra = "Always answer in haiku.";
+		await agent.run(conv, "second", {});
+		expect(ollama.requests[1].messages[0].content).toContain("Always answer in haiku.");
+		for (let i = 0; i <= OUTLINE_DRIFT_LIMIT; i++) vault.seed(`Bulk/${i}.md`, "x");
+		await agent.run(conv, "third", {});
+		expect(ollama.requests[2].messages[0].content).toContain("Bulk/");
+		expect(ollama.requests[2].messages.at(-1)?.content).not.toContain("Notes created since");
+	});
+
+	it("lists what changed, shortly", () => {
+		const then = new Set(["a.md", "b.md"]);
+		expect(outlineDrift(then, ["a.md", "b.md"])).toEqual({ text: "", changes: 0 });
+		const many = outlineDrift(then, ["a.md", ...Array.from({ length: 15 }, (_, i) => `n${String(i).padStart(2, "0")}.md`)]);
+		expect(many.changes).toBe(16);
+		expect(many.text).toContain("n11.md (+3 more).");
+		expect(many.text).toContain("No longer at these paths (renamed, moved or deleted): b.md.");
 	});
 });
 

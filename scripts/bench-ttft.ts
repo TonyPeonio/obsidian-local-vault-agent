@@ -11,6 +11,7 @@
  *   follow-up       a second message in the same conversation
  *   new chat        a first message in a new conversation, model still loaded
  *   other note open a second message after another note was opened in the editor
+ *   after a new note a later message after a note was created in the vault
  */
 import "../tests/setup";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
@@ -117,7 +118,7 @@ async function main() {
 
 	const Q1 = "What did I decide about the chess robot's power supply, and when?";
 	const Q2 = "Why did I decide that?";
-	const cases: Record<string, Timing[]> = { cold: [], "after warm-up": [], "follow-up": [], "new chat": [], "other note open": [] };
+	const cases: Record<string, Timing[]> = { cold: [], "after warm-up": [], "follow-up": [], "new chat": [], "other note open": [], "after a new note": [] };
 	const warmSeconds: number[] = [];
 	console.log(`Ollama ${await client.version()}, ${MODEL}, ${NUM_CTX} context, ${vault.listNotes().length} notes, ${RUNS} runs per case`);
 	for (let run = 0; run < RUNS; run++) {
@@ -129,6 +130,10 @@ async function main() {
 		vault.activePath = "Projects/Kirin Engine.md";
 		cases["other note open"].push(await ask(a, "And what is still open on that project?"));
 		vault.activePath = null;
+		// A note appears between two messages (the agent's own create_note, or the user's): the vault
+		// outline in the system prompt is no longer current.
+		vault.seed(`Inbox/Scratch ${run}.md`, "# Scratch\n\nA note made between two messages.");
+		cases["after a new note"].push(await ask(a, "Who helped me build the robot frame?"));
 
 		await unload();
 		const t = Date.now();

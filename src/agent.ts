@@ -306,6 +306,31 @@ export interface Conversation {
 	messages: ChatMessage[];
 	/** Set when the user picks "approve all" for this chat. */
 	approveAll: boolean;
+	/**
+	 * The system prompt this conversation began with, and the notes that existed then. Kept in
+	 * memory only (a chat restored after a restart builds a new one). See `Agent.frozenSystem`.
+	 */
+	frozen?: { key: string; system: string; notes: Set<string> };
+}
+
+/** More notes than this added, removed or renamed since the conversation's system prompt was written, and it is written again. */
+export const OUTLINE_DRIFT_LIMIT = 40;
+
+/**
+ * What changed in the vault's list of notes since `then`, as a line for the model, or "" when
+ * nothing did. The outline in a conversation's system prompt is not rewritten when a note is
+ * added (see `Agent.frozenSystem`); this line, sent with the user's message, is how the model
+ * learns of the new paths.
+ */
+export function outlineDrift(then: Set<string>, now: Iterable<string>): { text: string; changes: number } {
+	const current = new Set(now);
+	const added = Array.from(current).filter((p) => !then.has(p)).sort();
+	const removed = Array.from(then).filter((p) => !current.has(p)).sort();
+	const list = (paths: string[]) => `${paths.slice(0, 12).join(", ")}${paths.length > 12 ? ` (+${paths.length - 12} more)` : ""}`;
+	const parts: string[] = [];
+	if (added.length) parts.push(`Notes created since the vault outline above was written: ${list(added)}.`);
+	if (removed.length) parts.push(`No longer at these paths (renamed, moved or deleted): ${list(removed)}.`);
+	return { text: parts.join(" "), changes: added.length + removed.length };
 }
 
 export function newConversation(): Conversation {
@@ -441,6 +466,31 @@ export class Agent {
 		return { role: "system", content };
 	}
 
+	/**
+	 * The system prompt of a conversation, written once and kept for its whole life.
+	 *
+	 * The prompt holds the vault outline, so writing it again each turn meant that a note created
+	 * or renamed between two messages (often by the agent itself, one message earlier) changed
+	 * the very start of the next request: Ollama keeps what it has read only up to the first
+	 * difference, so the outline, the tool list and the whole conversation were read again, most
+	 * of a minute on a machine without a GPU. Instead the prompt stays as it was and the change
+	 * travels with the user's message (`outlineDrift`). It is written again when the settings that
+	 * shape it change, when the tools on offer change, or when more than `OUTLINE_DRIFT_LIMIT`
+	 * notes have come or gone.
+	 */
+	private frozenSystem(conversation: Conversation, cfg: AgentConfig, tools: ToolDefinition[], conventions: string | null): { system: string; drift: string } {
+		const key = JSON.stringify([cfg.numCtx, cfg.answerLanguage ?? "", cfg.extraSystemPrompt, conventions ?? "", this.deps.gist !== undefined, tools.map((t) => t.name)]);
+		const paths = this.deps.vault.listNotes().map((n) => n.path);
+		const kept = conversation.frozen;
+		if (kept && kept.key === key && conversation.messages.length > 0) {
+			const drift = outlineDrift(kept.notes, paths);
+			if (drift.changes <= OUTLINE_DRIFT_LIMIT) return { system: kept.system, drift: drift.text };
+		}
+		const system = this.systemMessage(cfg, tools, conventions).content;
+		conversation.frozen = { key, system, notes: new Set(paths) };
+		return { system, drift: "" };
+	}
+
 	/** The warm-up in progress, if any: a turn waits for it rather than reading the same prompt beside it. */
 	private warming: Promise<void> | null = null;
 
@@ -509,7 +559,8 @@ export class Agent {
 		} catch {
 			daily = null;
 		}
-		conversation.messages.push({ role: "user", content: userText, context: turnContext(vault, now, daily) });
+		const frozen = this.frozenSystem(conversation, cfg, tools, conventions);
+		conversation.messages.push({ role: "user", content: userText, context: [turnContext(vault, now, daily), frozen.drift].filter(Boolean).join(" ") });
 
 		let currentCall: ToolCall | null = null;
 		/** Paths the current mutating call wrote, so only reads of those are forgotten. */
@@ -569,7 +620,7 @@ export class Agent {
 		// a write (the outline would show the new note) invalidated that cache on every step.
 		// It also holds nothing that varies per message (see turnContext), so the next turn starts
 		// from the same cached prefix unless the vault's outline changed in between.
-		const system = this.systemMessage(cfg, tools, conventions);
+		const system: ChatMessage = { role: "system", content: frozen.system };
 		const options = { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}) };
 		const wireTools = toOllamaTools(tools);
 		/** What every request of this turn carries whatever the conversation holds. */
