@@ -326,7 +326,8 @@ describe("Agent.run", () => {
 		);
 		const conv = newConversation();
 		const nudges: string[] = [];
-		await agent.run(conv, "what is the loss?", { onAutoContinue: (t) => nudges.push(t) });
+		// (A request: in a turn that only asks a question the line differs, see question-continue.test.ts.)
+		await agent.run(conv, "Add the validation loss to the Chess Robot note.", { onAutoContinue: (t) => nudges.push(t) });
 		expect(nudges).toEqual([FOLLOW_THROUGH_TEXT]);
 		expect(ollama.requests[1].messages.at(-1)).toMatchObject({ role: "user", content: FOLLOW_THROUGH_TEXT });
 		expect(conv.messages.at(-1)?.content).toContain("Hall sensors are cheap.");

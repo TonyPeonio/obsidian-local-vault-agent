@@ -2,7 +2,7 @@ import { chatModelOptions } from "./model-picker";
 import { sameModel } from "./ollama";
 import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
-import { AUTO_CONTINUE_TEXT, FOLLOW_THROUGH_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
+import { GROUNDING_PREFIX, QUESTION_CONTINUE_TEXT, QUESTION_FOLLOW_THROUGH_TEXT, isAgentLine, newConversation, type Conversation } from "./agent";
 import { unattendedWrites } from "./approval";
 import { recordOutcomes, restoredCards, type ToolOutcome } from "./chat-restore";
 import type { Lease } from "./busy";
@@ -403,7 +403,7 @@ export class AgentView extends ItemView {
 		for (let i = 0; i < messages.length; i++) {
 			const m = messages[i];
 			if (m.role === "user") {
-				if (m.content === AUTO_CONTINUE_TEXT || m.content.startsWith(GROUNDING_PREFIX) || m.content.startsWith(FOLLOW_THROUGH_TEXT) || /^Your reply was empty/.test(m.content)) {
+				if (isAgentLine(m.content)) {
 					this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: "(auto-continued)" });
 				} else {
 					const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
@@ -1031,7 +1031,7 @@ export class AgentView extends ItemView {
 					onAutoContinue: (nudge) => {
 						this.messagesEl.createDiv({
 							cls: "lva-msg lva-note",
-							text: nudge.startsWith(GROUNDING_PREFIX) ? t("view.groundingNudge") : t("view.autoContinued"),
+							text: nudge.startsWith(GROUNDING_PREFIX) ? t("view.groundingNudge") : nudge === QUESTION_CONTINUE_TEXT || nudge === QUESTION_FOLLOW_THROUGH_TEXT ? t("view.questionContinued") : t("view.autoContinued"),
 						});
 						this.scrollToBottom();
 					},

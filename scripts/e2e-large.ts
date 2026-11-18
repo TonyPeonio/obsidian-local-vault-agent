@@ -366,7 +366,8 @@ async function main() {
 					if (m.content.trim() && m.tool_calls?.length) console.log(`  [said] ${m.content.trim().replace(/\s+/g, " ").slice(0, 160)}`);
 				},
 				// In full when it is the grounding check: which links it could not resolve is what a false alarm is diagnosed from.
-				onAutoContinue: (n) => console.log(`  [auto-continue] ${n.slice(0, n.startsWith("Grounding check") ? 600 : 50)}…`),
+				// With the end of the reply that was sent back: what the model stopped on is what the agent answered.
+				onAutoContinue: (n) => console.log(`  [stopped on] …${answer.trim().replace(/\s+/g, " ").slice(-240)}\n  [auto-continue] ${n.slice(0, n.startsWith("Grounding check") ? 600 : 50)}…`),
 				onUsage: (u) => {
 					maxPrompt = Math.max(maxPrompt, u.promptTokens);
 					steps++;

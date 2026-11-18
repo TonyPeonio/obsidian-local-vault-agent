@@ -1,4 +1,4 @@
-import { AUTO_CONTINUE_TEXT, GROUNDING_PREFIX } from "./agent";
+import { AUTO_CONTINUE_TEXT, GROUNDING_PREFIX, QUESTION_CONTINUE_TEXT } from "./agent";
 import type { ChatMessage } from "./types";
 
 /**
@@ -11,6 +11,7 @@ export function conversationToMarkdown(messages: ChatMessage[]): string {
 	for (const m of messages) {
 		if (m.role === "user") {
 			if (m.content === AUTO_CONTINUE_TEXT) out.push("_(auto-continued: the model asked for permission)_");
+			else if (m.content === QUESTION_CONTINUE_TEXT) out.push("_(the model asked for permission in a question turn: told to finish the answer and change nothing)_");
 			else if (m.content.startsWith(GROUNDING_PREFIX)) out.push(`_(${m.content.trim()})_`);
 			else out.push(`**You:** ${m.content.trim()}`);
 		} else if (m.role === "assistant") {

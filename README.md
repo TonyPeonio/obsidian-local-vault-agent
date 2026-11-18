@@ -232,6 +232,9 @@ each step to ask "shall I proceed?". If a model asks anyway, the agent answers y
 three times per message (a small note appears in the chat) — see *Keep going when the model asks
 for permission* in settings. It never does this for a question that offers you a choice, nor after
 you have rejected a change in that message, and a question always gets an answer rather than edits.
+When your message only asked a question, the agent does not answer yes: it tells the model to
+finish the reading and the answer and to change nothing, and an offer the model makes ("If you
+want, I can compile them into a new note") is yours to accept in your next message.
 
 **Process my daily notes.** Daily notes collect loose captures: a list of fellowships, a lecture
 brain-dump, a shell command, names of people to email. The command surveys the inbox section

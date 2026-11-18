@@ -427,6 +427,18 @@ function isTransient(err: unknown): boolean {
 export const AUTO_CONTINUE_TEXT =
 	"Yes. Continue without asking again: carry out everything you proposed, for every note involved, in this turn. Reading needs no permission and each change goes through the approval dialog. Report when you are done.";
 
+/**
+ * What the agent answers instead of `AUTO_CONTINUE_TEXT` in a turn where the user asked only a
+ * question (`asksOnlyAQuestion`). There a "shall I proceed?" may be an offer to change the vault:
+ * asked for a list, the 9B model offered to compile the notes into a new one, the agent said yes
+ * for the user, the note was shown with the unasked-change warning and rejected, and the reply
+ * that ended the turn no longer held the list. An offer is the user's to accept in their next
+ * message. So nothing is accepted: the model is told to do the reading the answer still needs
+ * (a stalled search goes on), to give the answer, and to leave its offer as one closing sentence.
+ */
+export const QUESTION_CONTINUE_TEXT =
+	'The user asked a question and asked for no change, so no change is accepted in this turn: do not create, edit, move or delete anything. Searching and reading need no permission; do now whatever the answer still needs. Then give the complete answer to the user\'s question in one reply, from what you have found. If you proposed a change, do not make it: end with one sentence that begins "If you want, I can" and says what you would change, and do not ask whether to proceed.';
+
 export const LECTURE_TOOLS_HINT =
 	"Lecture Companion is installed: for questions about lectures or meetings (what was said about X, and when; which lecture covered Y), use list_lectures to find the lecture and lecture_transcript with a query to get the timestamped paragraphs, then quote the paragraph and give its [m:ss] time with a wikilink to the lecture note.";
 
@@ -464,6 +476,25 @@ export const FOLLOW_THROUGH_TEXTS = [
 ];
 
 /**
+ * The same push in a turn where the user asked only a question: the step taken is a search or a
+ * read. "Now I'll create a note for these" is not pushed into a change nobody asked for.
+ */
+export const QUESTION_FOLLOW_THROUGH_TEXT =
+	"You described your next step instead of taking it. The user asked a question and asked for no change: if the step is a search or a read, do it now with the tools (it needs no permission), and do not create, edit, move or delete anything. Then give the complete answer to the question. Never end a reply by announcing what you will do.";
+
+/** True for a line the agent itself sent to the model in the user's place (it is drawn as a remark, not as the user's message). */
+export function isAgentLine(content: string): boolean {
+	return (
+		content === AUTO_CONTINUE_TEXT ||
+		content === QUESTION_CONTINUE_TEXT ||
+		content.startsWith(GROUNDING_PREFIX) ||
+		content.startsWith(FOLLOW_THROUGH_TEXT) ||
+		content.startsWith(QUESTION_FOLLOW_THROUGH_TEXT) ||
+		/^Your reply was empty/.test(content)
+	);
+}
+
+/**
  * True when a reply ends by announcing work the model has not done ("To find the loss, I'll
  * check the NNUE Training note."), which models answering without thinking do instead of
  * calling the tool. Questions are not announcements; they are handled separately.
@@ -475,6 +506,20 @@ export function announcesNextStep(text: string): boolean {
 	if (/\blet me know\b/i.test(tail)) return false;
 	return /\b(i(?:'ll| will| am going to|'m going to| need to| should| can)|let me|next,? i(?:'ll| will)?|now i(?:'ll| will)?)\b[^.!?\n]{0,60}?\b(check|read|open|search|look|grep|list|find|verify|inspect|scan|examine|review|run|edit|update|create|move|rename|remove|delete|fix|apply|write|add|process|compile|handle|clean)\b/i.test(
 		tail,
+	);
+}
+
+/**
+ * True when a reply's last line offers a change on a condition ("If you want, I can compile them
+ * into a new note."). `announcesNextStep` reads "I can compile" as a step announced and not taken;
+ * in a turn where the user asked only a question it is the offer `QUESTION_CONTINUE_TEXT` asks
+ * for, and it goes to the user. An offer to search or read more is still pushed on.
+ */
+export function offersChange(text: string): boolean {
+	const tail = (text.trim().split(/\n+/).filter((l) => l.trim()).at(-1) ?? "").slice(-300);
+	return (
+		/\bif you(?:'d| would)? (?:want|like|wish|prefer)\b/i.test(tail) &&
+		/\b(edit|update|create|make|move|rename|remove|delete|fix|apply|write|add|compile|collect|consolidate|merge|clean|tidy|organi[sz]e|reformat|rewrite|archive|tag|link|save|turn|put)\b/i.test(tail)
 	);
 }
 
@@ -965,6 +1010,8 @@ export class Agent {
 		// one ("what instead?") and must reach the user: no more auto-continuing.
 		let rejected = false;
 		let autoContinues = 0;
+		/** Tool calls made when `QUESTION_CONTINUE_TEXT` was last sent; -1 before it was. It is sent again only after more of them. */
+		let toolsAtQuestionContinue = -1;
 		let groundingNudges = 0;
 		let emptyNudges = 0;
 		let followThroughNudges = 0;
@@ -1167,15 +1214,28 @@ export class Agent {
 					// A reply that cites notes which do not exist is fabricated. Send it back once.
 					groundingNudges++;
 					nudge = groundingNudge(unresolvedLinks(assistant.content, vault), toolsUsed > 0);
-				} else if (cfg.autoContinue && !rejected && followThroughNudges < FOLLOW_THROUGH_TEXTS.length && announcesNextStep(assistant.content)) {
+				} else if (cfg.autoContinue && !rejected && followThroughNudges < FOLLOW_THROUGH_TEXTS.length && announcesNextStep(assistant.content) && !(askedAQuestion && offersChange(assistant.content))) {
 					// "I'll check the other note." with no tool call: the model narrated the step
 					// instead of taking it (common with thinking off). Send it back once.
-					nudge = FOLLOW_THROUGH_TEXTS[followThroughNudges++];
+					// In a question turn the step pushed is a search or a read, never a change.
+					nudge = askedAQuestion ? QUESTION_FOLLOW_THROUGH_TEXT : FOLLOW_THROUGH_TEXTS[followThroughNudges];
+					followThroughNudges++;
 				} else if (cfg.autoContinue && !rejected && autoContinues < MAX_AUTO_CONTINUES && looksLikePermissionQuestion(assistant.content) && !looksLikeChoiceQuestion(assistant.content)) {
-					// Small models like to stop and ask "shall I go on?". The user already said what
-					// they want and every write is approved separately, so answer for them.
-					autoContinues++;
-					nudge = AUTO_CONTINUE_TEXT;
+					if (!askedAQuestion) {
+						// Small models like to stop and ask "shall I go on?". The user already said what
+						// they want and every write is approved separately, so answer for them.
+						autoContinues++;
+						nudge = AUTO_CONTINUE_TEXT;
+					} else if (toolsUsed > toolsAtQuestionContinue) {
+						// The user asked a question: what the model wants to go on with may be a change they
+						// never asked for, and saying yes to that is theirs to do. It is told to finish the
+						// reading and the answer, and to change nothing.
+						autoContinues++;
+						toolsAtQuestionContinue = toolsUsed;
+						nudge = QUESTION_CONTINUE_TEXT;
+					}
+					// Otherwise it was told that already and has read nothing since: this reply is its
+					// answer, and the question it ends on is its offer. That goes to the user.
 				}
 			}
 			// Only the reply that ends the turn is dressed: a reply about to be sent back used to get
