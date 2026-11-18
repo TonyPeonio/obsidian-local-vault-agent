@@ -316,8 +316,8 @@ keyboard, when a notice and a status-bar badge (*🤖 3 to review*) offer the re
 then an ordinary diff; one whose note you edited in the meantime is carried over when the edits do
 not overlap and skipped when they do. The commands *Run the nightly daily-notes job now* and
 *Write this week's digest now* run them on demand. A job and a chat turn never run at the same
-time: a job that comes due while you chat waits a minute, and a message sent while a job runs is
-refused with a notice. While a job runs the chat shows a bar with **Stop** (also the command
+time: a job that comes due while you chat waits a minute, and a message sent while a job runs
+waits in the chat's queue until the job has finished. While a job runs the chat shows a bar with **Stop** (also the command
 *Stop the running scheduled job*, or a click on the status-bar badge); a stopped run queues
 nothing. A run that fails, for example because Ollama was not running, is tried again after 5, 15
 and 60 minutes before it is given up until its next scheduled time.
@@ -330,6 +330,14 @@ base64 in the message's `images`; readings are cached by the file's content hash
 `image-cache.json`, so an image is read once. *Settings → Vision model*: empty uses the chat model
 when it can see (`qwen3.5` can), or set one such as `qwen2.5vl:7b`. Without one the tool is simply
 not offered.
+
+**Pictures in the chat.** With a vision model, paste a picture into the message box or drop an
+image file on it (PNG, JPEG or WebP, up to 20 MB, four per message). It is saved where Obsidian
+keeps attachments (*Settings → Files and links*; the name is Obsidian's *Pasted image …* for a
+clipboard picture, and an existing file is never replaced), shown above the message box, and sent
+with your next message. Before the agent's turn it is read exactly as `read_image` reads it, with
+the same cache, and what was read travels with the message, so the model starts with the
+picture's text and description. Removing a picture from the message leaves the file in the vault.
 
 **Lecture Companion.** When [Lecture Companion](https://github.com/TonyPeonio) is installed and
 enabled, the agent reads its records through its API instead of relying on the conventions it
@@ -345,9 +353,22 @@ share one Ollama and one model in memory.
 **Composer.** `@` picks a note to attach to your message (its content is included, so no tool call
 is needed); `/` lists commands (`/reformat`, `/summarize`, `/undo`, `/undo-all`, `/new`, `/gists`,
 `/index`, `/quiz`, `/concepts`, `/history`, `/review`, `/help`). The header has a **Copy conversation** button that copies the whole chat,
-including tool calls and results, as markdown. The footer shows index and gist status, the tool-call count and elapsed time while a turn
-runs, and the context used by the last model call. The chat is saved and restored when you reopen
-the panel or restart Obsidian; **New chat** clears it.
+including tool calls and results, as markdown. The footer shows index and gist status and the
+context used by the last model call. The chat is saved and restored when you reopen the panel or
+restart Obsidian; **New chat** clears it.
+
+**While a reply is written.** The footer says what the turn is doing: *Loading the model…* (when
+Ollama does not have it in memory yet), *Reading about 11k tokens…*, *Thinking…* or *Writing… about
+38 tokens/s*, and *Working…* while tools run, with the tool-call count and the seconds. Under the
+finished reply one line says how it went: total time, time to the first words, tokens per second
+by the server's own timings, the size of the prompt, and the load time when the model had to be
+loaded. A turn of more than 30 seconds that ends while Obsidian is not the focused window leaves a
+notice that waits for you. The reply is drawn block by block: a finished paragraph is not drawn
+again, so you can select and copy from it while the rest arrives. The list follows the text only
+while you are at its end; scroll up and it stays where you put it, with a **Jump to latest**
+button. A message you send while a reply is being written is not lost: it waits in a queue above
+the message box (each entry can be taken back) and is sent when the turn has ended. **Stop** also
+empties the queue, back into the message box.
 
 Semantic search chunks each note by heading, embeds the chunks with the embedding model, and
 stores the vectors in `.obsidian/plugins/local-vault-agent/index.json`. The index updates
@@ -621,8 +642,9 @@ problem*.
   focusable and scrolls with the arrow keys. `@` and `/` open pickers driven by the arrow keys
   and Enter.
 - **Screen readers.** Icon buttons, the model picker, the message box and the diff have labels;
-  the conversation is a live region, so new messages are announced; errors are alerts; the
-  setup checklist reads each step with its state.
+  the conversation is a live region, so new messages are announced; a reply that is being written
+  is kept out of it and announced once, when it is finished, instead of with every word; errors
+  are alerts; the setup checklist reads each step with its state.
 - **Mobile.** The plugin is not desktop-only: set the server URL to a machine on your network
   (see below). Buttons are sized for touch. Model download and streaming need the server to
   accept requests from Obsidian's origin, as on desktop. Voice input needs Lecture Companion,
@@ -700,8 +722,19 @@ npm run e2e     # runs the real agent loop against a live Ollama over ./test-vau
 npm run make-vault && npm run e2e:large   # the scored benchmark (see Benchmarks)
 npm run build   # type-check + Obsidian review lint (0 warnings) + production bundle
 npm run bench:scale   # the large-vault measurements (see Large vaults)
+npm run bench:render  # how much markdown is rendered while a reply streams, before and after
+npm run e2e:dom       # the chat view's DOM code in a headless Chrome or Edge, with a screenshot
 npm run e2e:obsidian  # end-to-end tests in a real Obsidian; opens an Obsidian window
 ```
+
+**The chat view in a browser.** `npm run e2e:dom` bundles the chat view with a stand-in for
+Obsidian's API (`scripts/dom-check/obsidian-shim.ts`) and runs it in a headless Chrome or Edge
+against a scripted agent: a reply streaming block by block with a selection that survives, the
+list following only at its end, the status line and the summary line, the queue and Stop, and a
+pasted picture. It prints each check and writes a screenshot of the panels to
+`.e2e/dom-check/panels.png`. It needs no Obsidian and no Ollama, and skips itself when no browser
+is installed. It is not Obsidian: markdown is rendered by a small stand-in, so it checks the view's
+own code, not Obsidian's renderer.
 
 **End-to-end tests in Obsidian.** `e2e-obsidian/` drives the built plugin inside a real, sandboxed
 Obsidian with [wdio-obsidian-service](https://github.com/jesse-r-s-hines/wdio-obsidian-service),
