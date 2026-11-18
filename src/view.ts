@@ -11,6 +11,7 @@ import { VoiceRecorder } from "./voice";
 import { t, type I18nKey } from "./i18n";
 import { log } from "./log";
 import { SAMPLE_QUESTIONS } from "./sample";
+import { describeCall, describeResult, iconFor } from "./tool-cards";
 import { stillApplied } from "./undo";
 import type { ChangeRecord, ChatMessage, ToolCall, UsageInfo } from "./types";
 
@@ -245,7 +246,7 @@ export class AgentView extends ItemView {
 					const card = root.createEl("details", { cls: "lva-tool lva-tool-ok" });
 					const summary = card.createEl("summary");
 					const icon = summary.createSpan({ cls: "lva-tool-icon" });
-					setIcon(icon, iconFor(call.function.name));
+					setToolIcon(icon, call.function.name);
 					summary.createSpan({ cls: "lva-tool-name", text: describeCall(call) });
 					summary.createSpan({ cls: "lva-tool-args", text: resultMsg ? describeResult(call, resultMsg.content) : "" });
 					const body = card.createDiv({ cls: "lva-tool-body" });
@@ -910,7 +911,7 @@ class TurnRenderer {
 		const card = this.root.createEl("details", { cls: "lva-tool lva-tool-running" });
 		const summary = card.createEl("summary");
 		const icon = summary.createSpan({ cls: "lva-tool-icon" });
-		setIcon(icon, iconFor(call.function.name));
+		setToolIcon(icon, call.function.name);
 		summary.createSpan({ cls: "lva-tool-name", text: describeCall(call) });
 		summary.createSpan({ cls: "lva-tool-args", text: "" });
 		const body = card.createDiv({ cls: "lva-tool-body" });
@@ -956,115 +957,9 @@ function fmtK(n: number): string {
 	return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
 }
 
-function iconFor(tool: string): string {
-	switch (tool) {
-		case "search_notes":
-			return "search";
-		case "read_note":
-		case "get_active_note":
-			return "file-text";
-		case "list_notes":
-		case "vault_overview":
-			return "folder-tree";
-		case "create_note":
-			return "file-plus";
-		default:
-			return "pencil";
-	}
-}
-
-function short(v: unknown, max = 48): string {
-	const s = typeof v === "string" ? v : v === undefined ? "" : JSON.stringify(v);
-	const noExt = s.replace(/\.md$/i, "");
-	return noExt.length > max ? noExt.slice(0, max) + "…" : noExt;
-}
-
-/** "Searched “magnet problems”" instead of `search_notes {"query":…}`. */
-function describeCall(call: ToolCall): string {
-	const a = call.function.arguments ?? {};
-	switch (call.function.name) {
-		case "search_notes":
-			return `Searched notes for “${short(a.query)}”`;
-		case "search_passages":
-			return `Searched passages for “${short(a.query)}”`;
-		case "read_note":
-			return `Read ${short(a.path)}${a.offset ? ` (from ${short(a.offset)})` : ""}`;
-		case "read_section":
-			return `Read ${short(a.path)} › ${short(a.heading, 30)}`;
-		case "find_in_note":
-			return `Looked for “${short(a.pattern, 30)}” in ${short(a.path)}`;
-		case "grep_vault":
-			return `Grepped the vault for “${short(a.pattern, 30)}”${a.folder ? ` in ${short(a.folder)}` : ""}`;
-		case "list_sections":
-			return `Checked sections for ${Array.isArray(a.containing) ? a.containing.map((t) => `“${short(t, 20)}”`).join(" / ") : ""}`;
-		case "list_notes":
-			return `Listed notes${a.folder ? ` in ${short(a.folder)}` : ""}${a.tag ? ` tagged ${short(a.tag)}` : ""}${a.name_contains ? ` matching “${short(a.name_contains)}”` : ""}`;
-		case "list_files":
-			return `Listed attachments${a.extension ? ` (.${short(a.extension)})` : ""}${a.folder ? ` in ${short(a.folder)}` : ""}`;
-		case "vault_overview":
-			return "Looked at the vault overview";
-		case "get_active_note":
-			return "Read the open note";
-		case "create_note":
-			return `Created ${short(a.path)}`;
-		case "edit_note":
-			return `Edited ${short(a.path)}`;
-		case "edit_notes": {
-			const n = Array.isArray(a.edits) ? a.edits.length : 0;
-			return `Applied ${n} edit${n === 1 ? "" : "s"} across notes`;
-		}
-		case "append_to_note":
-			return `Appended to ${short(a.path)}`;
-		case "replace_note":
-			return `Rewrote ${short(a.path)}`;
-		case "move_note":
-			return `Moved ${short(a.path)} → ${short(a.new_path)}`;
-		case "delete_file":
-			return `Deleted ${short(a.path)}`;
-		case "read_file":
-			return `Read attachment ${short(a.path)}`;
-		default:
-			return call.function.name;
-	}
-}
-
-/** A few words about what came back, for the card's right-hand side. */
-function describeResult(call: ToolCall, result: string): string {
-	switch (call.function.name) {
-		case "search_notes": {
-			if (result.startsWith("No notes")) return "no results";
-			const n = (result.match(/"path":/g) ?? []).length;
-			return `${n} result${n === 1 ? "" : "s"}`;
-		}
-		case "search_passages": {
-			const m = /^(\d+) passage/.exec(result);
-			return m ? `${m[1]} passage${m[1] === "1" ? "" : "s"}` : result.startsWith("No passages") ? "no results" : "";
-		}
-		case "list_notes":
-		case "list_files": {
-			const m = /^(\d+) (note|file)/.exec(result);
-			return m ? `${m[1]} ${m[2]}${m[1] === "1" ? "" : "s"}` : "none";
-		}
-		case "read_note":
-		case "read_section":
-		case "get_active_note":
-		case "read_file": {
-			const m = /length: (\d+) characters/.exec(result);
-			return m ? `${Math.round(Number(m[1]) / 1000)}k chars` : result.startsWith("(unchanged") ? "unchanged" : "";
-		}
-		case "find_in_note": {
-			const m = /^(\d+) match/.exec(result);
-			return m ? `${m[1]} match${m[1] === "1" ? "" : "es"}` : "no match";
-		}
-		case "grep_vault": {
-			const m = /^(\d+) matching lines? in (\d+) note/.exec(result);
-			return m ? `${m[1]} lines in ${m[2]} notes` : "no match";
-		}
-		case "list_sections": {
-			const m = /^(\d+) sections?/.exec(result);
-			return m ? `${m[1]} section${m[1] === "1" ? "" : "s"}` : "none";
-		}
-		default:
-			return result.length > 70 ? result.slice(0, 70) + "…" : result;
-	}
+/** Draws a tool's icon; when this Obsidian is older than the icon, the one every version has. */
+function setToolIcon(el: HTMLElement, tool: string): void {
+	const { icon, fallback } = iconFor(tool);
+	setIcon(el, icon);
+	if (!el.firstChild) setIcon(el, fallback);
 }
