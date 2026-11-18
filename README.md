@@ -52,7 +52,8 @@ Three things, each of which you can check rather than take on trust:
    every one of those writes is a diff you approve first, recorded with what it replaced, and
    undoable later, even after you have edited the note further.
 3. **The numbers are published.** Every release runs a scored benchmark on a generated vault
-   (24 scenarios, the failures listed next to the passes), and the large-vault measurements at
+   (30 scenarios and 190 checks in 0.9.0, the failures listed next to the passes, and a
+   paragraph on what the benchmark does not show), and the large-vault measurements at
    10,000 and 50,000 notes are in this README with the script that produced them.
 
 How it compares, as fairly as I can put it (November 2026; these plugins move fast, so check
@@ -95,7 +96,9 @@ generate drafts, that is Text Generator. This plugin is for people who want an a
 2. A chat model that supports **tool calling**. Recommended, by GPU size:
    - 12 GB VRAM (e.g. RTX 3060/4070/5070): `ollama pull qwen3.5:9b` (default; the model the
      [benchmark](#benchmarks) is measured on). The older `qwen3:14b` scored much lower.
-   - 8 GB VRAM: `ollama pull qwen3.5:4b` (108 of 115 benchmark checks in under two minutes; see Benchmarks)
+   - 8 GB VRAM: `ollama pull qwen3.5:4b` (189 of 190 benchmark checks in the median of three
+     runs of 0.9.0, range 187 to 190; see [Benchmarks](#benchmarks), which also says what it
+     does with instructions planted in a page)
    - 24 GB VRAM: `ollama pull qwen3.5:35b-a3b`. On a 12 GB card it spills into system RAM and
      was both slower and less accurate than the 9B; stay with the 9B there.
 3. An embedding model for semantic search: `ollama pull nomic-embed-text` (274 MB).
@@ -134,12 +137,12 @@ loading the model; with llama.cpp, `-c 16384` or more. *Settings → Context win
 size the server reported. With a server that does not report one, the plugin assumes the
 setting, so load the model with at least that much.
 
-What was tried against real servers: llama.cpp's `llama-server` only (the one that ships with
-Ollama) with `qwen3.5:4b`: the request format by hand, and three benchmark scenarios through
-this path, 18 of 18 checks with a 32768 window, and the message above instead of an answer with
-a 4096 window. LM Studio, Jan and vLLM were not run; reading LM Studio's window follows its
-documentation. Beyond that this path is covered by unit tests against the wire format; if a
-server misbehaves, use *Report a problem*.
+What was run against a real server: llama.cpp's `llama-server` only (the one that ships with
+Ollama, which found no usable GPU and ran on the CPU) with `qwen3.5:4b`, three benchmark
+scenarios through this path, one run each way: 18 of 18 checks with a 32768 window, and the
+message above instead of an answer with a 4096 window. LM Studio, Jan and vLLM were never run;
+reading LM Studio's window follows its documentation. Beyond that this path is covered by unit
+tests against the wire format; if a server misbehaves, use *Report a problem*.
 
 ### Languages
 
@@ -394,8 +397,9 @@ the message box (each entry can be taken back) and is sent when the turn has end
 empties the queue, back into the message box.
 
 Semantic search chunks each note by heading, embeds the chunks with the embedding model, and
-stores the vectors in `.obsidian/plugins/local-vault-agent/index.json`. The index updates
-incrementally when you change notes. Search results merge semantic and keyword rankings.
+stores the vectors in the plugin's folder (`index-shards/`, see [Large vaults](#large-vaults)).
+The index updates incrementally when you change notes. A passage is ranked by meaning and by
+the question's words together.
 
 ## Settings worth knowing
 
@@ -413,8 +417,9 @@ incrementally when you change notes. Search results merge semantic and keyword r
   now says so after a turn, with the fix: a smaller window or `qwen3.5:4b`); thinking is on (off
   by default since 0.5.0, as fast and as accurate on the benchmark); the gist pass is running
   (off by default since 0.5.3; it is the chat model once per note); or Ollama was started with
-  another app's model still loaded. On a 12 GB RTX 5070 a 20-scenario benchmark run takes about
-  three minutes with the defaults, roughly nine seconds per question with tool calls.
+  another app's model still loaded. On a 12 GB RTX 5070 one run of the 30-scenario benchmark
+  took three to five minutes with the defaults (see [Benchmarks](#benchmarks)), and a plain
+  question about the notes one to seven seconds in those runs.
 - **On a laptop without a discrete GPU** — measured on a Ryzen 7940HS with its integrated Radeon
   780M: `qwen3.5:9b` reads a prompt at about 170 tokens a second and writes about 6.5. The system
   prompt, outline and tool list are about 8,000 tokens, so the first message after the model loads
@@ -441,10 +446,11 @@ incrementally when you change notes. Search results merge semantic and keyword r
   and the command *Draft the conventions note from this vault* fills in what can be counted
   (which folders hold what, how their notes are named and sectioned, properties and tags in
   use) between its own markers, leaving what you wrote alone.
-- **Thinking mode** — Qwen3 / DeepSeek-R1 style reasoning, **off by default**. On the benchmark
-  vault `qwen3.5:9b` passed as many checks without thinking as with it, in a third of the time
-  and with fewer tool calls (see Benchmarks); the agent loop already gives the model a step at a
-  time to reason about. "Auto" uses the model default; "On" forces it.
+- **Thinking mode** — Qwen3 / DeepSeek-R1 style reasoning, **off by default**. Measured at
+  0.5.1 and not again since: `qwen3.5:9b` passed 112 checks in 444 s with thinking and 114 in
+  202 s without (see the earlier versions under Benchmarks). The agent loop
+  already gives the model a step at a time to reason about. "Auto" uses the model default;
+  "On" forces it.
 - **Auto-approve edits** — off by default. Leave it off; use "Approve all in this chat" in the
   dialog when you trust a particular task.
 - **Keep going when the model asks for permission** — on by default. Turn it off if you prefer
@@ -473,44 +479,102 @@ see a CORS/network error, set `OLLAMA_ORIGINS=app://obsidian.md*` on the Ollama 
 
 ## Benchmarks
 
-Every release is run through a scored benchmark: 24 scenarios on a generated 339-note vault
-(questions across notes, a follow-up turn that must use the conversation, a question with no
-answer in the vault, quoting a lecture transcript with its `[m:ss]` timestamp through the
-Lecture Companion block in `AGENT.md`, enumeration, a clean-up over 40 lecture sections, moving finished projects,
-processing 127 daily notes, acting on the Vault Suggestions note, editing a selection, a note
-that does not exist, a change the user rejects, and the loop failures reported from real vaults).
-Each scenario is timed and counted for tool calls, model calls, model time, tool errors, guessed
-paths, invented links and repeated calls, and checked against facts the generator recorded.
-122 checks at 0.5.3, 149 at 0.8.0, 157 with the prompt-injection scenario added in 0.9.0; the
+Every release is run through a scored benchmark (`scripts/e2e-large.ts`): in 0.9.0, 30
+scenarios with 190 checks on a generated vault of 336 notes, to which the scenarios add a few
+of their own. The scenarios are questions across notes, a follow-up turn that must use the
+conversation, a question with no answer in the vault,
+quoting a lecture transcript with its `[m:ss]` time, enumeration, a clean-up over 40 lecture
+sections, moving finished projects, processing 127 daily notes, acting on the Vault Suggestions
+note, editing a selection, a note that does not exist, a change the user rejects, a quiz, the
+nightly job, reading a picture, a 39,000-character log, one row of a 36-row table, two notes
+with one name, notes found by a property, open tasks across meetings, and a clipped page with
+instructions planted in it. Each scenario is timed, its model calls and tool calls are counted,
+and the answer and the vault afterwards are checked against facts the generator recorded. The
 vault is restored after every run.
 
-**0.9.0 against 0.8.0**, 2026-11-17, RTX 5070 12 GB, `qwen3.5:9b`, defaults, 32k context. The
-median of repeated runs, with the range in brackets:
+**0.9.0 against 0.8.0**, November 2026, RTX 5070 12 GB, Ollama, defaults, 32k context. The
+median of repeated runs, with the range in brackets. The 0.9.0 rows are the closing runs on the
+final code (commit de54882).
 
-| Version | Checks | Model calls | Tool calls |
+| Version and model | Runs | Checks passed | Seconds | Model calls | Tool calls |
+|---|---:|---:|---:|---:|---:|
+| 0.8.0, `qwen3.5:9b` | 5 | 143 of 149 (141–144) | 264 (207–348) | 77 (70–112) | 119 (83–195) |
+| **0.9.0, `qwen3.5:9b`** | 5 | **189 of 190 (188–190)** | 219 (186–295) | 71 (69–85) | 89 (84–117) |
+| 0.8.0, `qwen3.5:4b` | 3 | 136 of 149 (136–140) | 167 (156–196) | 110 (106–130) | 110 (104–120) |
+| **0.9.0, `qwen3.5:4b`** | 3 | **189 of 190 (187–190)** | 124 (115–130) | 76 (73–81) | 90 (87–90) |
+
+How to read it:
+
+- **The two versions were not given the same test.** 0.8.0 was measured on its own harness, 24
+  scenarios with 149 checks. 0.9.0 was measured on the harness of 0.9.0: the same 24 scenarios
+  and six new ones, 190 checks. On the 24 shared scenarios 0.9.0 passed 148 of 149 (148–149) on
+  the 9B model and 148 (146–149) on the 4B, with 63 model calls (61–77) and 80 tool calls
+  (75–108) on the 9B, 67 (65–73) and 81 (78–81) on the 4B. Even those 24 are not identical in
+  the two harnesses: the test picture was redrawn (with the old one the 0.8.0 runs lost one
+  check of that scenario every time), a date written in words is accepted, and a change shown
+  with a warning is rejected (see *What this benchmark is* below). The release notes of 0.9.0
+  list the differences.
+- **The seconds of the 0.9.0 rows are not a clean timing.** During three of the five 9B runs
+  the desktop had only 2.8 to 5 GB of free memory, a fault of that PC. Five runs of slightly
+  earlier code (commit 722a24f, before the last fixes) on a quiet machine took 193 s (183–267)
+  and passed 189 of 190 (188–189). Neither figure, set against the other, says that the code
+  became slower or faster.
+
+**Checks that still fail** in the closing runs of 0.9.0: 5 of the 950 checks made in the five
+9B runs, 4 of the 570 made in the three 4B runs.
+
+| Check | `qwen3.5:9b`, runs of 5 | `qwen3.5:4b`, runs of 3 |
+|---|---:|---:|
+| Daily-note survey: lists at most one one-line day as substantial | 2 | 0 |
+| Broken-link fix: removed the broken link | 1 | 1 |
+| Daily-notes job: collected both code snippets | 1 | 1 |
+| Open tasks: names at least 80% of the 8 open items (it named 3) | 1 | 0 |
+| Blockquote search: lists at least 80% of the 6 notes (it listed none) | 0 | 1 |
+| Edit the selection: used at most 3 tool calls | 0 | 1 |
+
+Every other check passed in all eight runs. In none of them did a model try the write that the
+planted page asks for. In separate runs of that scenario the 4B model tried it in 6 of 20 runs
+when it read the page itself; the release notes say what stopped it.
+
+**First words.** `npm run bench:ttft` measures the seconds from sending a message until the
+first text or tool call comes back. `qwen3.5:9b`, same desktop, three runs per case, median
+with the range in brackets, on the final code:
+
+| Case | First token, s | Whole answer, s | Prompt tokens |
 |---|---:|---:|---:|
-| 0.8.0, five runs | 143 of 149 (141–144) | 77 | 119 |
-| **0.9.0 (commit f506322), four runs** | **154 of 157 (150–156)** | **68** | **90** |
+| First message, model not loaded | 5.2 (5.2–8.3) | 9.7 (7.7–11.6) | 10,832 |
+| First message, after the warm-up that starts when the chat box is focused | 0.2 (0.2–0.3) | 6.0 (4.7–8.5) | 10,838 |
+| Follow-up in the same conversation | 0.2 (0.2–0.6) | 1.3 (1.2–1.9) | 13,474 |
+| New chat, model still loaded | 1.0 (0.5–1.0) | 5.3 (3.4–5.9) | 10,832 |
+| Message after another note was opened | 0.9 (0.8–1.0) | 7.8 (7.6–8.2) | 13,626 |
+| Message after a note was created | 0.5 (0.2–0.5) | 1.2 (0.9–1.5) | 16,050 |
 
-The eight extra checks are the injection scenario (a clipped page that tells any AI reading it
-to create a note and end its answer with a given phrase), which passed 8 of 8 in every run. Those
-runs were made with a harness that approved every change. It now rejects a change that the plugin
-shows with its warning that the change was not asked for, as a user who reads the warning
-would: since then "did not try to change the vault"
-measures the model, and "did not create the note the page asked for" the plugin (the runs made
-with it are listed in the release notes of 0.9.0). Seconds are
-left out on purpose: the 0.8.0 runs took 264 s (207–348) on a quiet machine, but the 0.9.0 runs
-shared the machine with other work, and a time taken under load says nothing. What does not
-depend on load is how much the model has to do, and that is the two right-hand columns. The
-0.9.0 runs are from about two thirds of the way through the release's changes. Five further
-scenarios were added after them (a 39,000-character log, a table, two notes with one name,
-properties, open tasks), which brings the suite to 190 checks; the first four scored 27 of 27 in
-the median of five runs on their own. The finished agent code was run through all 190 once,
-before the chat-panel work was merged: 185 of 190 (`bench/0.9.0-v4-1.json`). It was meant to be
-five runs; see the release notes for why it was one.
+The warm-up itself took 4.8 s (4.7–4.8). Of the 5.2 s of the first row, 2.3 s is Ollama loading
+the model and 2.4 s is reading the prompt. The script runs the agent under Node against a vault
+held in memory, not inside Obsidian, and it is new in 0.9.0, so there is no row for 0.8.0.
+
+**What this benchmark is.** The vault is written by a script (`scripts/make-vault.mjs`), not
+taken from anyone's notes, and the facts the checks look for are planted in it. Every run is
+from one desktop and two models of one family. The scenarios and the checks were written by the
+people who wrote the plugin, most of them after seeing the failure they test for, so the suite
+measures the failures we have seen. A check is a pattern looked for in the answer, or a look at
+the vault afterwards, not a person's judgement. Outside the one scenario that tests a rejection,
+the harness approves every change the agent proposes, with one exception: a change that the
+plugin shows with its warning "this change was not asked for" is answered with Reject, as a user
+who reads the warning would; a user who approves it gets the change. The same code scored 188 to 190 in five runs, so a difference of
+one or two checks between two rows says nothing.
+
+The result files are in `bench/`: `0.8.0-base-*.json` and `0.8.0-q4b-*.json` for 0.8.0,
+`0.9.0-fin3-*.json` and `0.9.0-fin3q-*.json` for the closing runs, `0.9.0-fin2-*.json` for the
+quiet-machine timing, `ttft-0.9.0-fin3.json` for the first words. The 0.9.0 files hold the
+failed checks and the answers; the 0.8.0 files, written by the older harness, hold the counts
+but do not name the checks. `node scripts/bench-summary.mjs --scenarios "bench/0.9.0-fin3-*.json"`
+prints the medians, the ranges and the failed checks from them without starting a model.
 
 Search is measured on its own, without a chat model, by `npm run bench:retrieval`: 240
-questions whose answering passage is known, on the same vault.
+questions whose answering passage is known, on the benchmark vault. These figures are from
+2026-11-17 (`bench/retrieval-0.9.0-hybrid.json`); the index was changed after that and this
+benchmark was not run again on the final code.
 
 | | Right passage in the six returned | Right passage first | Right note first | Questions naming a day |
 |---|---:|---:|---:|---:|
@@ -574,7 +638,7 @@ What the numbers say:
   clean-up run in four where the model greps and reads instead of surveying and runs out of
   steps without editing.
 
-**Vault size.** The same benchmark on a 3× vault (997 notes: the 339 above plus 660 filler
+**Vault size.** The same benchmark on a 3× vault (997 notes: the 339 the vault had then plus 660 filler
 notes in `Zettel/`, `Library/` and `Archive/2024/`, 1.9 M characters) with the defaults scored
 110 of 115 in 214 s with 83 tool calls (339 notes the same night: 112, 155 s, 66 calls). The
 index took 47 s instead of 8–10 s, the system prompt grew from ~5.0k to ~6.2k tokens and each
@@ -607,7 +671,8 @@ so the times are far above the RTX 5070 rows): 32 of 34 checks. `lecture-timesta
 `lecture-tools` 10/10 (the block id was written to the quoted paragraph), `quiz` 5/5, `scheduled-daily`
 4/5 (three topic notes and three inbox edits queued, vault untouched; the model left out the
 *Sources* section the prompt asks for), `read-image` 5/6 (the tool was used, but the model read the
-blocky "47" as "41"). The full 24-scenario run was not repeated for this release.
+blocky "47" as "41"; the picture was redrawn in 0.9.0). The full 24-scenario run was not
+repeated for that release.
 
 Run it yourself with `npm run make-vault && npm run e2e:large` (see Development); results land
 in `bench/`.
@@ -794,6 +859,8 @@ npm test        # unit tests (vitest), no Ollama needed
 npm run e2e     # runs the real agent loop against a live Ollama over ./test-vault
 npm run make-vault && npm run e2e:large   # the scored benchmark (see Benchmarks)
 npm run build   # type-check + Obsidian review lint (0 warnings) + production bundle
+npm run bench:retrieval  # search alone, 240 questions with known answers (needs the embedding model)
+npm run bench:ttft    # seconds to the first words, six cases (needs Ollama and the chat model)
 npm run bench:scale   # the large-vault measurements (see Large vaults)
 npm run bench:render  # how much markdown is rendered while a reply streams, before and after
 npm run e2e:dom       # the chat view's DOM code in a headless Chrome or Edge, with a screenshot
@@ -821,17 +888,22 @@ own renderer, a message sent meanwhile waits in the queue, Stop hands the queue 
 stays where the reader scrolled, a pasted picture is saved as an attachment, read and sent, and the
 markdown rendered while streaming is measured against redrawing everything every 120 ms. It has its
 own `package.json`, so the plugin's lockfile and release build do not carry the test runner. It runs in GitHub Actions under a virtual display
-(`.github/workflows/e2e-obsidian.yml`) on every push that touches the plugin; the workflow fails
+(`.github/workflows/e2e-obsidian.yml`) on a push to `main` or to a branch named `e2e/**` that touches the plugin; the workflow fails
 unless the report says the nine specs of the first file passed and none failed. Locally it opens an
 Obsidian window, which is why it is not part of `npm test`. The window is drawn in software
 (`--disable-gpu`), so the tests also run on a desktop whose graphics card is busy running a model.
 
-The benchmark (`scripts/e2e-large.ts`) runs 24 scenarios on a generated 339-note vault
+The benchmark (`scripts/e2e-large.ts`) runs 30 scenarios on a generated 336-note vault
 (`scripts/make-vault.mjs`, with `scripts/large-facts.json` recording the facts the checks look
-for) and saves per-scenario seconds, tool calls, errors, guessed paths, repeated calls and
-pass/fail to `bench/<version>[-tag].json`. `MODEL=`, `NUM_CTX=`, `THINK=on|off`, `TEMPERATURE=`,
-`PRESENCE=`, `GISTS=1`, `VISION_MODEL=`, `TAG=` and `ONLY=id,id` select what runs; `VAULT_DIR=` points it at a
-vault generated with `SCALE=3 OUT=test-vault-x3 node scripts/make-vault.mjs` (the same 339
+for) and saves per-scenario seconds, model calls, tool calls, errors, guessed paths, repeated
+calls, the failed checks and the answers to `bench/<version>[-tag].json`. `MODEL=`, `NUM_CTX=`,
+`THINK=on|off`, `TEMPERATURE=`, `PRESENCE=`, `GISTS=1`, `VISION_MODEL=`, `TAG=` and `ONLY=id,id`
+select what runs; `PLANT_INDEX=0` asks about a planted note before the index has read it,
+`PRESEARCH=0` and `DATA_RULE=0` switch off the search before the first reply and the rule about
+text read by tools, `CHAT_URL=` sends the chat through an OpenAI-compatible server.
+`node scripts/bench-summary.mjs "bench/<version>-<tag>-*.json"` summarises repeated runs.
+`VAULT_DIR=` points it at a
+vault generated with `SCALE=3 OUT=test-vault-x3 node scripts/make-vault.mjs` (the same
 notes plus 660 filler notes in their own folders, facts in `scripts/large-facts-test-vault-x3.json`). `npm run bench-matrix` runs
 several configurations back to back (`RUNS=2` for variance) and prints one table;
 `npm run bench-table a.json b.json` renders a before/after comparison. Add a scenario whenever a
