@@ -234,7 +234,7 @@ async function streaming(): Promise<void> {
 	whole.insertAdjacentHTML("beforeend", standInRender(final).map((n) => n.html).join(""));
 	check("the bubble is exactly one render of the finished text", bubble()!.innerHTML === whole.innerHTML, { got: bubble()!.innerHTML.length, want: whole.innerHTML.length });
 	check("the sources line the agent added is there", /Sources:/.test(bubble()!.lastElementChild?.textContent ?? ""));
-	check("the finished reply is announced once", announcements === 1 && announcer.textContent === bubble()!.textContent, { announcements });
+	check("the finished reply is announced once, one block per line", announcements === 1 && announcer.textContent === bubble()!.innerText && /\S\n+\S/.test(announcer.textContent ?? ""), { announcements });
 	numbers["streaming: renderer calls"] = renderLog.calls;
 	numbers["streaming: characters handed to the renderer"] = renderLog.chars;
 	numbers["streaming: characters of the reply"] = final.length;

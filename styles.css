@@ -607,6 +607,16 @@
 	margin-top: var(--size-4-1);
 }
 
+/* Obsidian turns text selection off in its panels. A chat is read and copied from: its text can be selected */
+.lva-bubble,
+.lva-thinking-body,
+.lva-tool-pre,
+.lva-note,
+.lva-stats {
+	-webkit-user-select: text;
+	user-select: text;
+}
+
 /* Pictures pasted or dropped into the message box, waiting for the message */
 .lva-pending {
 	display: flex;

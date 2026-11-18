@@ -118,11 +118,21 @@ describe("Streaming and progress in the chat", function () {
 		);
 		const during = await browser.execute(() => {
 			const bubble = document.querySelector(".lva-assistant .lva-bubble.lva-streaming") as HTMLElement;
-			(window as unknown as { lvaFirstBlock: Element | null }).lvaFirstBlock = bubble.firstElementChild;
-			return { live: bubble.getAttribute("aria-live"), first: bubble.firstElementChild?.textContent ?? "", running: document.querySelector(".lva-send.lva-stop") !== null };
+			// Every block but the last is finished; the last is the one being written.
+			const settled = Array.from(bubble.children).slice(0, -1);
+			// The reader selects the second block while the reply is still arriving.
+			const range = document.createRange();
+			range.selectNodeContents(settled[1]);
+			const selection = window.getSelection()!;
+			selection.removeAllRanges();
+			selection.addRange(range);
+			Object.assign(window as unknown as Record<string, unknown>, { lvaSettled: settled, lvaSelected: selection.toString() });
+			return { live: bubble.getAttribute("aria-live"), first: settled[0].textContent ?? "", settled: settled.length, selected: selection.toString(), running: document.querySelector(".lva-send.lva-stop") !== null };
 		});
 		expect(during.live).toBe("off");
 		expect(during.first).toContain("Hall sensors");
+		expect(during.settled).toBeGreaterThanOrEqual(2);
+		expect(during.selected).toContain("Hall sensors measure a magnetic field");
 		expect(during.running).toBe(true);
 		const status = (await state()).status;
 		expect(status).toMatch(/^(Writing…|Thinking…|Reading|Working…|Loading)/);
@@ -136,25 +146,32 @@ describe("Streaming and progress in the chat", function () {
 			const bubble = bubbles[bubbles.length - 1] as HTMLElement;
 			const whole = document.createElement("div");
 			await obsidian.MarkdownRenderer.render(app, markdown, whole, "", view);
-			const shape = (el: Element) => Array.from(el.children).map((c) => c.tagName);
+			// Block by block: Obsidian puts a line break between the blocks of one render, the chat does not keep it.
+			const blocks = (el: Element) => Array.from(el.children).map((c) => `${c.tagName}: ${c.textContent ?? ""}`);
+			const w = window as unknown as { lvaSettled: Element[]; lvaSelected: string };
 			return {
 				streaming: bubble.classList.contains("lva-streaming"),
-				sameFirstBlock: bubble.firstElementChild === (window as unknown as { lvaFirstBlock: Element | null }).lvaFirstBlock,
-				shape: shape(bubble),
-				wantShape: shape(whole),
-				text: bubble.textContent ?? "",
-				wantText: whole.textContent ?? "",
+				blocks: blocks(bubble),
+				wantBlocks: blocks(whole),
+				strayText: Array.from(bubble.childNodes).filter((n) => n.nodeType === 3 && (n.textContent ?? "").trim() !== "").length,
+				settled: w.lvaSettled.length,
+				settledKept: w.lvaSettled.filter((n) => n.parentElement === bubble).length,
+				selectionKept: window.getSelection()!.toString() === w.lvaSelected,
 				announced: document.querySelector(".lva-sr-only")?.textContent ?? "",
 			};
 		}, ANSWER);
 		expect(result.streaming).toBe(false);
-		expect(result.shape).toEqual(result.wantShape);
-		expect(result.text).toBe(result.wantText);
-		// The heading was drawn once and never replaced (a selection in it would have survived).
-		expect(result.sameFirstBlock).toBe(true);
-		// A screen reader is given the finished reply.
+		expect(result.blocks).toEqual(result.wantBlocks);
+		expect(result.strayText).toBe(0);
+		// The blocks that were finished while the reply streamed were drawn once and never replaced,
+		// not even when the finished reply was drawn; so the reader's selection is still there.
+		expect(result.settledKept).toBe(result.settled);
+		expect(result.selectionKept).toBe(true);
+		// A screen reader is given the finished reply, one block per line.
 		expect(result.announced).toContain("Hall sensors measure a magnetic field");
 		expect(result.announced).toContain("The last paragraph ends the reply.");
+		expect(result.announced).not.toContain("moving part.The three");
+		await browser.execute(() => window.getSelection()!.removeAllRanges());
 		// How the turn went, from the server's own counts.
 		const after = await state();
 		expect(after.stats.length).toBe(1);

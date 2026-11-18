@@ -1458,7 +1458,11 @@ class TurnRenderer {
 				// Rendered off screen and moved in afterwards, so the bubble never shows a half-built block.
 				const holder = createDiv();
 				await view.renderMarkdown(markdown, holder);
-				return Array.from(holder.childNodes);
+				// Obsidian puts a line break between the blocks of one render. Blocks rendered one by one
+				// have none between them, so it is dropped: otherwise the finished reply would differ from
+				// what is on screen at the second node, and everything after the first block would be
+				// drawn again (taking a selection with it).
+				return Array.from(holder.childNodes).filter((n) => n.nodeType !== Node.TEXT_NODE || (n.textContent ?? "").trim() !== "");
 			},
 			append: (nodes) => contentEl.append(...nodes),
 			remove: (nodes) => {
@@ -1543,7 +1547,8 @@ class TurnRenderer {
 			const text = this.content;
 			await this.enqueue(() => this.stream.finish(text));
 			addAnswerActions(this.view, this.root, this.content);
-			this.view.announce(this.contentEl.textContent ?? "");
+			// innerText, not textContent: one block per line, as it is read on screen.
+			this.view.announce(this.contentEl.innerText);
 		} else {
 			// A pure tool-call turn: nothing to show in the bubble.
 			this.contentEl.remove();

@@ -121,7 +121,8 @@ export const MarkdownRenderer = {
 		renderLog.chars += markdown.length;
 		// Obsidian's renderer is asynchronous too; a render that takes a moment is what makes overlapping renders possible.
 		await new Promise((r) => setTimeout(r, 2));
-		el.insertAdjacentHTML("beforeend", standInRender(markdown).map((n) => n.html).join(""));
+		// With a line break between the blocks, as Obsidian's renderer leaves one.
+		el.insertAdjacentHTML("beforeend", standInRender(markdown).map((n) => n.html).join("\n"));
 	},
 };
 
