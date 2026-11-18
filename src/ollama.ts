@@ -1,4 +1,4 @@
-import { ThinkSplitter, ToolCallAccumulator, embeddingVectors, fromOpenAIChoice, modelIds, openAIOptions, sse, toOpenAIMessages, type Provider } from "./openai";
+import { ThinkSplitter, ToolCallAccumulator, embeddingVectors, modelContext, fromOpenAIChoice, modelIds, openAIOptions, sse, toOpenAIMessages, type Provider } from "./openai";
 import { INVALID_ARGUMENTS, type ChatMessage, type OllamaToolSpec, type ToolCall } from "./types";
 
 export interface ModelInfo {
@@ -116,6 +116,31 @@ export class OllamaClient {
 	private headers(): Record<string, string> {
 		const key = this.getProvider().apiKey?.trim();
 		return key ? { Authorization: `Bearer ${key}` } : {};
+	}
+
+	/**
+	 * The context window the server has `model` loaded with, when it can be asked: an
+	 * OpenAI-compatible server is not told a context size per request as Ollama is, so the size it
+	 * was started with is the real one, whatever the plugin's setting says. Undefined when the
+	 * server does not say, or for Ollama (which takes the plugin's setting).
+	 */
+	async serverContext(model: string): Promise<number | undefined> {
+		if (this.provider !== "openai") return undefined;
+		try {
+			const listed = modelContext(await this.openAIModels(), model);
+			if (listed !== undefined) return listed;
+		} catch {
+			return undefined;
+		}
+		// LM Studio keeps the loaded size in its own list, beside the OpenAI-style one.
+		const root = this.baseUrl.replace(/\/v1$/i, "");
+		if (root === this.baseUrl || !this.plainRequest) return undefined;
+		try {
+			const r = await this.plainRequest(`${root}/api/v0/models`, "GET", undefined, this.headers());
+			return r.status < 400 ? modelContext(parseJsonBody(r.text), model) : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	async version(): Promise<string> {

@@ -189,6 +189,26 @@ export class ThinkSplitter {
 	}
 }
 
+/**
+ * The context window an OpenAI-compatible server has `model` loaded with, when its model list
+ * says: llama.cpp's server reports it as `meta.n_ctx` (checked against a real server), LM Studio's
+ * own list (`/api/v0/models`) as `loaded_context_length` (from its documentation, not tried).
+ * Undefined when the server does not say, which is most of them.
+ */
+export function modelContext(json: Record<string, unknown>, model: string): number | undefined {
+	const rows = Array.isArray(json.data) ? (json.data as Record<string, unknown>[]) : [];
+	const wanted = model.trim().toLowerCase();
+	const named = (r: Record<string, unknown>) => {
+		const names: unknown[] = Array.isArray(r.aliases) ? [r.id, ...(r.aliases as unknown[])] : [r.id];
+		return names.some((x) => typeof x === "string" && x.toLowerCase() === wanted);
+	};
+	const row = rows.find(named) ?? (rows.length === 1 ? rows[0] : undefined);
+	if (!row) return undefined;
+	const meta = (row.meta ?? {}) as Record<string, unknown>;
+	const n = [meta.n_ctx, row.loaded_context_length].find((v) => typeof v === "number" && v > 0);
+	return typeof n === "number" ? n : undefined;
+}
+
 /** `/v1/models` → model ids. */
 export function modelIds(json: Record<string, unknown>): string[] {
 	return Array.isArray(json.data) ? (json.data as { id?: unknown }[]).map((m) => (typeof m.id === "string" ? m.id : "")).filter(Boolean) : [];
