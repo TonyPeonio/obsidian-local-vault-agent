@@ -1,0 +1,109 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T20:08:05.506Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "tr9-5",
+  "only": "table-row,read-image,conventions",
+  "preSearch": true,
+  "commit": "c007661+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 9,
+    "calls": 4,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 6,
+    "modelSeconds": 8,
+    "promptSeconds": 5,
+    "passed": 18,
+    "checks": 19,
+    "failures": 14
+  },
+  "failed": [
+    "table-row: gives 20 N·cm"
+  ],
+  "scenarios": [
+    {
+      "id": "conventions",
+      "ms": 4367,
+      "calls": 2,
+      "prompt": 11156,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 3,
+      "promptMs": 2479,
+      "evalMs": 1651,
+      "pass": 6,
+      "fail": 0,
+      "seconds": 4.37,
+      "completionTokens": 158,
+      "readChars": 33819,
+      "loadMs": 18,
+      "failed": [],
+      "tools": [
+        "read_note",
+        "edit_note"
+      ],
+      "answer": "Done. I added \"Tested the vault agent\" to the **Done** section of Daily/2026-10-30.md."
+    },
+    {
+      "id": "table-row",
+      "ms": 3158,
+      "calls": 1,
+      "prompt": 12341,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 2595,
+      "evalMs": 488,
+      "pass": 6,
+      "fail": 1,
+      "seconds": 3.16,
+      "completionTokens": 46,
+      "readChars": 14242,
+      "loadMs": 7,
+      "failed": [
+        "gives 20 N·cm"
+      ],
+      "tools": [
+        "search_passages"
+      ],
+      "answer": "The motor used on the gantry Y axis is **M-122**, which has:\n- **Rated current:** 1.50 A\n- **Holding torque:** 16 N·cm\n\nSources: [[Projects/Motor comparison]], [[Daily/2026-10-14]]"
+    },
+    {
+      "id": "read-image",
+      "ms": 1590,
+      "calls": 1,
+      "prompt": 11244,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 2,
+      "promptMs": 136,
+      "evalMs": 603,
+      "pass": 6,
+      "fail": 0,
+      "seconds": 1.59,
+      "completionTokens": 58,
+      "readChars": 54794,
+      "loadMs": 14,
+      "failed": [],
+      "tools": [
+        "read_image"
+      ],
+      "answer": "The number written on the whiteboard is **47**.\n\nSources: [[Inbox/Whiteboard photo]]"
+    }
+  ]
+}

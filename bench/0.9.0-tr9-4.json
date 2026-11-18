@@ -1,0 +1,109 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T20:07:55.695Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "tr9-4",
+  "only": "table-row,read-image,conventions",
+  "preSearch": true,
+  "commit": "c007661+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 10,
+    "calls": 4,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 6,
+    "modelSeconds": 9,
+    "promptSeconds": 5,
+    "passed": 18,
+    "checks": 19,
+    "failures": 14
+  },
+  "failed": [
+    "table-row: gives 20 N·cm"
+  ],
+  "scenarios": [
+    {
+      "id": "conventions",
+      "ms": 5629,
+      "calls": 2,
+      "prompt": 11277,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 3,
+      "promptMs": 2471,
+      "evalMs": 2934,
+      "pass": 6,
+      "fail": 0,
+      "seconds": 5.63,
+      "completionTokens": 278,
+      "readChars": 33819,
+      "loadMs": 19,
+      "failed": [],
+      "tools": [
+        "read_note",
+        "edit_note"
+      ],
+      "answer": "Done. I've added 'Tested the vault agent' to the Done section of Daily/2026-10-30.md."
+    },
+    {
+      "id": "table-row",
+      "ms": 3185,
+      "calls": 1,
+      "prompt": 12341,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 2596,
+      "evalMs": 516,
+      "pass": 6,
+      "fail": 1,
+      "seconds": 3.19,
+      "completionTokens": 49,
+      "readChars": 14242,
+      "loadMs": 6,
+      "failed": [
+        "gives 20 N·cm"
+      ],
+      "tools": [
+        "search_passages"
+      ],
+      "answer": "The motor used on the gantry Y axis is **M-122** (NEMA 17).\n\nIts rated current is **1.50 A** and its holding torque is **16 N·cm**.\n\nSources: [[Projects/Motor comparison]], [[Daily/2026-10-14]]"
+    },
+    {
+      "id": "read-image",
+      "ms": 1545,
+      "calls": 1,
+      "prompt": 11229,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 2,
+      "promptMs": 131,
+      "evalMs": 431,
+      "pass": 6,
+      "fail": 0,
+      "seconds": 1.55,
+      "completionTokens": 42,
+      "readChars": 54730,
+      "loadMs": 13,
+      "failed": [],
+      "tools": [
+        "read_image"
+      ],
+      "answer": "The number written on the whiteboard is **47**.\n\nSources: [[Inbox/Whiteboard photo]]"
+    }
+  ]
+}

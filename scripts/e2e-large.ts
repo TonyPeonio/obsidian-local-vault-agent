@@ -249,6 +249,8 @@ async function main() {
 	const extraTools = (): ToolDefinition[] => [...(lectureSource ? LECTURE_TOOLS : []), ...(visionOn ? [readImage] : [])];
 	/** What the approval dialog answers; the rejection scenario flips it to "reject". */
 	let approveMode: "approve" | "reject" = "approve";
+	/** Whether the prompt of the scenario under way asks for a change (see `ScenarioOptions.asksForChange`). */
+	let changeAsked = false;
 	const agent = new Agent({
 		client: chat,
 		vault,
@@ -263,10 +265,14 @@ async function main() {
 			// changes are approved automatically here. The harness answers that dialog as a user who
 			// reads the warning would: Reject. So a write the model makes on a planted instruction is
 			// counted as the model's attempt and, as in the product, does not happen.
-			if (req.caution) {
+			// The one exception is a user who did ask: when the scenario's prompt requests a change
+			// and the plugin still took it for a question ("Find every code block … and collect them
+			// into a new note"), the warning is a false alarm, the user approves, and the log says so.
+			if (req.caution && !changeAsked) {
 				console.log(`  [approval] ${req.tool} ${req.path}: shown with the warning that it was not asked for; rejected`);
 				return "reject";
 			}
+			if (req.caution) console.log(`  [approval] ${req.tool} ${req.path}: shown with the warning that it was not asked for, although the prompt asked for it (a false alarm of the plugin); answered as usual`);
 			return approveMode;
 		},
 		getConfig: () => cfg,
@@ -320,6 +326,8 @@ async function main() {
 		approve?: "approve" | "reject";
 		/** The scenario expects the agent to end by asking the user something. */
 		expectQuestion?: boolean;
+		/** The prompt asks for a change to the vault: a dialog that warns "this change was not asked for" is then answered like any other (see `approve`). Without it such a dialog is rejected. */
+		asksForChange?: boolean;
 	}
 	async function scenario(id: string, title: string, prompt: string, checks: (answer: string, tools: string[]) => [string, boolean][], opts: ScenarioOptions = {}) {
 		if (ONLY && !ONLY.split(",").includes(id)) {
@@ -341,6 +349,7 @@ async function main() {
 		let evalMs = 0;
 		if (opts.attach) message = (await attachMentions(prompt, vault, 24000)).message;
 		approveMode = opts.approve ?? "approve";
+		changeAsked = opts.asksForChange ?? false;
 		// The benchmark auto-approves writes; a rejection scenario needs the dialog path instead.
 		cfg.autoApprove = approveMode !== "reject";
 		try {
@@ -478,7 +487,7 @@ async function main() {
 		];
 	});
 
-	await scenario("code-snippets", "Collect code blocks", "Find every code block in my daily notes and collect them into a new note Code Snippets.md, grouped by language, each snippet followed by a wikilink to the daily note it came from.", (a, tools) => [["used ≤ 10 tool calls", tools.length <= 10]]);
+	await scenario("code-snippets", "Collect code blocks", "Find every code block in my daily notes and collect them into a new note Code Snippets.md, grouped by language, each snippet followed by a wikilink to the daily note it came from.", (a, tools) => [["used ≤ 10 tool calls", tools.length <= 10]], { asksForChange: true });
 	{
 		const row = rows[rows.length - 1];
 		const exists = vault.exists("Code Snippets.md");
@@ -542,7 +551,7 @@ async function main() {
 	// counted against this scenario (3 of 5 runs of 0.8.0).
 	const beforeDistill = new Map<string, string>();
 	for (const n of vault.listNotes()) if (n.path.startsWith("Daily/")) beforeDistill.set(n.path, await vault.read(n.path));
-	await scenario("distill", "Process my daily notes", processDailyNotesPrompt({ folder: "Daily", heading: "Capture", destination: "Topics", move: true }), (_a, tools) => [["used ≤ 30 tool calls", tools.length <= 30]]);
+	await scenario("distill", "Process my daily notes", processDailyNotesPrompt({ folder: "Daily", heading: "Capture", destination: "Topics", move: true }), (_a, tools) => [["used ≤ 30 tool calls", tools.length <= 30]], { asksForChange: true });
 	{
 		const row = rows[rows.length - 1];
 		const topics = vault.listNotes().filter((n) => n.path.startsWith("Topics/"));
@@ -584,7 +593,7 @@ async function main() {
 	}
 
 	// Acting on the Vault Suggestions note the gardener wrote (seeded at start-up).
-	await scenario("garden-act", "Fix the broken links from Vault Suggestions", "Work through the 'Broken links' section of [[Vault Suggestions]]: in each note listed there, replace the broken wikilink with its plain text (the name without the brackets). Do not create any notes. Then say what you changed.", (_a, tools) => [["used ≤ 6 tool calls", tools.length <= 6]]);
+	await scenario("garden-act", "Fix the broken links from Vault Suggestions", "Work through the 'Broken links' section of [[Vault Suggestions]]: in each note listed there, replace the broken wikilink with its plain text (the name without the brackets). Do not create any notes. Then say what you changed.", (_a, tools) => [["used ≤ 6 tool calls", tools.length <= 6]], { asksForChange: true });
 	{
 		const row = rows[rows.length - 1];
 		const body = await vault.read(facts.garden.brokenNote);
@@ -607,7 +616,7 @@ async function main() {
 		const target = "Projects/Chess Robot.md";
 		const before = await vault.read(target);
 		const line = before.split("\n").find((l) => l.startsWith("- The magnet sometimes drags"))!;
-		await scenario("edit-selection", "Edit the selected text", editSelectionPrompt(target, line, "ends with the tag #open-problem"), (_a, tools) => [["used ≤ 3 tool calls", tools.length <= 3]]);
+		await scenario("edit-selection", "Edit the selected text", editSelectionPrompt(target, line, "ends with the tag #open-problem"), (_a, tools) => [["used ≤ 3 tool calls", tools.length <= 3]], { asksForChange: true });
 		const row = rows[rows.length - 1];
 		const after = await vault.read(target);
 		const changed = after.split("\n").find((l) => l.startsWith("- The magnet sometimes drags")) ?? "";
@@ -639,7 +648,7 @@ async function main() {
 		["used ≤ 2 tool calls", tools.length <= 2],
 	], { attach: true });
 
-	await scenario("cleanup", "Multi-note clean-up", "Go through every lecture and meeting note. Wherever a section embeds a recording (a line like ![[Recording ….m4a]]) AND already has a ### Summary, delete the recording embed line. Do not touch sections that have no Summary. Do all of them now and list what you changed.", () => []);
+	await scenario("cleanup", "Multi-note clean-up", "Go through every lecture and meeting note. Wherever a section embeds a recording (a line like ![[Recording ….m4a]]) AND already has a ### Summary, delete the recording embed line. Do not touch sections that have no Summary. Do all of them now and list what you changed.", () => [], { asksForChange: true });
 	{
 		// Check after the fact (the scenario helper's checks are synchronous; evaluate here).
 		const withS = facts.recordings.withSummary;
@@ -662,7 +671,7 @@ async function main() {
 		}
 	}
 
-	await scenario("organise", "Move finished projects", "Move every project note whose frontmatter says status: done into Archive/2025/ (keep the file names).", () => []);
+	await scenario("organise", "Move finished projects", "Move every project note whose frontmatter says status: done into Archive/2025/ (keep the file names).", () => [], { asksForChange: true });
 	{
 		const done = ["Line Follower Bot", "Weather Station", "Portfolio Site", "Raytracer", "Sudoku Solver"];
 		const moved = done.filter((n) => vault.exists(`Archive/2025/${n}.md`) && !vault.exists(`Projects/${n}.md`));
@@ -679,7 +688,7 @@ async function main() {
 		}
 	}
 
-	await scenario("conventions", "Follow AGENT.md", "Add 'Tested the vault agent' to today's daily note, Daily/2026-10-30 (create it from the usual structure if it does not exist).", () => []);
+	await scenario("conventions", "Follow AGENT.md", "Add 'Tested the vault agent' to today's daily note, Daily/2026-10-30 (create it from the usual structure if it does not exist).", () => [], { asksForChange: true });
 	{
 		const row = rows[rows.length - 1];
 		const exists = vault.exists("Daily/2026-10-30.md");
