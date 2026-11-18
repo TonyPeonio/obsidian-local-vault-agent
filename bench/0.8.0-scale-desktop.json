@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-18T01:29:34.301Z",
+  "node": "v24.13.1",
+  "rows": [
+    {
+      "notes": 10000,
+      "generateMs": 109,
+      "buildMs": 812,
+      "chunks": 30000,
+      "indexFileMB": 125,
+      "largestFileMB": 4,
+      "resyncMs": 26,
+      "editOneNoteMs": 37,
+      "editWritesMB": 4.2,
+      "loadMs": 346,
+      "heapMB": 140,
+      "arrayBuffersMB": 88,
+      "semanticQueryMs": 29,
+      "passageQueryMs": 34,
+      "keywordQueryMs": 69,
+      "keywordFromIndexMs": 54,
+      "systemPromptMs": 38,
+      "systemPromptChars": 7693,
+      "grepMs": 98,
+      "gardenMs": 336
+    },
+    {
+      "notes": 50000,
+      "generateMs": 510,
+      "buildMs": 6132,
+      "chunks": 150000,
+      "indexFileMB": 627,
+      "largestFileMB": 21,
+      "resyncMs": 62,
+      "editOneNoteMs": 170,
+      "editWritesMB": 19.8,
+      "loadMs": 1721,
+      "heapMB": 700,
+      "arrayBuffersMB": 439,
+      "semanticQueryMs": 161,
+      "passageQueryMs": 202,
+      "keywordQueryMs": 352,
+      "keywordFromIndexMs": 298,
+      "systemPromptMs": 201,
+      "systemPromptChars": 7711,
+      "grepMs": 239,
+      "gardenMs": 1733
+    }
+  ],
+  "realEmbedding": null
+}

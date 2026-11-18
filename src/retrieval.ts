@@ -47,9 +47,11 @@ const K1 = 1.2;
 const B = 0.75;
 /** A term in the note title or heading counts this many times: a section called "Dijkstra" is about Dijkstra. */
 const HEADING_WEIGHT = 3;
+/** A term's count within one chunk is stored up to this (BM25 is flat long before it). */
+const TF_BASE = 32;
 
 export class LexicalIndex {
-	/** term → [docId, tf, docId, tf, …]. */
+	/** term → one number per chunk that has it: `docId * TF_BASE + tf` (tf capped), half the memory of a pair. */
 	private postings = new Map<string, number[]>();
 	private docs: (LexDoc | null)[] = [];
 	private byPath = new Map<string, number[]>();
@@ -95,7 +97,7 @@ export class LexicalIndex {
 			for (const [term, n] of tf) {
 				let list = this.postings.get(term);
 				if (!list) this.postings.set(term, (list = []));
-				list.push(id, n);
+				list.push(id * TF_BASE + Math.min(n, TF_BASE - 1));
 			}
 		});
 		this.byPath.set(path, ids);
@@ -138,9 +140,9 @@ export class LexicalIndex {
 		});
 		for (const [term, list] of this.postings) {
 			const next: number[] = [];
-			for (let i = 0; i < list.length; i += 2) {
-				const id = remap[list[i]];
-				if (id >= 0) next.push(id, list[i + 1]);
+			for (const packed of list) {
+				const id = remap[Math.floor(packed / TF_BASE)];
+				if (id >= 0) next.push(id * TF_BASE + (packed % TF_BASE));
 			}
 			if (next.length) this.postings.set(term, next);
 			else this.postings.delete(term);
@@ -189,19 +191,20 @@ export class LexicalIndex {
 			const list = this.postings.get(term);
 			if (!list) continue;
 			let df = 0;
-			for (let i = 0; i < list.length; i += 2) if (this.docs[list[i]]) df++;
+			for (const packed of list) if (this.docs[Math.floor(packed / TF_BASE)]) df++;
 			if (df === 0) continue;
 			const idf = Math.log(1 + (this.live - df + 0.5) / (df + 0.5));
-			for (let i = 0; i < list.length; i += 2) {
-				const doc = this.docs[list[i]];
+			for (const packed of list) {
+				const id = Math.floor(packed / TF_BASE);
+				const doc = this.docs[id];
 				if (!doc) continue;
-				const tf = list[i + 1];
+				const tf = packed % TF_BASE;
 				const s = (idf * tf * (K1 + 1)) / (tf + K1 * (1 - B + (B * doc.len) / avgLen));
-				const a = acc.get(list[i]);
+				const a = acc.get(id);
 				if (a) {
 					a.score += s;
 					a.matched++;
-				} else acc.set(list[i], { score: s, matched: 1 });
+				} else acc.set(id, { score: s, matched: 1 });
 			}
 		}
 		// A chunk with every term beats one that repeats a single term.

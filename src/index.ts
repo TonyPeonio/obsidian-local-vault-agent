@@ -145,7 +145,7 @@ export interface PassageSearchOptions {
 	fusion?: "blend" | "rrf";
 	/** The say of word matching: its share of the mix for "blend" (default 0.3), its weight for "rrf" (default 1). */
 	lexWeight?: number;
-	/** Added to a passage that contains every word of the question ("blend" only; default 0.3). */
+	/** Added to a passage that contains every word of the question ("blend" only; default 0.45: enough for the best such passage to pass the best by meaning alone). */
 	coverBonus?: number;
 	/** false: do not look for days the question names. */
 	dates?: boolean;
@@ -208,8 +208,16 @@ export class SemanticIndex {
 	private manifestKey = "";
 	/** The flush in progress: flushes run one after another, never side by side. */
 	private flushing: Promise<void> = Promise.resolve();
-	/** Word index over the same chunks, kept in step with `files`; needs no model. */
+	/**
+	 * Word index over the same chunks; needs no model. Built on the first search, not at start-up
+	 * (at 50,000 notes it takes seconds and a hundred megabytes that a session without a question
+	 * never needs), and kept in step with `files` from then on.
+	 */
 	private lex = new LexicalIndex();
+	private lexBuilt = false;
+	private lexBuilding: Promise<void> | null = null;
+	/** Notes that changed while the word index was being built; brought up to date when it is done. */
+	private lexStale = new Set<string>();
 
 	constructor(
 		private client: OllamaClient,
@@ -230,18 +238,46 @@ export class SemanticIndex {
 		if (file) {
 			this.files.set(path, file);
 			this.totalChunks += file.chunks.length;
-			this.lex.setFile(path, file.chunks.map((c) => ({ heading: c.crumb, text: c.text })), noteTitle(path));
-		} else {
-			this.files.delete(path);
-			this.lex.remove(path);
-		}
+		} else this.files.delete(path);
+		this.lexUpdate(path);
 		this.dirty = true;
 		this.dirtyShards.add(shardOf(path));
+	}
+
+	/** Brings the word index's entry for one note in line with `files` (once the index exists). */
+	private lexUpdate(path: string): void {
+		if (this.lexBuilding) this.lexStale.add(path);
+		if (!this.lexBuilt) return;
+		const file = this.files.get(path);
+		if (file) this.lex.setFile(path, file.chunks.map((c) => ({ heading: c.crumb, text: c.text })), noteTitle(path));
+		else this.lex.remove(path);
+	}
+
+	/** Builds the word index from what is in memory, in slices, so a large vault does not freeze the window. */
+	private ensureLex(): Promise<void> {
+		if (this.lexBuilt) return Promise.resolve();
+		this.lexBuilding ??= (async () => {
+			this.lex.clear();
+			this.lexStale.clear();
+			let n = 0;
+			for (const [path, file] of Array.from(this.files)) {
+				this.lex.setFile(path, file.chunks.map((c) => ({ heading: c.crumb, text: c.text })), noteTitle(path));
+				if (++n % 400 === 0) await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+			}
+			this.lexBuilt = true;
+			this.lexBuilding = null;
+			// Notes that were edited, added or removed meanwhile.
+			for (const path of this.lexStale) this.lexUpdate(path);
+			this.lexStale.clear();
+		})();
+		return this.lexBuilding;
 	}
 
 	private clear(): void {
 		this.files.clear();
 		this.lex.clear();
+		this.lexBuilt = false;
+		this.lexStale.clear();
 		this.totalChunks = 0;
 		this.dims = 0;
 		this.model = this.opts.getModel();
@@ -255,7 +291,7 @@ export class SemanticIndex {
 			// An older embed format stays searchable as it is, and is chunked again on the next sync.
 			this.files.set(path, { mtime: (f.fmt ?? 1) === EMBED_FORMAT ? f.mtime : STALE_MTIME, chunks });
 			this.totalChunks += chunks.length;
-			this.lex.setFile(path, chunks.map((c) => ({ heading: c.crumb, text: c.text })), noteTitle(path));
+			this.lexUpdate(path);
 		}
 	}
 
@@ -434,6 +470,7 @@ export class SemanticIndex {
 		let ranked: Cand[];
 		if (opts.lexical === false) ranked = dense.slice(0, limit);
 		else {
+			await this.ensureLex();
 			// "September 10" is `2026-09-10` in a file name or a heading: search the day as notes write it.
 			const dates = opts.dates === false ? [] : dateTerms(query, this.opts.now?.() ?? new Date());
 			const lexical = this.lex.search(query, pool, (path, idx) => this.files.get(path)?.chunks[idx]?.text, dates);
@@ -472,7 +509,7 @@ export class SemanticIndex {
 				}
 				const w = opts.lexWeight ?? 0.3;
 				// A passage with every word of the question is rare for a sentence and decisive for a name or an identifier.
-				const cover = opts.coverBonus ?? 0.3;
+				const cover = opts.coverBonus ?? 0.45;
 				for (const c of all) {
 					c.score = (1 - w) * (dMax > dMin ? (c.dense - dMin) / (dMax - dMin) : 1) + w * (lMax > 0 ? c.lex / lMax : 0);
 					if (c.words && c.words.matched === c.words.terms) c.score += cover;
@@ -516,7 +553,8 @@ export class SemanticIndex {
 
 	/** The question's words that appear in no indexed note (see `LexicalIndex.absentWords`). */
 	absentWords(query: string): string[] {
-		return this.ready ? this.lex.absentWords(query) : [];
+		// Only once the word index exists (a passage search builds it): an unbuilt index would call every word absent.
+		return this.ready && this.lexBuilt ? this.lex.absentWords(query) : [];
 	}
 
 	/** One unit vector per indexed note: the normalised mean of its chunk vectors. */

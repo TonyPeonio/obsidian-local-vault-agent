@@ -176,6 +176,30 @@ describe("passage search by meaning and by words", () => {
 	});
 });
 
+describe("the word index is built on the first search", () => {
+	it("is not built by indexing or loading, and catches up with notes that change while it is being built", async () => {
+		const notes: Record<string, string> = {};
+		for (let i = 0; i < 900; i++) notes[`N/${String(i).padStart(3, "0")}.md`] = `note number ${i} about topic${i}`;
+		const { index, vault } = setup(notes);
+		await index.syncAll();
+		// Nothing has searched yet: no word is called absent on the strength of an index that does not exist.
+		expect(index.absentWords("zebras")).toEqual([]);
+		// The build yields between slices; an edit, a new note and a removal land in the middle of it.
+		const first = index.searchPassages("topic777", 3);
+		await vault.modify("N/001.md", "now about marmots");
+		vault.seed("N/new.md", "a late note about capybaras");
+		const sync = index.syncAll();
+		index.remove("N/002.md");
+		const hits = await first;
+		await sync;
+		expect(hits[0].path).toBe("N/777.md");
+		expect((await index.searchPassages("marmots", 1))[0].path).toBe("N/001.md");
+		expect((await index.searchPassages("capybaras", 1))[0].path).toBe("N/new.md");
+		expect((await index.searchPassages("topic2", 3)).every((h) => h.path !== "N/002.md")).toBe(true);
+		expect(index.absentWords("zebras and marmots")).toEqual(["zebras"]);
+	});
+});
+
 describe("an index saved before heading paths", () => {
 	it("is searchable at once, chunked again on the next sync, and only sections whose path changed are embedded again", async () => {
 		const first = setup({ "School/Lectures - CSCI 406.md": LECTURES });

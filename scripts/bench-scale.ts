@@ -165,6 +165,10 @@ async function run(n: number) {
 	}
 	row.semanticQueryMs = median(sem);
 	row.passageQueryMs = median(pas);
+	// The first passage search of a session also builds the word index (since 0.9.0).
+	row.firstPassageQueryMs = pas[0];
+	(globalThis as { gc?: () => void }).gc?.();
+	row.heapAfterSearchMB = mb(process.memoryUsage().heapUsed);
 	row.keywordQueryMs = median(kw);
 	if (kwMem.length) row.keywordFromIndexMs = median(kwMem);
 
