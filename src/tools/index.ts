@@ -405,8 +405,14 @@ export const searchPassages: ToolDefinition = {
 		const note = weak
 			? `\nNone of these is a close match (best score ${best.toFixed(2)}): the vault may have nothing on this. If no passage answers the question, say the notes do not cover it rather than guessing; try grep_vault with an exact word if there is one.`
 			: "";
+		// A word of the question that no note contains at all is the strongest sign the notes do not
+		// cover it: the passages are then about the question's other words.
+		const absent = ctx.absentWords?.(query) ?? [];
+		const missing = absent.length
+			? `\nNo note in the vault contains ${absent.map((w) => `"${w}"`).join(" or ")} (nor a word that starts the same way), so these passages are about the rest of the question. If the question is about ${absent.length === 1 ? "that" : "those"}, say the notes do not cover it; do not answer it from a passage about something else.`
+			: "";
 		const intro = (n: number, left: number) =>
-			`${n} passage${n === 1 ? "" : "s"}, best first${left ? ` (${left} lower-ranked left out to fit; ask again with a narrower query for those)` : ""}. Each is one section of a note; cite the note path as a wikilink.${note}`;
+			`${n} passage${n === 1 ? "" : "s"}, best first${left ? ` (${left} lower-ranked left out to fit; ask again with a narrower query for those)` : ""}. Each is one section of a note; cite the note path as a wikilink.${note}${missing}`;
 		const heads = passages.map((p, i) => {
 			const where = p.crumb ?? p.heading;
 			return `\n--- [${i + 1}] ${p.path}${where ? ` › ${where}` : ""} (score ${p.score.toFixed(2)})\n`;
@@ -1843,6 +1849,31 @@ export function localDate(when: number | Date): string {
 	const two = (n: number) => String(n).padStart(2, "0");
 	return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 }
+
+// A model that wants "the Capture section of every daily note" often names the section in
+// `containing` (containing: ["### Capture"], or ["Capture"]) where `heading` is meant. A heading
+// line is not inside its own section, so the literal reading finds the parents of those sections
+// or nothing, and the model then reads all 127 notes one by one (131 tool calls in one benchmark
+// run). When the one text given is a heading in the notes asked about, survey that heading.
+const surveySections = listSections.execute;
+listSections.execute = async (args, ctx) => {
+	const raw = args.containing;
+	const texts = (Array.isArray(raw) ? raw : typeof raw === "string" && !/^\s*\[/.test(raw) ? [raw] : []).map((x) => String(x).trim()).filter(Boolean);
+	const heading = typeof args.heading === "string" ? args.heading.trim() : "";
+	if (heading || texts.length !== 1) return surveySections(args, ctx);
+	const name = texts[0].replace(/^#+\s*/, "").trim();
+	if (!name) return surveySections(args, ctx);
+	let survey = "";
+	try {
+		survey = await surveySections({ ...args, containing: undefined, heading: name }, ctx);
+	} catch (err) {
+		if (!(err instanceof ToolError)) throw err;
+	}
+	// Only a heading that exists in exactly this form: "Rec" is not taken for the heading "Recordings".
+	const isHeading = new RegExp(`^ {2}#{1,6} ${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( \\(|$)`, "im").test(survey);
+	if (isHeading) return `(containing: ["${texts[0]}"] names a heading, and a heading line is not inside its own section, so this is the survey of the sections headed "${name}", as heading: "${name}" gives.)\n${survey}`;
+	return surveySections(args, ctx);
+};
 
 export const ALL_TOOLS: ToolDefinition[] = [
 	searchPassages,

@@ -488,12 +488,55 @@ describe("search_passages", () => {
 		ctx.searchPassages = async () => [{ path: "a.md", heading: "", text: "x", score: 0.2 }];
 		expect(await searchPassages.execute({ query: "q" }, ctx)).not.toMatch(/close match/);
 	});
+	it("names the question's words that no note contains", async () => {
+		const { ctx } = makeCtx(freshVault());
+		ctx.searchPassages = async () => [{ path: "Projects/Chess Robot.md", heading: "Decisions", text: "Switch the gantry supply to 24V.", score: 0.7 }];
+		ctx.absentWords = (q) => (q.includes("wheels") ? ["wheels"] : []);
+		const out = await searchPassages.execute({ query: "chess robot wheels decision" }, ctx);
+		expect(out).toMatch(/^1 passage, best first\. .*\nNo note in the vault contains "wheels" \(nor a word that starts the same way\)/);
+		expect(out).toContain("say the notes do not cover it");
+		expect(out).toContain("--- [1] Projects/Chess Robot.md › Decisions (score 0.70)\nSwitch the gantry supply to 24V.");
+		expect(await searchPassages.execute({ query: "gantry supply" }, ctx)).not.toMatch(/No note in the vault/);
+	});
 	it("falls back to keyword snippets without an index", async () => {
 		const { ctx } = makeCtx(freshVault());
 		const out = await searchPassages.execute({ query: "hall sensors" }, ctx);
 		expect(out).toMatch(/semantic index is not available/);
 		expect(out).toContain("Ideas/Sensors.md");
 		expect(await searchPassages.execute({ query: "zzzz" }, ctx)).toMatch(/No passages matched/);
+	});
+});
+
+describe("list_sections given a heading as the text to look for", () => {
+	const daily = (capture: string) => `# Day\n\n## Done\n\n- things\n\n## Capture\n\n${capture}\n\n## Tomorrow\n\n- [ ] Laundry\n`;
+	const vault = () => {
+		const v = freshVault();
+		v.seed("Daily/2026-06-01.md", daily(""));
+		v.seed("Daily/2026-06-02.md", daily("- an idea about capture cards\n- another line"));
+		v.seed("Daily/2026-06-03.md", daily("- call the bank"));
+		return v;
+	};
+
+	it("surveys the heading when the one text is a heading line or a heading's name", async () => {
+		for (const text of ["### Capture", "## Capture", "Capture", "capture"]) {
+			const { ctx } = makeCtx(vault());
+			const out = await listSections.execute({ containing: [text], folder: "Daily/" }, ctx);
+			expect(out, text).toMatch(/^\(containing: \[".*"\] names a heading/);
+			expect(out, text).toContain("3 sections (non-empty lines, characters, first line):");
+			expect(out, text).toContain("## Capture (empty)");
+			expect(out, text).toContain("## Capture (2 lines");
+		}
+	});
+
+	it("leaves a text that is not a heading, several texts, and an explicit heading as they were", async () => {
+		const { ctx } = makeCtx(vault());
+		const laundry = await listSections.execute({ containing: ["Laundry"], folder: "Daily/" }, ctx);
+		expect(laundry).not.toMatch(/names a heading/);
+		expect(laundry).toContain("## Tomorrow: Laundry yes");
+		// "Cap" starts the heading "Capture" but is not a heading itself.
+		expect(await listSections.execute({ containing: ["Cap"], folder: "Daily/" }, ctx)).not.toMatch(/names a heading/);
+		expect(await listSections.execute({ containing: ["Capture", "Laundry"], folder: "Daily/" }, ctx)).not.toMatch(/names a heading/);
+		expect(await listSections.execute({ containing: ["capture cards"], heading: "Capture", folder: "Daily/" }, ctx)).not.toMatch(/names a heading/);
 	});
 });
 

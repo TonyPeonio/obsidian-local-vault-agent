@@ -77,8 +77,11 @@ const answersBy = new Map<string, string>();
 const toolsBy = new Map<string, string[]>();
 const outTokensBy = new Map<string, number>();
 const loadMsBy = new Map<string, number>();
+/** Characters the model had to read per scenario (see `meterReading`). */
+const readCharsBy = new Map<string, number>();
+/** The scenario whose log lines are being printed. */
+let current = "";
 {
-	let current = "";
 	const log = console.log.bind(console);
 	console.log = (...args: unknown[]) => {
 		const line = typeof args[0] === "string" ? args[0] : "";
@@ -103,6 +106,7 @@ async function main() {
 	const original = new Map<string, string>();
 	for (const n of vault.listNotes()) original.set(n.path, await vault.read(n.path));
 	const client = new OllamaClient(() => OLLAMA_URL);
+	meterReading(client);
 	const ollamaVersion = await client.version();
 	console.log(`Ollama ${ollamaVersion} at ${OLLAMA_URL}, model ${MODEL}; ${vault.listNotes().length} notes, ${facts.counts.chars} chars, ${facts.attachments.length} attachments`);
 
@@ -855,6 +859,7 @@ async function main() {
 			...r,
 			seconds: Math.round(r.ms / 10) / 100,
 			completionTokens: outTokensBy.get(r.id),
+			readChars: readCharsBy.get(r.id),
 			loadMs: loadMsBy.get(r.id),
 			failed: failedBy.get(r.id) ?? [],
 			tools: toolsBy.get(r.id),
@@ -870,6 +875,29 @@ async function main() {
 	}
 	console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 	process.exit(failures === 0 ? 0 : 1);
+}
+
+/**
+ * Counts what the model has to READ, in characters, whatever the machine is doing at the time:
+ * each request less the start it shares with the request before it, which Ollama has kept (its
+ * prefix cache), with the reply it wrote itself counted as kept too. Times are no good for this:
+ * with other jobs on the machine the same run takes twice as long. On a laptop that reads 170
+ * tokens a second, this number and the tokens written are the wait.
+ */
+function meterReading(client: OllamaClient): void {
+	const chat = client.chat.bind(client);
+	let kept = "";
+	client.chat = async (req) => {
+		const wire = (m: { role: string; content: string; tool_calls?: unknown; images?: string[] }) => JSON.stringify([m.role, m.content, m.tool_calls ?? null, m.images?.length ?? 0]);
+		const sent = `${req.model}\n${JSON.stringify(req.tools ?? null)}\n${req.messages.map(wire).join(",")}`;
+		let same = 0;
+		const n = Math.min(sent.length, kept.length);
+		while (same < n && sent.charCodeAt(same) === kept.charCodeAt(same)) same++;
+		readCharsBy.set(current, (readCharsBy.get(current) ?? 0) + sent.length - same);
+		const res = await chat(req);
+		kept = `${sent},${wire(res.message)}`;
+		return res;
+	};
 }
 
 function gitCommit(): string | undefined {

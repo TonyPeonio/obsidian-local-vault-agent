@@ -48,21 +48,28 @@ for (const file of files) {
 // (Ryzen 7940HS / Radeon 780M, qwen3.5:9b: reads about 170 tokens/s, writes about 6.5).
 // READ_TOKENS_PER_MS is this desktop's reading speed (RTX 5070: 12,977 tokens in 2,955 ms).
 const READ_TOKENS_PER_MS = Number(process.env.READ_TOKENS_PER_MS ?? 4.39);
+/** Characters per token of what the agent sends (measured: the benchmark's prompts run at about 3.0). */
+const CHARS_PER_TOKEN = Number(process.env.CHARS_PER_TOKEN ?? 3.0);
+/** Tokens the model had to read: counted by the harness when the result has it (free of the machine's load), else from the time spent reading. */
+const readTokens = (r) => {
+	const chars = r.scenarios.reduce((n, s) => n + (s.readChars ?? 0), 0);
+	if (chars) return chars / CHARS_PER_TOKEN;
+	return r.scenarios.reduce((n, s) => n + (s.promptMs ?? 0), 0) * READ_TOKENS_PER_MS;
+};
 const laptopSeconds = (r) => {
-	const promptMs = r.scenarios.reduce((n, s) => n + (s.promptMs ?? 0), 0);
 	const written = r.scenarios.reduce((n, s) => n + (s.completionTokens ?? 0), 0);
-	return written ? (promptMs * READ_TOKENS_PER_MS) / 170 + written / 6.5 : undefined;
+	return written ? readTokens(r) / 170 + written / 6.5 : undefined;
 };
 
-console.log("| Configuration | Runs | Checks passed | Seconds | Model s | Model calls | Tool calls | Tokens written | Laptop estimate, min | Errors | Repeats |");
-console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+console.log("| Configuration | Runs | Checks passed | Seconds | Model s | Model calls | Tool calls | Tokens read | Tokens written | Laptop estimate, min | Errors | Repeats |");
+console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
 for (const [key, runs] of groups) {
 	const t = (f) => runs.map((r) => f(r.totals));
 	const checks = runs[0].totals.checks;
 	const sameChecks = runs.every((r) => r.totals.checks === checks);
 	const out = runs.map((r) => r.scenarios.reduce((n, s) => n + (s.completionTokens ?? 0), 0));
 	console.log(
-		`| ${key} | ${runs.length} | ${spread(t((x) => x.passed), 1)} of ${sameChecks ? checks : "varying"} | ${spread(t((x) => x.seconds))} | ${spread(t((x) => x.modelSeconds ?? 0))} | ${spread(t((x) => x.steps ?? 0))} | ${spread(t((x) => x.calls))} | ${out.some(Boolean) ? spread(out) : ""} | ${runs.every((r) => laptopSeconds(r)) ? spread(runs.map((r) => laptopSeconds(r) / 60), 1) : ""} | ${spread(t((x) => x.errors), 1)} | ${spread(t((x) => x.repeats), 1)} |`,
+		`| ${key} | ${runs.length} | ${spread(t((x) => x.passed), 1)} of ${sameChecks ? checks : "varying"} | ${spread(t((x) => x.seconds))} | ${spread(t((x) => x.modelSeconds ?? 0))} | ${spread(t((x) => x.steps ?? 0))} | ${spread(t((x) => x.calls))} | ${runs.every((r) => r.scenarios.some((s) => s.readChars)) ? spread(runs.map(readTokens)) : ""} | ${out.some(Boolean) ? spread(out) : ""} | ${runs.every((r) => laptopSeconds(r)) ? spread(runs.map((r) => laptopSeconds(r) / 60), 1) : ""} | ${spread(t((x) => x.errors), 1)} | ${spread(t((x) => x.repeats), 1)} |`,
 	);
 }
 
