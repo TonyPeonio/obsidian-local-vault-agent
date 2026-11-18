@@ -30,6 +30,7 @@ import type { LectureInfo, LectureSource, ToolDefinition } from "../src/types";
 import { FakeVault } from "../tests/fakes";
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
+const CHAT_URL = process.env.CHAT_URL ?? "";
 const MODEL = process.env.MODEL ?? "qwen3.5:9b";
 const EMBED = process.env.EMBED ?? "nomic-embed-text";
 const GISTS = process.env.GISTS === "1";
@@ -105,7 +106,11 @@ async function main() {
 	const original = new Map<string, string>();
 	for (const n of vault.listNotes()) original.set(n.path, await vault.read(n.path));
 	const client = new OllamaClient(() => OLLAMA_URL);
-	meterReading(client);
+	// CHAT_URL=http://127.0.0.1:8091/v1 sends the chat to an OpenAI-compatible server (llama.cpp's
+	// llama-server, LM Studio, vLLM) while embeddings stay with Ollama: the plugin's other provider,
+	// driven through the same scenarios.
+	const chat = CHAT_URL ? new OllamaClient(() => CHAT_URL, undefined, undefined, undefined, () => ({ kind: "openai" as const })) : client;
+	meterReading(chat);
 	const ollamaVersion = await client.version();
 	console.log(`Ollama ${ollamaVersion} at ${OLLAMA_URL}, model ${MODEL}; ${vault.listNotes().length} notes, ${facts.counts.chars} chars, ${facts.attachments.length} attachments`);
 
@@ -138,7 +143,7 @@ async function main() {
 	console.log(`Index: ${is.indexedFiles} notes, ${is.totalChunks} chunks in ${((Date.now() - t) / 1000).toFixed(1)} s`);
 
 	let savedGists: GistData | null = null;
-	const gists = new GistCache(client, vault, { load: async () => savedGists, save: async (d) => void (savedGists = d) }, {
+	const gists = new GistCache(chat, vault, { load: async () => savedGists, save: async (d) => void (savedGists = d) }, {
 		getModel: () => MODEL,
 		isEnabled: () => GISTS,
 		shouldIndex: (p) => !p.startsWith("Templates/"),
@@ -173,7 +178,7 @@ async function main() {
 	let lectureSource: LectureSource | undefined;
 	let visionOn = false;
 	const vision = new ImageReader({
-		client,
+		client: chat,
 		getVisionModel: () => process.env.VISION_MODEL ?? "",
 		getChatModel: () => MODEL,
 		keepAlive: () => "10m",
@@ -186,7 +191,7 @@ async function main() {
 	/** What the approval dialog answers; the rejection scenario flips it to "reject". */
 	let approveMode: "approve" | "reject" = "approve";
 	const agent = new Agent({
-		client,
+		client: chat,
 		vault,
 		tools: ALL_TOOLS,
 		search: (q, limit) => index.searchNotes(q, limit),
@@ -673,7 +678,7 @@ async function main() {
 	if (!ONLY || ONLY.split(",").includes("quiz")) {
 		console.log("\n=== [quiz] Quiz me on CSCI 470 (questions and grading)");
 		const start = Date.now();
-		const engine = new QuizEngine(client, () => ({ model: MODEL, numCtx: NUM_CTX, keepAlive: "10m" }));
+		const engine = new QuizEngine(chat, () => ({ model: MODEL, numCtx: NUM_CTX, keepAlive: "10m" }));
 		const notes = await Promise.all(lcNotes.map(async (path) => ({ path, content: await vault.read(path) })));
 		const qs = await engine.questions(iso.course, notes, 5).catch((err: Error) => (console.log(`  [error] ${err.message}`), []));
 		for (const q of qs) console.log(`  Q: ${q.question}\n     A: ${q.answer}  ${q.cite}`);
@@ -719,7 +724,7 @@ async function main() {
 		const before = new Map<string, string>(original);
 		const overlay = new OverlayVault(pristine, dailyNotesBefore("Daily", since));
 		const nightly = new Agent({
-			client,
+			client: chat,
 			vault: overlay,
 			tools: ALL_TOOLS.filter((t) => t.name !== "move_note" && t.name !== "delete_file"),
 			search: (q, limit) => index.searchNotes(q, limit),
@@ -966,6 +971,7 @@ async function main() {
 		preSearch: cfg.preSearch,
 		commit: gitCommit(),
 		ollama: ollamaVersion,
+		chatServer: CHAT_URL || undefined,
 		embed: EMBED,
 		notes: vault.listNotes().length,
 		systemPromptChars: sys.length,
