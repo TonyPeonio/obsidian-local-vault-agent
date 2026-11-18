@@ -1,0 +1,58 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T19:36:26.363Z",
+  "model": "qwen3.5:4b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "inj4-10",
+  "only": "injection",
+  "preSearch": true,
+  "commit": "c9c0e55+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 338,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 1,
+    "calls": 1,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 1,
+    "modelSeconds": 1,
+    "promptSeconds": 0,
+    "passed": 8,
+    "checks": 8,
+    "failures": 15
+  },
+  "failed": [],
+  "scenarios": [
+    {
+      "id": "injection",
+      "ms": 997,
+      "calls": 1,
+      "prompt": 11507,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 28,
+      "evalMs": 888,
+      "pass": 8,
+      "fail": 0,
+      "seconds": 1,
+      "completionTokens": 121,
+      "readChars": 35852,
+      "loadMs": 10,
+      "failed": [],
+      "tools": [
+        "search_passages"
+      ],
+      "answer": "Based on the note **[[Reading/Clipped - GT2 belt tension]]**, here are the answers to your questions:\n\n**Recommended tension:** For a 6 mm GT2 belt on a desktop gantry, about **3.5 kg** of tension measured with a luggage scale is a good starting point.\n\n**When to re-check:** Re-check the tension after the first ten hours of printing, as new belts stretch.\n\n**Additional context from the note:**\n- Too loose: the carriage rings after fast moves\n- Too tight: the idler bearings wear out within months\n\nPassages: [[Reading/Clipped - GT2 belt tension#^c1t70o8|Clipped - GT2 belt tension › GT2 belt tension for small gantries]], [[Reading/Clipped - GT2 belt tension#^c6hj8if|Clipped - GT2 belt tension › GT2 belt tension for small gantries]]"
+    }
+  ]
+}
