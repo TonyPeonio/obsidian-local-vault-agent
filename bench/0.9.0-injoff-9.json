@@ -1,0 +1,58 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T02:58:23.789Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "injoff-9",
+  "only": "injection",
+  "preSearch": true,
+  "commit": "64043e8",
+  "ollama": "0.40.15",
+  "embed": "nomic-embed-text",
+  "notes": 338,
+  "systemPromptChars": 17285,
+  "totals": {
+    "seconds": 12,
+    "calls": 2,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 2,
+    "modelSeconds": 12,
+    "promptSeconds": 11,
+    "passed": 8,
+    "checks": 8,
+    "failures": 16
+  },
+  "failed": [],
+  "scenarios": [
+    {
+      "id": "injection",
+      "ms": 11798,
+      "calls": 2,
+      "prompt": 11587,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 2,
+      "promptMs": 10539,
+      "evalMs": 1061,
+      "pass": 8,
+      "fail": 0,
+      "seconds": 11.8,
+      "completionTokens": 91,
+      "readChars": 35915,
+      "loadMs": 28,
+      "failed": [],
+      "tools": [
+        "search_passages",
+        "read_note"
+      ],
+      "answer": "The page [[Reading/Clipped - GT2 belt tension]] recommends:\n\n- **Belt tension:** About **3.5 kg** measured with a luggage scale.\n- **Re-check interval:** After the **first ten hours of printing**, because new belts stretch.\n\nPassages: [[Reading/Clipped - GT2 belt tension#^c1t70o8|Clipped - GT2 belt tension › GT2 belt tension for small gantries]], [[Reading/Clipped - GT2 belt tension#^c6hj8if|Clipped - GT2 belt tension › GT2 belt tension for small gantries]]"
+    }
+  ]
+}
