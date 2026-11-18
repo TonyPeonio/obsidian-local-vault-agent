@@ -1,0 +1,171 @@
+{
+  "version": "0.9.0",
+  "tag": "fin",
+  "date": "2026-11-18T17:25:17.274Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "runs": 3,
+  "warmSeconds": [
+    4.619,
+    4.614,
+    4.609
+  ],
+  "cases": {
+    "cold": [
+      {
+        "first": 11.443,
+        "total": 13.112,
+        "load": 8.616,
+        "read": 2.319,
+        "promptTokens": 10803,
+        "steps": 3
+      },
+      {
+        "first": 5.515,
+        "total": 10.81,
+        "load": 2.26,
+        "read": 2.317,
+        "promptTokens": 10809,
+        "steps": 5
+      },
+      {
+        "first": 5.095,
+        "total": 8.137,
+        "load": 2.276,
+        "read": 2.319,
+        "promptTokens": 10815,
+        "steps": 3
+      }
+    ],
+    "after warm-up": [
+      {
+        "first": 0.204,
+        "total": 2.834,
+        "load": 0.005,
+        "read": 0.164,
+        "promptTokens": 10809,
+        "steps": 4
+      },
+      {
+        "first": 0.204,
+        "total": 2.737,
+        "load": 0.006,
+        "read": 0.165,
+        "promptTokens": 10815,
+        "steps": 3
+      },
+      {
+        "first": 0.647,
+        "total": 2.351,
+        "load": 0.005,
+        "read": 0.165,
+        "promptTokens": 10821,
+        "steps": 3
+      }
+    ],
+    "follow-up": [
+      {
+        "first": 0.121,
+        "total": 1.211,
+        "load": 0.006,
+        "read": 0.08,
+        "promptTokens": 12675,
+        "steps": 1
+      },
+      {
+        "first": 0.134,
+        "total": 2.606,
+        "load": 0.006,
+        "read": 0.088,
+        "promptTokens": 14723,
+        "steps": 2
+      },
+      {
+        "first": 1.376,
+        "total": 5.04,
+        "load": 0.005,
+        "read": 0.094,
+        "promptTokens": 12851,
+        "steps": 5
+      }
+    ],
+    "new chat": [
+      {
+        "first": 0.564,
+        "total": 3.2,
+        "load": 0.006,
+        "read": 0.039,
+        "promptTokens": 10803,
+        "steps": 5
+      },
+      {
+        "first": 0.541,
+        "total": 3.247,
+        "load": 0.005,
+        "read": 0.043,
+        "promptTokens": 10809,
+        "steps": 4
+      },
+      {
+        "first": 0.535,
+        "total": 3.044,
+        "load": 0.006,
+        "read": 0.046,
+        "promptTokens": 10815,
+        "steps": 3
+      }
+    ],
+    "other note open": [
+      {
+        "first": 0.527,
+        "total": 6.606,
+        "load": 0.006,
+        "read": 0.486,
+        "promptTokens": 12832,
+        "steps": 5
+      },
+      {
+        "first": 1.056,
+        "total": 6.178,
+        "load": 0.005,
+        "read": 1.009,
+        "promptTokens": 15169,
+        "steps": 4
+      },
+      {
+        "first": 1.237,
+        "total": 6.231,
+        "load": 0.006,
+        "read": 0.891,
+        "promptTokens": 14667,
+        "steps": 4
+      }
+    ],
+    "after a new note": [
+      {
+        "first": 0.633,
+        "total": 1.707,
+        "load": 0.006,
+        "read": 0.108,
+        "promptTokens": 14207,
+        "steps": 2
+      },
+      {
+        "first": 0.148,
+        "total": 2.998,
+        "load": 0.006,
+        "read": 0.1,
+        "promptTokens": 15880,
+        "steps": 2
+      },
+      {
+        "first": 0.455,
+        "total": 1.414,
+        "load": 0.007,
+        "read": 0.103,
+        "promptTokens": 16337,
+        "steps": 2
+      }
+    ]
+  }
+}
