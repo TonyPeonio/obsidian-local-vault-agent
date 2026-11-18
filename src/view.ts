@@ -1,4 +1,4 @@
-import { sameModel } from "./ollama";
+import { chatModelOptions } from "./model-picker";
 import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
 import { AUTO_CONTINUE_TEXT, FOLLOW_THROUGH_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
@@ -88,6 +88,8 @@ export class AgentView extends ItemView {
 		this.modelSelect.addEventListener("change", () => {
 			this.plugin.settings.model = this.modelSelect.value;
 			void this.plugin.saveSettings();
+			// As the settings tab does: whether read_image is offered depends on the chat model when no vision model is set.
+			void this.plugin.refreshVision();
 		});
 		void this.populateModels();
 		const newChat = header.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.newChat") } });
@@ -193,6 +195,8 @@ export class AgentView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.stop();
+		// A model list still on its way must not fill a picker that is gone.
+		this.modelListRequest++;
 		this.recorder.cancel();
 		this.unsubscribeStatus?.();
 		this.unsubscribeStatus = null;
@@ -216,24 +220,45 @@ export class AgentView extends ItemView {
 		await this.submit();
 	}
 
+	private modelListRequest = 0;
+
+	/**
+	 * Fills the model picker: the models the agent can use, each with its size and whether it is in
+	 * memory now (one request for the list, one for what is loaded). Called when the panel opens, by
+	 * the refresh button and after each reply, when the chosen model has just been loaded.
+	 */
 	private async populateModels(notify = false): Promise<void> {
+		const request = ++this.modelListRequest;
+		const client = this.plugin.client;
+		let models: Awaited<ReturnType<typeof client.listModels>> | null = null;
+		let running: Awaited<ReturnType<typeof client.ps>> = [];
+		let error = "";
+		try {
+			// What is loaded is a nicety: a server without /api/ps still gets its list.
+			[models, running] = await Promise.all([client.listModels(), client.ps().catch(() => [])]);
+		} catch (err) {
+			error = (err as Error).message ?? String(err);
+		}
+		// A newer refresh is on its way, or the panel was closed meanwhile.
+		if (request !== this.modelListRequest) return;
+		// Read now, not before the requests: the user may have picked another model while they ran.
 		const current = this.plugin.settings.model;
 		this.modelSelect.empty();
-		try {
-			const models = await this.plugin.client.listModels();
-			const chatModels = models.filter((m) => !/embed/i.test(m.name));
-			for (const m of chatModels) {
-				this.modelSelect.createEl("option", { value: m.name, text: m.name });
-			}
-			if (!chatModels.some((m) => sameModel(m.name, current))) {
-				this.modelSelect.createEl("option", { value: current, text: `${current} (not installed)` });
-			}
-			if (notify) new Notice(`Found ${chatModels.length} chat model${chatModels.length === 1 ? "" : "s"}.`);
-		} catch (err) {
+		if (!models) {
 			this.modelSelect.createEl("option", { value: current, text: current });
-			if (notify) new Notice(`Could not reach Ollama: ${(err as Error).message}`);
+			this.modelSelect.value = current;
+			if (notify) new Notice(t(client.provider === "ollama" ? "notice.models.unreachable.ollama" : "notice.models.unreachable.server", { error }));
+			return;
 		}
-		this.modelSelect.value = current;
+		const options = chatModelOptions(models, running, current);
+		for (const o of options) {
+			const el = this.modelSelect.createEl("option", { value: o.value, text: o.label });
+			if (o.current) el.selected = true;
+		}
+		if (notify) {
+			const n = options.filter((o) => o.usable).length;
+			new Notice(t(n === 1 ? "notice.models.found.one" : "notice.models.found", { n }));
+		}
 	}
 
 	private renderWelcome(): void {
@@ -662,6 +687,8 @@ export class AgentView extends ItemView {
 			this.setSendState(false);
 			this.saveChat();
 			void this.plugin.checkPlacementOnce();
+			// The picker says which model is loaded; after a reply that is the one just used.
+			void this.populateModels();
 			this.updateStatus();
 			this.scrollToBottom();
 		}

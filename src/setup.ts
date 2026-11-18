@@ -34,12 +34,12 @@ export function guessTier(deviceMemoryGb: number | undefined): MachineTier {
 }
 
 /** Models that are probably embedding models (by capability, else by name). */
-function isEmbedding(m: ModelInfo): boolean {
+export function isEmbedding(m: ModelInfo): boolean {
 	return m.capabilities ? m.capabilities.includes("embedding") && !m.capabilities.includes("completion") : /embed|bge|e5-|gte-|minilm/i.test(m.name);
 }
 
 /** Models that can call tools (by capability when the server says, else every non-embedding model). */
-function canCallTools(m: ModelInfo): boolean {
+export function canCallTools(m: ModelInfo): boolean {
 	return m.capabilities ? m.capabilities.includes("tools") : !isEmbedding(m);
 }
 
