@@ -20,6 +20,7 @@ import { SAMPLE_QUESTIONS } from "./sample";
 import { ScrollFollow } from "./scroll-follow";
 import { StreamRenderer, nextRenderDelay } from "./stream-blocks";
 import { describeCall, describeResult, iconFor } from "./tool-cards";
+import { safeMarkdown } from "./safe-markdown";
 import { TurnProgress, formatDuration, formatTokens, phaseText, shouldNotify, summaryText } from "./turn-progress";
 import { stillApplied } from "./undo";
 import type { ChangeRecord, ChatMessage, ToolCall, UsageInfo } from "./types";
@@ -1398,7 +1399,9 @@ export class AgentView extends ItemView {
 
 	async renderMarkdown(markdown: string, el: HTMLElement): Promise<void> {
 		el.empty();
-		await MarkdownRenderer.render(this.app, markdown, el, this.plugin.vault.getActiveNotePath() ?? "", this);
+		// Everything the chat draws goes through here, a reply still streaming and a chat saved by an
+		// earlier version included: none of it may load a remote image or frame (see safe-markdown.ts).
+		await MarkdownRenderer.render(this.app, safeMarkdown(markdown), el, this.plugin.vault.getActiveNotePath() ?? "", this);
 		el.querySelectorAll<HTMLAnchorElement>("a.internal-link").forEach((a) => {
 			a.addEventListener("click", (e) => {
 				e.preventDefault();
