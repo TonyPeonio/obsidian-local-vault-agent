@@ -22,6 +22,9 @@ import {
 	fitHistory,
 	turnBudget,
 	CUT_OFF_NOTE,
+	REPEAT_NOTE,
+	repeatingTail,
+	replyCap,
 	looksLikeVaultQuestion,
 	UNASKED_WRITE_CAUTION,
 	outlineDrift,
@@ -651,6 +654,45 @@ describe("a change nobody asked for", () => {
 	});
 });
 
+describe("a reply that will not stop", () => {
+	it("is capped at more than any answer needs and far less than a full window", () => {
+		expect(replyCap(32768)).toBe(8192);
+		expect(replyCap(8192)).toBe(4096);
+		expect(replyCap(98304)).toBe(8192);
+		expect(replyCap(1024)).toBe(1024);
+	});
+
+	it("finds where a reply began to repeat itself, and leaves honest repetition alone", () => {
+		const start = "The decision was to move the gantry to 24V. ";
+		const loop = start + "It was decided on 2026-10-14. ".repeat(9);
+		expect(loop.slice(0, repeatingTail(loop) ?? 0)).toBe(start + "It was decided on 2026-10-14.");
+		// Wherever the stream happens to stop, what is kept ends on a whole sentence.
+		for (const cut of [3, 11, 17, 29]) {
+			const kept = loop.slice(0, -cut);
+			expect(kept.slice(0, repeatingTail(kept) ?? 0)).toMatch(/^The decision was to move the gantry to 24V\. (It was decided on 2026-10-14\.(\s|$)){1,2}$/);
+		}
+		// A list whose lines differ, a table, a rule and a row of dots do not count.
+		expect(repeatingTail(Array.from({ length: 40 }, (_, i) => `- item number ${i} of the list`).join("\n"))).toBeNull();
+		expect(repeatingTail("| a | b |\n|---|---|\n" + Array.from({ length: 30 }, (_, i) => `| ${i} | ${i * 2} |`).join("\n"))).toBeNull();
+		expect(repeatingTail("Heading\n" + "=".repeat(120))).toBeNull();
+		expect(repeatingTail("Loading" + " . . .".repeat(40))).toBeNull();
+		expect(repeatingTail("short")).toBeNull();
+	});
+
+	it("is stopped where the repetition began, says so, and ends the turn", async () => {
+		const start = "You decided to move the gantry to 24V. ";
+		const { agent, ollama } = setup([{ content: start + "It was decided on 2026-10-14. ".repeat(40) }]);
+		const conv = newConversation();
+		const shown: string[] = [];
+		await agent.run(conv, "What did I decide?", { onAssistantDelta: (d) => shown.push(d) });
+		const reply = conv.messages.at(-1)?.content ?? "";
+		expect(reply).toBe(`${start}It was decided on 2026-10-14.\n\n${REPEAT_NOTE}`);
+		// The stream to the chat stopped soon after the loop was seen, long before the 1,200 characters were out.
+		expect(shown.join("").length).toBeLessThan(500);
+		expect(ollama.requests).toHaveLength(1);
+	});
+});
+
 describe("what is added to a reply", () => {
 	it("goes on the reply that ends the turn, not on one that is sent back to the model", async () => {
 		const { agent, ollama } = setup(
@@ -860,7 +902,8 @@ describe("warm-up", () => {
 		// Same system prompt, same tool list: what the warm-up read is what the turn starts from.
 		expect(warm.messages[0]).toEqual(first.messages[0]);
 		expect(warm.tools).toEqual(first.tools);
-		expect(first.options?.num_predict).toBeUndefined();
+		// A real turn may write a full reply; the warm-up asks for one token.
+		expect(first.options?.num_predict).toBe(replyCap(config.numCtx));
 		expect(warm.options?.num_ctx).toBe(first.options?.num_ctx);
 	});
 
@@ -1304,7 +1347,7 @@ describe("sampling and prompt reuse", () => {
 		});
 		await agent.run(newConversation(), "x", {});
 		for (const req of ollama.requests) {
-			expect(req.options).toEqual({ num_ctx: 8192, temperature: 0, top_p: 0.9, top_k: 20, presence_penalty: 0.5 });
+			expect(req.options).toEqual({ num_ctx: 8192, temperature: 0, top_p: 0.9, top_k: 20, presence_penalty: 0.5, num_predict: 4096 });
 		}
 	});
 

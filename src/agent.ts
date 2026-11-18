@@ -127,6 +127,42 @@ export function looksLikeVaultQuestion(text: string, firstTurn = true): boolean 
 	return /\?\s*$/.test(t) || QUESTION_WORD.test(t);
 }
 
+/** Appended to a reply that was stopped because it had started repeating itself. */
+export const REPEAT_NOTE = "*(The model started repeating itself, so this reply was stopped here. Ask again, or ask for less at once.)*";
+
+/**
+ * Where a reply began to repeat itself, or null. A small model sometimes falls into writing the
+ * same line or phrase over and over and does not stop until the context window is full: a few
+ * seconds on a fast card, the better part of an hour on a laptop. The reply counts as repeating
+ * when its end is the same 8 to 130 characters six times in a row (rules, dots and blanks, which
+ * repeat honestly, are not counted). The index returned keeps one copy of what is repeated, up
+ * to the end of its last complete sentence or line.
+ */
+export function repeatingTail(text: string): number | null {
+	if (text.length < 60) return null;
+	const tail = text.slice(-800);
+	for (let p = 8; p <= 130 && p * 6 <= tail.length; p++) {
+		const unit = tail.slice(-p);
+		if (new Set(unit).size <= 3) continue;
+		if (tail.endsWith(unit.repeat(6))) {
+			// Walk back over every further copy, then keep the first.
+			let start = text.length - p * 6;
+			while (start >= p && text.slice(start - p, start) === unit) start -= p;
+			// The repeated unit is whatever the stream happened to end on, so one copy of it can stop
+			// mid-sentence: end on the last sentence or line that is complete within it.
+			const kept = text.slice(0, start + p);
+			const ends = Array.from(kept.slice(start).matchAll(/[.!?](?=\s|$)|\n/g));
+			return ends.length ? start + (ends[ends.length - 1].index ?? 0) + 1 : start + p;
+		}
+	}
+	return null;
+}
+
+/** Tokens a single reply may run to: more than any one answer or edit needs, far less than a full window of nonsense. */
+export function replyCap(numCtx: number): number {
+	return Math.max(1024, Math.min(8192, Math.floor(numCtx / 2)));
+}
+
 /** Appended to a reply the model did not finish. */
 export const CUT_OFF_NOTE = "*(This reply was cut off at the model's length limit. Ask me to continue.)*";
 
@@ -636,7 +672,7 @@ export class Agent {
 		// It also holds nothing that varies per message (see turnContext), so the next turn starts
 		// from the same cached prefix unless the vault's outline changed in between.
 		const system: ChatMessage = { role: "system", content: frozen.system };
-		const options = { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}) };
+		const options = { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}), num_predict: replyCap(cfg.numCtx) };
 		const wireTools = toOllamaTools(tools);
 		/** What every request of this turn carries whatever the conversation holds. */
 		const fixedChars = system.content.length + JSON.stringify(wireTools).length;
@@ -687,6 +723,13 @@ export class Agent {
 
 			let response;
 			let streamed = false;
+			// A reply that starts repeating itself is stopped where the repetition began.
+			let written = "";
+			let checkedAt = 0;
+			let runaway: string | null = null;
+			const step = new AbortController();
+			const stop = () => step.abort();
+			signal?.addEventListener("abort", stop);
 			try {
 				response = await client.chat({
 					model: cfg.model,
@@ -695,14 +738,32 @@ export class Agent {
 					think,
 					options,
 					keep_alive: cfg.keepAlive,
-					signal,
+					signal: step.signal,
 					onDelta: (d) => {
 						streamed = true;
-						if (d.content) callbacks.onAssistantDelta?.(d.content);
+						if (runaway !== null) return;
+						if (d.content) {
+							written += d.content;
+							if (written.length - checkedAt >= 120) {
+								checkedAt = written.length;
+								const at = repeatingTail(written);
+								if (at !== null) {
+									runaway = written.slice(0, at);
+									step.abort();
+									return;
+								}
+							}
+							callbacks.onAssistantDelta?.(d.content);
+						}
 						if (d.thinking) callbacks.onThinkingDelta?.(d.thinking);
 					},
 				});
+				if (runaway !== null) response = { message: { role: "assistant" as const, content: runaway }, doneReason: "repetition", promptTokens: response.promptTokens, completionTokens: response.completionTokens };
 			} catch (err) {
+				if (runaway !== null && !signal?.aborted) {
+					// The stop was ours: what it had written before it began to loop is the reply.
+					response = { message: { role: "assistant" as const, content: runaway }, doneReason: "repetition" };
+				} else {
 				if (signal?.aborted) return;
 				// Models without a thinking mode reject `think`; retry once without it.
 				if (think !== undefined && err instanceof OllamaError && /think/i.test(err.message)) {
@@ -726,9 +787,13 @@ export class Agent {
 					continue;
 				}
 				throw err;
+				}
+			} finally {
+				signal?.removeEventListener("abort", stop);
 			}
 
 			const assistant = response.message;
+			if (response.doneReason === "repetition") assistant.content = `${assistant.content.trimEnd()}\n\n${REPEAT_NOTE}`;
 			// What was sent, against the model's own count of it: the next budget is in real tokens.
 			if (response.promptTokens !== undefined && response.promptTokens > 2000) {
 				const observed = sentChars / response.promptTokens;
