@@ -101,10 +101,53 @@ describe("read_note", () => {
 		vault.seed("Long.md", "A".repeat(500));
 		const { ctx } = makeCtx(vault);
 		const first = await readNote.execute({ path: "Long.md" }, ctx);
-		expect(first).toContain("TRUNCATED at character 200");
+		// The page is what is left of the budget after the header and the marker, never less than a quarter of it.
+		expect(first).toContain("[TRUNCATED at character 100 of 500. Call read_note again with offset=100 to continue.]");
 		const second = await readNote.execute({ path: "Long.md", offset: 400 }, ctx);
 		expect(second).toContain("continuing from character 400");
 		expect(second).not.toContain("TRUNCATED");
+	});
+	it("pages a long note with many links so that every character is seen exactly once", async () => {
+		// Numbered words, so a skipped or repeated span cannot go unnoticed.
+		const text = Array.from({ length: 9000 }, (_, i) => `w${i}`).join(" ") + " 😀 end";
+		const links = Array.from({ length: 40 }, (_, i) => `[[Some Fairly Long Note Name Number ${i}]]`).join(" ");
+		for (const limit of [1000, 2000, 12000]) {
+			const vault = new FakeVault({ "Hub/Long Hub.md": `#hub ${links}\n\n${text}` });
+			for (let i = 0; i < 40; i++) vault.seed(`Linkers/A Note That Links To The Hub ${i}.md`, "See [[Long Hub]].");
+			const { ctx } = makeCtx(vault);
+			ctx.maxResultChars = limit;
+			const content = await vault.read("Hub/Long Hub.md");
+			let seen = "";
+			let offset = 0;
+			for (let calls = 0; calls < 200; calls++) {
+				const out = await readNote.execute({ path: "Hub/Long Hub.md", offset }, ctx);
+				// Within the budget, so the agent (which cuts above maxResultChars + 500) leaves the marker alone.
+				expect(out.length).toBeLessThanOrEqual(limit);
+				expect(out).toMatch(/^# Hub\/Long Hub\.md\ntags: .*\nlinks to: .*\nlinked from: .*\nlength: \d+ characters\n---\n/);
+				let body = out.slice(out.indexOf("\n---\n") + 5);
+				if (offset > 0) {
+					expect(body.startsWith(`[…continuing from character ${offset}]\n`)).toBe(true);
+					body = body.slice(body.indexOf("\n") + 1);
+				}
+				const marker = /\n\n\[TRUNCATED at character (\d+) of (\d+)\. Call read_note again with offset=(\d+) to continue\.\]$/.exec(body);
+				if (!marker) {
+					seen += body;
+					break;
+				}
+				expect(marker[1]).toBe(marker[3]);
+				expect(Number(marker[2])).toBe(content.length);
+				seen += body.slice(0, marker.index);
+				expect(Number(marker[3])).toBe(seen.length);
+				offset = Number(marker[3]);
+			}
+			expect(seen).toBe(content);
+		}
+	});
+	it("says how many links were left out of a long header", async () => {
+		const vault = new FakeVault({ "Hub.md": Array.from({ length: 45 }, (_, i) => `[[N${i}]]`).join(" ") });
+		const { ctx } = makeCtx(vault);
+		ctx.maxResultChars = 12000;
+		expect(await readNote.execute({ path: "Hub.md" }, ctx)).toContain("N29, … (+15 more)\n");
 	});
 	it("fails helpfully for a missing note", async () => {
 		const { ctx } = makeCtx(freshVault());
@@ -430,6 +473,23 @@ describe("read_section / extractSection", () => {
 		expect(miss).toMatch(/No heading matching "Zebra"/);
 		expect(miss).toContain("## Status");
 	});
+	it("names the read_note offset that continues a section too long for one result", async () => {
+		const body = Array.from({ length: 600 }, (_, i) => `s${i}`).join(" ");
+		const content = `# T\n\nintro line\n\n## Big\n\n${body}\n\n## After\n\ntail`;
+		const vault = new FakeVault({ "Deep/Long.md": content });
+		const { ctx } = makeCtx(vault);
+		ctx.maxResultChars = 1000;
+		const out = await readSection.execute({ path: "Deep/Long", heading: "Big" }, ctx);
+		expect(out.length).toBeLessThanOrEqual(1000);
+		const marker = /\n\n\[TRUNCATED at (\d+) of (\d+) characters of this section\. Call read_note with offset=(\d+) to continue\.\]$/.exec(out);
+		expect(marker).not.toBeNull();
+		const shown = out.slice(out.indexOf("\n---\n") + 5, marker!.index);
+		expect(shown.length).toBe(Number(marker![1]));
+		// The offset is where this page stopped, in the note's own characters.
+		expect(content.slice(0, Number(marker![3])).endsWith(shown)).toBe(true);
+		const rest = await readNote.execute({ path: "Deep/Long", offset: Number(marker![3]) }, ctx);
+		expect(rest).toContain(`[…continuing from character ${marker![3]}]\n${content.slice(Number(marker![3]), Number(marker![3]) + 40)}`);
+	});
 });
 
 describe("move_note", () => {
@@ -517,6 +577,32 @@ describe("read_file", () => {
 		expect(out).toContain("Isolation forests");
 		await expect(readFile.execute({ path: "Ideas/Sensors" }, ctx)).rejects.toThrow(/use read_note/);
 		await expect(readFile.execute({ path: "nope.pdf" }, ctx)).rejects.toThrow(/No file found/);
+	});
+	it("pages a long attachment within the budget, the scanned-pages note included", async () => {
+		const vault = freshVault();
+		vault.seedFile("Attachments/A Rather Long Folder Name/slides for the whole semester.pdf", 1000);
+		const { ctx } = makeCtx(vault);
+		ctx.maxResultChars = 1500;
+		ctx.describeImage = async () => "";
+		const text = "--- Page 1 ---\n\n--- Page 2 ---\n" + Array.from({ length: 2000 }, (_, i) => `t${i}`).join(" ");
+		ctx.readAttachmentText = async () => text;
+		let seen = "";
+		let offset = 0;
+		for (let calls = 0; calls < 50; calls++) {
+			const out = await readFile.execute({ path: "slides for the whole semester.pdf", offset }, ctx);
+			expect(out.length).toBeLessThanOrEqual(1500);
+			if (offset === 0) expect(out).toContain("[Page 1 has no text layer (scanned).");
+			const body = out.slice(out.indexOf("\n---\n") + 5).replace(/\n\n\[Page 1 has no text layer[^\]]*\]/, "");
+			const marker = /\n\n\[TRUNCATED at character (\d+) of \d+\. Call read_file again with offset=(\d+) to continue\.\]$/.exec(body);
+			if (!marker) {
+				seen += body;
+				break;
+			}
+			seen += body.slice(0, marker.index);
+			offset = Number(marker[2]);
+			expect(offset).toBe(seen.length);
+		}
+		expect(seen).toBe(text);
 	});
 });
 

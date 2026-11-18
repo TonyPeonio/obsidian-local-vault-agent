@@ -158,6 +158,52 @@ function truncate(text: string, max: number, offset = 0): { text: string; trunca
 	return { text: slice, truncated: offset + max < total, total };
 }
 
+/*
+ * The agent replaces the end of any result longer than maxResultChars + 500 with a generic
+ * notice, which cuts off whatever a tool put last: a "call again with offset=N" marker, a
+ * verdict, a "N more" line. So every tool keeps its whole result within ctx.maxResultChars
+ * itself, and what it leaves out it says in its own words.
+ */
+
+/** The smallest page a paged read returns, however much else is in the result. */
+function minPage(limit: number): number {
+	return Math.max(100, Math.floor(limit / 4));
+}
+
+/**
+ * One page of `text` from `offset`, sized so that `overhead` (the characters of everything
+ * else in the result) plus the page and its continuation marker fit in `limit`. `next` is the
+ * offset of the first character not shown, which is what the marker must name; null at the end.
+ */
+export function pageWithin(
+	text: string,
+	offset: number,
+	limit: number,
+	overhead: number,
+	marker: (next: number) => string,
+): { text: string; marker: string; next: number | null } {
+	const floor = minPage(limit);
+	if (text.length - offset <= Math.max(floor, limit - overhead)) return { text: text.slice(offset), marker: "", next: null };
+	// The marker's length depends on the offset it names; the text's own length has at least as many digits.
+	let next = offset + Math.max(floor, limit - overhead - marker(text.length).length);
+	// Never split a surrogate pair (an emoji) across two pages.
+	const last = text.charCodeAt(next - 1);
+	if (last >= 0xd800 && last <= 0xdbff) next--;
+	return { text: text.slice(offset, next), marker: marker(next), next };
+}
+
+/** "a, b, c" cut to `maxItems` names and about `maxChars` characters, saying how many were left out. */
+function nameList(items: string[], maxItems: number, maxChars: number): string {
+	const kept: string[] = [];
+	let chars = 0;
+	for (const item of items) {
+		if (kept.length >= maxItems || (kept.length > 0 && chars + item.length + 2 > maxChars)) break;
+		kept.push(item);
+		chars += item.length + 2;
+	}
+	return kept.join(", ") + (kept.length < items.length ? `, … (+${items.length - kept.length} more)` : "");
+}
+
 async function requestApproval(ctx: ToolContext, req: ApprovalRequest): Promise<void> {
 	const decision = await ctx.approve(req);
 	if (decision === "reject") {
@@ -624,10 +670,19 @@ export const readSection: ToolDefinition = {
 			const available = ctx.vault.getMetadata(path).headings;
 			return `No heading matching "${heading}" in ${path}.${available.length ? ` Headings in this note:\n${available.join("\n")}` : " The note has no headings; use read_note."}`;
 		}
-		const page = truncate(section.text, ctx.maxResultChars);
-		let out = `# ${path} (lines ${section.startLine}–${section.endLine})\n---\n${page.text}`;
-		if (page.truncated) out += `\n\n[TRUNCATED at ${ctx.maxResultChars} characters of ${page.total}; use read_note with an offset for the rest.]`;
-		return out;
+		const head = `# ${path} (lines ${section.startLine}–${section.endLine})\n---\n`;
+		// Where the section starts in the note, so the marker names the read_note offset that continues exactly where this page stops.
+		let startChar = 0;
+		const lines = content.split("\n");
+		for (let i = 0; i < section.startLine - 1; i++) startChar += lines[i].length + 1;
+		const page = pageWithin(
+			section.text,
+			0,
+			ctx.maxResultChars,
+			head.length,
+			(next) => `\n\n[TRUNCATED at ${next} of ${section.text.length} characters of this section. Call read_note with offset=${startChar + next} to continue.]`,
+		);
+		return `${head}${page.text}${page.marker}`;
 	},
 };
 
@@ -649,35 +704,41 @@ export const readNote: ToolDefinition = {
 		const offset = int(args, "offset", 0, 0, 50_000_000);
 		const content = await ctx.vault.read(path);
 		const meta = ctx.vault.getMetadata(path);
-		// Re-reading a note already read in this turn only burns context; the first read is still in the conversation.
-		const stamp = `${content.length}:${hashText(content)}`;
-		if (ctx.readLog) {
-			const seen = ctx.readLog.get(path);
-			if (seen === stamp && offset === 0 && content.length <= ctx.maxResultChars) {
-				return `(unchanged since you read ${path} earlier in this turn; its full text is already above — do not read it again.)`;
-			}
-			if (offset === 0 && content.length <= ctx.maxResultChars) ctx.readLog.set(path, stamp);
-		}
-		const page = truncate(content, ctx.maxResultChars, offset);
+		const limit = ctx.maxResultChars;
+		// The header and the page share one budget: a page of `limit` characters under a long
+		// header would be cut by the agent, marker included, and the next offset would skip text.
+		const listChars = Math.max(200, Math.floor(limit / 8));
 		const header = [
 			`# ${path}`,
-			meta.tags.length ? `tags: ${meta.tags.join(", ")}` : null,
-			meta.links.length ? `links to: ${meta.links.slice(0, 30).join(", ")}` : null,
-			meta.backlinks.length ? `linked from: ${meta.backlinks.slice(0, 30).join(", ")}` : null,
-			`length: ${page.total} characters`,
+			meta.tags.length ? `tags: ${nameList(meta.tags, 60, listChars)}` : null,
+			meta.links.length ? `links to: ${nameList(meta.links, 30, listChars)}` : null,
+			meta.backlinks.length ? `linked from: ${nameList(meta.backlinks, 30, listChars)}` : null,
+			`length: ${content.length} characters`,
 		]
 			.filter(Boolean)
 			.join("\n");
-		let body = page.text;
-		if (offset > 0) body = `[…continuing from character ${offset}]\n` + body;
-		if (page.truncated) {
-			body += `\n\n[TRUNCATED at character ${offset + ctx.maxResultChars} of ${page.total}. Call read_note again with offset=${offset + ctx.maxResultChars} to continue.]`;
-		}
+		const prefix = offset > 0 ? `[…continuing from character ${offset}]\n` : "";
+		let imageNote = "";
 		if (ctx.describeImage && offset === 0) {
 			const images = imageEmbeds(content);
-			if (images.length) body += `\n\n[This note embeds ${images.length} image${images.length === 1 ? "" : "s"} (${images.slice(0, 8).join(", ")}${images.length > 8 ? ", …" : ""}). Its text cannot see them; if what they show matters, read one with read_image.]`;
+			if (images.length) imageNote = `\n\n[This note embeds ${images.length} image${images.length === 1 ? "" : "s"} (${nameList(images, 8, 300)}). Its text cannot see them; if what they show matters, read one with read_image.]`;
 		}
-		return `${header}\n---\n${body}`;
+		const page = pageWithin(
+			content,
+			offset,
+			limit,
+			header.length + 5 + prefix.length + imageNote.length,
+			(next) => `\n\n[TRUNCATED at character ${next} of ${content.length}. Call read_note again with offset=${next} to continue.]`,
+		);
+		// Re-reading a note already read in full in this turn only burns context; the first read is still in the conversation.
+		if (ctx.readLog && offset === 0 && page.next === null) {
+			const stamp = `${content.length}:${hashText(content)}`;
+			if (ctx.readLog.get(path) === stamp) {
+				return `(unchanged since you read ${path} earlier in this turn; its full text is already above — do not read it again.)`;
+			}
+			ctx.readLog.set(path, stamp);
+		}
+		return `${header}\n---\n${prefix}${page.text}${page.marker}${imageNote}`;
 	},
 };
 
@@ -1344,14 +1405,20 @@ export const readFile: ToolDefinition = {
 		const text = await ctx.readAttachmentText(path);
 		const scannable = !!ctx.describeImage && /\.pdf$/i.test(path);
 		if (!text.replace(/^--- Page \d+ ---$/gm, "").trim()) return `${path} contains no extractable text (it may be a scanned image or a binary file).${scannable ? " Read its pages with read_image (path, page)." : ""}`;
-		const page = truncate(text, ctx.maxResultChars, offset);
-		let out = `# ${path}\nlength: ${page.total} characters\n---\n${page.text}`;
+		const head = `# ${path}\nlength: ${text.length} characters\n---\n`;
+		let scanned = "";
 		if (scannable && offset === 0) {
 			const blank = Array.from(text.matchAll(/^--- Page (\d+) ---\n(?=\s*(?:--- Page|$))/gm), (m) => m[1]);
-			if (blank.length) out += `\n\n[Page${blank.length === 1 ? "" : "s"} ${blank.slice(0, 20).join(", ")} ha${blank.length === 1 ? "s" : "ve"} no text layer (scanned). read_image with the path and page reads a scanned page.]`;
+			if (blank.length) scanned = `\n\n[Page${blank.length === 1 ? "" : "s"} ${blank.slice(0, 20).join(", ")} ha${blank.length === 1 ? "s" : "ve"} no text layer (scanned). read_image with the path and page reads a scanned page.]`;
 		}
-		if (page.truncated) out += `\n\n[TRUNCATED at character ${offset + ctx.maxResultChars} of ${page.total}. Call read_file again with offset=${offset + ctx.maxResultChars} to continue.]`;
-		return out;
+		const page = pageWithin(
+			text,
+			offset,
+			ctx.maxResultChars,
+			head.length + scanned.length,
+			(next) => `\n\n[TRUNCATED at character ${next} of ${text.length}. Call read_file again with offset=${next} to continue.]`,
+		);
+		return `${head}${page.text}${scanned}${page.marker}`;
 	},
 };
 
