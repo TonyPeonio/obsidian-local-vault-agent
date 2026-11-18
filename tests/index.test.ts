@@ -67,6 +67,22 @@ describe("SemanticIndex", () => {
 		expect(hits.map((h) => h.path)).toHaveLength(new Set(hits.map((h) => h.path)).size);
 	});
 
+	it("snippets a hit around the query's words, not at the start of the passage", async () => {
+		const { index, vault } = setup();
+		// One long paragraph (a single chunk): the words asked about come after 700 characters of lead-in.
+		const leadIn = "The course opened with a long recap of last week. ".repeat(14);
+		vault.seed("School/Lecture.md", `# Lecture\n\n${leadIn}Then Strassen multiplies two matrices with seven multiplications instead of eight. ${"Closing remarks went on for a while. ".repeat(10)}`);
+		await index.syncAll();
+		const hit = (await index.search("strassen seven multiplications", 5)).find((h) => h.path === "School/Lecture.md");
+		expect(hit?.snippet).toContain("Strassen multiplies two matrices with seven multiplications");
+		expect(hit?.snippet.startsWith("…")).toBe(true);
+		expect(hit?.snippet.endsWith("…")).toBe(true);
+		expect(hit?.snippet.length).toBeLessThanOrEqual(282);
+		// None of the words in the passage: its start, as before.
+		const other = (await index.search("zebra", 5)).find((h) => h.path === "School/Lecture.md");
+		expect(other?.snippet.startsWith("The course opened with a long recap")).toBe(true);
+	});
+
 	it("re-embeds only changed notes on the next sync", async () => {
 		const { index, vault, ollama } = setup();
 		await index.syncAll();

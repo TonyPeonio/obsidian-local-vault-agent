@@ -10,7 +10,7 @@ import { imageEmbeds } from "../embeds";
 import { hasFrontmatter } from "../prompts";
 
 /**
- * The tools the model can call. Each tool returns plain text or JSON for the model; the
+ * The tools the model can call. Each tool returns plain text for the model; the
  * agent wraps errors so the model can recover instead of the whole run failing.
  */
 
@@ -365,11 +365,11 @@ export const searchNotes: ToolDefinition = {
 		const limit = int(args, "limit", 8, 1, 25);
 		const hits = await ctx.search(query, limit);
 		if (hits.length === 0) return `No notes matched "${query}". Try different keywords or list_notes.`;
-		return JSON.stringify(
-			hits.map((h) => ({ path: h.path, heading: h.heading, snippet: h.snippet })),
-			null,
-			1,
-		);
+		// Plain text like every other tool, in search_passages' layout: "--- [n] path › heading" and the snippet under it.
+		const rows = hits.map((h, i) => `--- [${i + 1}] ${h.path}${h.heading ? ` › ${h.heading}` : ""}\n${h.snippet}`);
+		const head = (n: number) => `${n} note${n === 1 ? "" : "s"}, best first. Each snippet is a short excerpt, not the note's text.\n`;
+		const keep = Math.max(1, fitCount(rows, ctx.maxResultChars - head(rows.length).length));
+		return head(keep) + rows.slice(0, keep).join("\n");
 	},
 };
 

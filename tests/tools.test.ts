@@ -76,11 +76,31 @@ describe("normalizeNotePath", () => {
 });
 
 describe("search_notes", () => {
-	it("returns JSON hits", async () => {
+	it("returns the hits as plain text, best first, in the layout of search_passages", async () => {
 		const { ctx } = makeCtx(freshVault());
 		const out = await searchNotes.execute({ query: "hall sensors" }, ctx);
-		const hits = JSON.parse(out);
-		expect(hits[0].path).toBe("Ideas/Sensors.md");
+		expect(out).toBe(
+			"2 notes, best first. Each snippet is a short excerpt, not the note's text.\n--- [1] Ideas/Sensors.md\n#hardware Hall sensors are cheap.\n--- [2] Projects/Chess Robot.md\n--- tags: [project] --- # Chess Robot The gantry moves pieces. See [[Sensors]]. ## Status Working.",
+		);
+	});
+	it("labels a hit with its heading path when the search has one", async () => {
+		const { ctx } = makeCtx(freshVault());
+		ctx.search = async () => [
+			{ path: "School/Lectures.md", score: 0.9, heading: "2026-09-10 › Summary", snippet: "…seven multiplications instead of eight…" },
+			{ path: "Ideas/Sensors.md", score: 0.5, snippet: 'A "quoted" snippet stays as it is.' },
+		];
+		expect(await searchNotes.execute({ query: "strassen" }, ctx)).toBe(
+			'2 notes, best first. Each snippet is a short excerpt, not the note\'s text.\n--- [1] School/Lectures.md › 2026-09-10 › Summary\n…seven multiplications instead of eight…\n--- [2] Ideas/Sensors.md\nA "quoted" snippet stays as it is.',
+		);
+	});
+	it("fits the hits to the result budget and counts the ones it shows", async () => {
+		const { ctx } = makeCtx(freshVault(), "approve", 1000);
+		ctx.search = async (_q, limit) => Array.from({ length: limit }, (_, i) => ({ path: `Notes/Note ${i}.md`, score: 1 - i / 100, snippet: "s".repeat(240) }));
+		const out = await searchNotes.execute({ query: "q", limit: 25 }, ctx);
+		expect(out.length).toBeLessThanOrEqual(1000);
+		expect(out).toMatch(/^3 notes, best first\./);
+		expect(out).toContain("--- [3] Notes/Note 2.md\n");
+		expect(out).not.toContain("--- [4]");
 	});
 	it("explains when nothing matches", async () => {
 		const { ctx } = makeCtx(freshVault());

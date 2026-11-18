@@ -37,6 +37,16 @@ function countOccurrences(haystack: string, needle: string): number {
 	return count;
 }
 
+/** `width` characters of `content` with `at` a third of the way in, whitespace collapsed, each cut marked with "…". */
+function snippetAt(content: string, at: number, width: number): string {
+	const start = Math.max(0, at - Math.floor(width / 3));
+	const end = Math.min(content.length, start + width);
+	let snippet = content.slice(start, end).replace(/\s+/g, " ").trim();
+	if (start > 0) snippet = "…" + snippet;
+	if (end < content.length) snippet += "…";
+	return snippet;
+}
+
 export function makeSnippet(content: string, terms: string[], width = 240): string {
 	const lower = content.toLowerCase();
 	let best = -1;
@@ -44,13 +54,35 @@ export function makeSnippet(content: string, terms: string[], width = 240): stri
 		const i = lower.indexOf(t);
 		if (i >= 0 && (best < 0 || i < best)) best = i;
 	}
-	if (best < 0) best = 0;
-	const start = Math.max(0, best - Math.floor(width / 3));
-	const end = Math.min(content.length, start + width);
-	let snippet = content.slice(start, end).replace(/\s+/g, " ").trim();
-	if (start > 0) snippet = "…" + snippet;
-	if (end < content.length) snippet += "…";
-	return snippet;
+	return snippetAt(content, Math.max(0, best), width);
+}
+
+/**
+ * A snippet of a passage found by meaning: the part of it where most of the query's words
+ * occur together, or its start when it has none of them. A semantic hit's first 280
+ * characters are often the lead-in, not the sentence the query was about. (makeSnippet, which
+ * anchors on the first term it finds, is the cheap version for whole notes scored on those terms.)
+ */
+export function snippetNear(content: string, terms: string[], width = 280): string {
+	const lower = content.toLowerCase();
+	const spots: { at: number; term: number }[] = [];
+	terms.forEach((t, k) => {
+		for (let i = lower.indexOf(t); i >= 0 && spots.length < 500; i = lower.indexOf(t, i + t.length)) spots.push({ at: i, term: k });
+	});
+	spots.sort((a, b) => a.at - b.at);
+	let best = 0;
+	let most = 0;
+	// The earliest place from which the snippet would cover the most different terms.
+	const reach = Math.floor((width * 2) / 3);
+	for (let s = 0; s < spots.length; s++) {
+		const seen = new Set<number>();
+		for (let e = s; e < spots.length && spots[e].at < spots[s].at + reach; e++) seen.add(spots[e].term);
+		if (seen.size > most) {
+			most = seen.size;
+			best = spots[s].at;
+		}
+	}
+	return snippetAt(content, best, width);
 }
 
 export async function keywordSearch(

@@ -1,6 +1,7 @@
 import { chunkMarkdown } from "./chunker";
 import type { OllamaClient } from "./ollama";
 import { LexicalIndex, dateTerms, fuseKeyed } from "./retrieval";
+import { queryTerms, snippetNear } from "./search";
 import type { Passage, SearchHit, VaultAccess } from "./types";
 
 /**
@@ -403,9 +404,10 @@ export class SemanticIndex {
 			if (idx >= 0) best.push({ path, score: top, idx });
 		}
 		best.sort((a, b) => b.score - a.score);
+		const terms = queryTerms(query);
 		return best.slice(0, limit).map((b) => {
 			const chunk = this.files.get(b.path)!.chunks[b.idx];
-			return { path: b.path, score: b.score, heading: chunk.crumb || undefined, snippet: chunk.text.replace(/\s+/g, " ").slice(0, 280) };
+			return { path: b.path, score: b.score, heading: chunk.crumb || undefined, snippet: snippetNear(chunk.text, terms) };
 		});
 	}
 
