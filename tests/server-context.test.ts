@@ -263,7 +263,7 @@ describe("Agent with a server that says how large its window is", () => {
 		expect(e.message).toContain(`at least ${e.needed}`);
 		expect(e.message).toContain("LM Studio: the context length slider");
 		expect(e.message).toContain(`-c ${Math.max(16384, e.needed)} or more`);
-		// Nothing went to the model, and the conversation is as it was (the user's message is still in the box).
+		// Nothing went to the model, and the conversation is as it was: no message added, no earlier turn trimmed to the small window.
 		expect(ollama.requests).toHaveLength(0);
 		expect(JSON.stringify(conv.messages)).toBe(before);
 	});
