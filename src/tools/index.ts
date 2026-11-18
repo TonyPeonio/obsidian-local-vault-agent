@@ -274,6 +274,11 @@ function listWithin(head: string, rows: string[], total: number, max: number): s
 }
 
 /** Rows grouped under the note they belong to: "path\n  row\n  row". */
+/** A surveyed section with at least this many non-empty lines is listed among those "with content". */
+const SURVEY_FULL_LINES = 3;
+/** Room for the names of notes whose surveyed section is empty. */
+const SURVEY_EMPTY_CHARS = 1500;
+
 interface RowBlock {
 	path: string;
 	rows: string[];
@@ -921,8 +926,17 @@ export const listSections: ToolDefinition = {
 		let withAll = 0;
 		/** `path › heading` of those sections, listed again at the end so they can be copied as edit targets. */
 		const marked: string[] = [];
-		/** Notes whose rows have only some of the texts (grouped mode). */
+		/** Notes whose rows have only some of the texts (grouped mode), or a short section (survey mode). */
 		const someBlocks: RowBlock[] = [];
+		// A survey of one heading with no texts to test for ("the Capture section of every daily
+		// note") is listed in three groups by how much is under the heading. Left to judge "which
+		// of these have real content" from 127 rows of line counts, a 9B model counted one-liners
+		// in (the benchmark's most frequent miss); the groups make that a matter of reading.
+		const survey = !!wantHeading && needles.length === 0;
+		let fullCount = 0;
+		let briefCount = 0;
+		let emptyCount = 0;
+		const emptyPaths: string[] = [];
 		for (const n of notes) {
 			const lines = (await ctx.vault.read(n.path)).split("\n");
 			// A section runs to the next heading of the same or a higher level, so nested
@@ -970,6 +984,17 @@ export const listSections: ToolDefinition = {
 				// Counted before the limit, so the two group counts add up to the total whatever is listed.
 				const hasAll = needles.length > 1 && flags.every(Boolean);
 				if (hasAll) withAll++;
+				const filled = survey ? bodyLines.filter((l) => l.trim()).length : 0;
+				if (survey) {
+					if (filled === 0) {
+						// Empty sections are named, not listed: there is nothing to show of them.
+						emptyCount++;
+						if (emptyPaths[emptyPaths.length - 1] !== n.path) emptyPaths.push(n.path);
+						continue;
+					}
+					if (filled >= SURVEY_FULL_LINES) fullCount++;
+					else briefCount++;
+				}
 				if (shown >= limit) continue;
 				shown++;
 				let row = `  ${"#".repeat(s.lvl)} ${s.heading}`;
@@ -986,7 +1011,7 @@ export const listSections: ToolDefinition = {
 					row += " → all";
 					if (marked.length < 80) marked.push(`${n.path} › ${s.heading}`);
 				}
-				if (grouped && !hasAll) someRows.push(row);
+				if ((grouped && !hasAll) || (survey && filled < SURVEY_FULL_LINES)) someRows.push(row);
 				else rows.push(row);
 			}
 			if (rows.length) blocks.push({ path: n.path, rows });
@@ -1016,7 +1041,7 @@ export const listSections: ToolDefinition = {
 					: "";
 			const first = fitBlocks(blocks, rowChars);
 			const second = fitBlocks(someBlocks, rowChars - first.chars);
-			const listed = first.rows + second.rows;
+			const listed = first.rows + second.rows + (survey ? emptyCount : 0);
 			const more = total > listed ? `\n…${total - listed} more sections not shown; narrow with folder/path${total > shown ? " or raise the limit" : ""}.` : "";
 			const group = (fit: { text: string; rows: number }, n: number) => (fit.rows ? fit.text : n ? "(not listed, to fit)" : "(none)");
 			const part = (fit: { rows: number }, n: number) => (fit.rows > 0 && fit.rows < n ? `, the first ${fit.rows} listed` : "");
@@ -1026,6 +1051,14 @@ export const listSections: ToolDefinition = {
 				const every = `Sections with EVERY text (${withAll}${part(first, withAll)}):\n${group(first, withAll)}`;
 				const partial = `Sections with only SOME of the texts (${total - withAll}${part(second, total - withAll)}) — leave these alone when the rule is "has both":\n${group(second, total - withAll)}`;
 				body = `${every}\n${partial}`;
+			} else if (survey) {
+				const names = fitCount(emptyPaths, SURVEY_EMPTY_CHARS);
+				const empty = emptyCount ? `: ${emptyPaths.slice(0, names).join(", ")}${emptyPaths.length > names ? ` (+${emptyPaths.length - names} more notes)` : ""}` : "";
+				body = [
+					`With ${SURVEY_FULL_LINES} or more lines (${fullCount}${part(first, fullCount)}):\n${group(first, fullCount)}`,
+					`With 1 or ${SURVEY_FULL_LINES - 1} lines (${briefCount}${part(second, briefCount)}):\n${group(second, briefCount)}`,
+					`Empty (${emptyCount})${empty}`,
+				].join("\n");
 			} else body = first.text;
 			return { text: `${total} section${total === 1 ? "" : "s"} ${legend}:\n${body}${more}${verdict}`, rowsUsed: first.chars };
 		};

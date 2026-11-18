@@ -240,7 +240,7 @@ describe("a folder argument that does not exist", () => {
 	});
 	it("list_sections takes a note given as the folder, as grep_vault does", async () => {
 		const { ctx } = makeCtx(vault());
-		expect(await listSections.execute({ heading: "2026", folder: "Lectures" }, ctx)).toMatch(/^1 section .*:\nSchool\/CSCI 406\/Lectures\.md\n {2}## 2026-09-03 \(1 line, 6 chars\): gantry$/);
+		expect(await listSections.execute({ heading: "2026", folder: "Lectures" }, ctx)).toMatch(/^1 section .*:\n[\s\S]*With 1 or 2 lines \(1\):\nSchool\/CSCI 406\/Lectures\.md\n {2}## 2026-09-03 \(1 line, 6 chars\): gantry\nEmpty \(0\)$/);
 	});
 });
 
@@ -523,7 +523,7 @@ describe("list_sections given a heading as the text to look for", () => {
 			const out = await listSections.execute({ containing: [text], folder: "Daily/" }, ctx);
 			expect(out, text).toMatch(/^\(containing: \[".*"\] names a heading/);
 			expect(out, text).toContain("3 sections (non-empty lines, characters, first line):");
-			expect(out, text).toContain("## Capture (empty)");
+			expect(out, text).toContain("Empty (1): Daily/2026-06-01.md");
 			expect(out, text).toContain("## Capture (2 lines");
 		}
 	});
@@ -993,6 +993,24 @@ describe("list_sections", () => {
 		expect(out).toContain("## a: ![[Recording yes, ### Summary yes → all");
 	});
 
+	it("surveys a year of daily notes in a few thousand characters, with every count exact", async () => {
+		const vault = new FakeVault({});
+		for (let i = 0; i < 300; i++) {
+			const day = `Daily/2026-${String(1 + Math.floor(i / 28)).padStart(2, "0")}-${String(1 + (i % 28)).padStart(2, "0")}.md`;
+			const body = i % 50 === 0 ? "- workshop notes\n- who to email\n- a third line\n- a fourth" : i % 10 === 0 ? "- call the bank" : "";
+			vault.seed(day, `# Day\n\n## Capture\n\n${body}\n\n## Tomorrow\n\n- [ ] Laundry\n`);
+		}
+		const { ctx } = makeCtx(vault);
+		const out = await listSections.execute({ heading: "Capture", folder: "Daily", limit: 400 }, ctx);
+		expect(out.length).toBeLessThanOrEqual(12000);
+		expect(out).toMatch(/^300 sections \(non-empty lines, characters, first line\):\nWith 3 or more lines \(6\):/);
+		expect(out).toContain("With 1 or 2 lines (24):");
+		// The 270 empty ones cost a name each while there is room, then a count.
+		expect(out).toMatch(/Empty \(270\): Daily\/2026-01-02\.md, .* \(\+\d+ more notes\)$/);
+		expect(out.match(/## Capture \(/g)).toHaveLength(30);
+		expect(out).not.toContain("more sections not shown");
+	});
+
 	it("treats a containing text that is just the heading as the heading, and surveys", async () => {
 		const vault = freshVault();
 		vault.seed("Daily/2026-11-01.md", "# D\n\n## Capture\n\n- one\n- two\n");
@@ -1001,7 +1019,7 @@ describe("list_sections", () => {
 		const out = await listSections.execute({ containing: ["## Capture"], heading: "Capture", folder: "Daily/" }, ctx);
 		expect(out).toMatch(/^2 sections \(non-empty lines/);
 		expect(out).toContain("## Capture (2 lines");
-		expect(out).toContain("(empty)");
+		expect(out).toContain("Empty (1): Daily/2026-11-02.md");
 	});
 
 	it("says the sections exist when none contains the texts, instead of 'no section'", async () => {
@@ -1037,10 +1055,19 @@ describe("list_sections", () => {
 		});
 		const { ctx } = makeCtx(vault);
 		const out = await listSections.execute({ heading: "capture", folder: "Daily" }, ctx);
-		expect(out).toMatch(/^3 sections \(non-empty lines, characters, first line\):/);
-		expect(out).toContain("Daily/a.md\n  ## Capture (3 lines, 40 chars): Fellowships from the talk:");
-		expect(out).toContain("Daily/b.md\n  ## Capture (empty)");
-		expect(out).toContain("Daily/c.md\n  ## Captured thoughts (1 line, 11 chars): > one quote");
+		// Three groups by how much is under the heading, so "which have real content" is read off, not judged from counts.
+		expect(out).toBe(
+			[
+				"3 sections (non-empty lines, characters, first line):",
+				"With 3 or more lines (1):",
+				"Daily/a.md",
+				"  ## Capture (3 lines, 40 chars): Fellowships from the talk:",
+				"With 1 or 2 lines (1):",
+				"Daily/c.md",
+				"  ## Captured thoughts (1 line, 11 chars): > one quote",
+				"Empty (1): Daily/b.md",
+			].join("\n"),
+		);
 		expect(out).not.toContain("Other/d.md");
 		const both = await listSections.execute({ heading: "Capture", containing: ["NDSEG"], folder: "Daily" }, ctx);
 		expect(both).toContain("## Capture (3 lines, 40 chars): Fellowships from the talk: | NDSEG yes");
