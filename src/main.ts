@@ -1244,7 +1244,16 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		// leaves the schedule as it was.
 		// Asked here of the folder as the plugin last read it, before anything is announced, and again
 		// inside the job, which reads the Daily Notes plugin's folder afresh (`runDailyJob`).
-		if (job === "daily" && this.dailyFolderExcluded(this.dailyFolder)) return this.skipExcludedDaily(manual);
+		if (job === "daily" && this.dailyFolderExcluded(this.dailyFolder)) {
+			// That folder may be an old one: the plugin reads the Daily Notes plugin's folder at start-up,
+			// with a chat message and inside the job, and this return keeps the job from reading it. A
+			// user who answered the notice by pointing Daily Notes at another folder was told "excluded"
+			// again every night until the next chat message or restart. So it is read afresh before the
+			// job is given up; when it is no longer excluded the job starts as usual.
+			await this.loadDailyNoteSettings();
+			if (this.dailyFolderExcluded(this.dailyFolder)) return this.skipExcludedDaily(manual);
+			return this.runJob(job, manual);
+		}
 		// The model does one thing at a time: never a job on top of a chat turn, nor the other way round.
 		const lease = this.busy.acquire("job", JOB_NAMES[job]);
 		if (!lease) {
@@ -1290,9 +1299,16 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			new Notice(t("notice.excludedDaily"), 8000);
 			return;
 		}
-		new Notice(t("job.excludedDaily", { job: JOB_NAMES.daily }), 0);
+		// The notice stays until clicked and the job is due again every night: with Obsidian left open
+		// for a week there were seven of the same on the screen. The one from the night before goes
+		// when the next is shown.
+		this.excludedDailyNotice?.hide();
+		this.excludedDailyNotice = new Notice(t("job.excludedDaily", { job: JOB_NAMES.daily }), 0);
 		await this.settleJob("daily", false, "skipped", "");
 	}
+
+	/** The notice of the last scheduled run that was skipped because the daily notes folder is excluded (see `skipExcludedDaily`). */
+	private excludedDailyNotice: Notice | null = null;
 
 	/** Stops the scheduled job that is running, if one is. Returns whether there was one. */
 	stopJob(): boolean {

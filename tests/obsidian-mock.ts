@@ -14,8 +14,15 @@ export class Setting {}
 export class Notice {
 	/** The text of every notice shown, so a test can see what the user was told. */
 	static shown: string[] = [];
+	/** The text of every notice the code took off the screen again with `hide()`. */
+	static hidden: string[] = [];
+	private text: string | null;
 	constructor(message?: unknown) {
+		this.text = typeof message === "string" ? message : null;
 		if (typeof message === "string") Notice.shown.push(message);
+	}
+	hide(): void {
+		if (this.text !== null) Notice.hidden.push(this.text);
 	}
 }
 export class TFile {}
