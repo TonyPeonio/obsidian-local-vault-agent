@@ -18,6 +18,10 @@ function resultOf(messages: ChatMessage[], at: number, index: number): ChatMessa
 	const call = messages[at].tool_calls?.[index];
 	const candidate = messages[at + 1 + index];
 	if (!call || candidate?.role !== "tool") return undefined;
+	// The results of one step stand directly under it, without a gap. A step that ended early (stopped,
+	// or cut short for repeating itself) has fewer results than calls, and the message this many places
+	// further down can then be a tool result of a later step: that one answers another call.
+	for (let i = at + 1; i < at + 1 + index; i++) if (messages[i].role !== "tool") return undefined;
 	// A turn that was stopped half-way has fewer results than calls; never pair a result with another call.
 	if (candidate.tool_name !== undefined && candidate.tool_name !== call.function.name) return undefined;
 	if (candidate.tool_call_id !== undefined && call.id !== undefined && candidate.tool_call_id !== call.id) return undefined;

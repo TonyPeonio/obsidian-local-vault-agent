@@ -98,6 +98,28 @@ describe("restoring a chat", () => {
 		expect(messages[5].ok).toBeUndefined();
 	});
 
+	it("never takes a later step's result for a call that was stopped, even when the tool is the same and calls carry no ids", () => {
+		const calls = ["A", "B", "C", "D"].map((n) => call("read_note", { path: `${n}.md` }));
+		const later = call("read_note", { path: "Later.md" });
+		const messages: ChatMessage[] = [
+			{ role: "user", content: "q" },
+			{ role: "assistant", content: "", tool_calls: calls },
+			tool("read_note", "# A.md\n---\nalpha"),
+			// Stopped after the first of four reads. Three places further down stands the next turn's read.
+			{ role: "user", content: "another question" },
+			{ role: "assistant", content: "", tool_calls: [later] },
+			tool("read_note", "# Later.md\n---\nomega", { ok: true, changes: [9] }),
+		];
+		const cards = restoredCards(messages, 1);
+		expect(cards.map((c) => c.state)).toEqual(["ok", "unfinished", "unfinished", "unfinished"]);
+		expect(cards[3].result).toBeNull();
+		expect(cards[3].changes).toEqual([]);
+		// And the stopped call's outcome is not written onto the later step's result.
+		recordOutcomes(messages, new Map<ToolCall, ToolOutcome>([[calls[3], { ok: false }]]));
+		expect(messages[5].ok).toBe(true);
+		expect(restoredCards(messages, 4)[0]).toMatchObject({ state: "ok", changes: [9] });
+	});
+
 	it("never pairs a result with another call: the tool name and the call id must agree", () => {
 		const a = call("read_note", { path: "A.md" }, "call_1");
 		const b = call("grep_vault", { pattern: "x" }, "call_2");
