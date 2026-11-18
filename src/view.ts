@@ -988,7 +988,6 @@ export class AgentView extends ItemView {
 					onThinkingDelta: (d) => {
 						piece("thinking", d.length);
 						live.turn?.appendThinking(d);
-						this.scrollToBottom();
 					},
 					// The renderer says when it has drawn something (contentAdded): the text is not on screen yet here.
 					onAssistantDelta: (d) => {
@@ -1432,6 +1431,7 @@ class TurnRenderer {
 	private content = "";
 	private thinking = "";
 	private renderTimer: number | null = null;
+	private thinkingTimer: number | null = null;
 	private toolCards = new Map<ToolCall, HTMLDetailsElement>();
 	/** Draws the reply block by block while it arrives, so finished paragraphs are not drawn again. */
 	private stream: StreamRenderer<Node>;
@@ -1482,7 +1482,20 @@ class TurnRenderer {
 			this.thinkingBody = this.thinkingEl.createDiv({ cls: "lva-thinking-body" });
 			this.root.insertBefore(this.thinkingEl, this.contentEl);
 		}
-		this.thinkingBody!.setText(this.thinking);
+		// Like the reply: drawn a few times a second, not once per token (each draw lays the list out again).
+		if (this.thinkingTimer !== null) return;
+		this.thinkingTimer = window.setTimeout(() => this.drawThinking(), 120);
+	}
+
+	/** Shows the thinking that has arrived. */
+	private drawThinking(): void {
+		if (this.thinkingTimer !== null) {
+			window.clearTimeout(this.thinkingTimer);
+			this.thinkingTimer = null;
+		}
+		if (!this.thinkingBody) return;
+		this.thinkingBody.setText(this.thinking);
+		this.view.contentAdded();
 	}
 
 	appendContent(delta: string): void {
@@ -1536,6 +1549,7 @@ class TurnRenderer {
 
 	async finish(message: ChatMessage): Promise<void> {
 		this.close();
+		this.drawThinking();
 		if (this.thinkingEl) {
 			this.thinkingEl.open = false;
 			this.thinkingEl.querySelector("summary")!.setText("Thinking (click to show)");
@@ -1565,6 +1579,7 @@ class TurnRenderer {
 	 * the "still writing" cursor, and mark tool calls that never answered as stopped instead of running.
 	 */
 	abandon(): void {
+		this.drawThinking();
 		if (this.contentEl.hasClass("lva-streaming")) {
 			this.contentEl.removeClass("lva-streaming");
 			const text = this.content;

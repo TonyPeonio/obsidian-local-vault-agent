@@ -309,6 +309,8 @@ async function progress(): Promise<void> {
 	check("then that the prompt is being read", seen.lastIndexOf("Reading the prompt…") > seen.indexOf("Loading the model…"), seen);
 	check("says working while the tool runs", seen.includes("Working…"), seen);
 	check("guesses the second call's prompt from the first call's counts", seen.some((s) => /^Reading about 10k tokens…$/.test(s)), seen);
+	const thought = m.box.querySelector(".lva-thinking-body")?.textContent ?? "";
+	check("all of the thinking is shown in the end, though it is drawn a few times a second and not per token", thought === "Let me think about the plan. ".repeat(6), thought.length);
 	check("says thinking, then writing with a rate", seen.some((s) => s.startsWith("Thinking…")) && seen.some((s) => /^Writing… about \d+(\.\d)? tokens\/s$/.test(s)), seen);
 	const stats = m.box.querySelector(".lva-stats")!.textContent ?? "";
 	numbers["progress: summary line"] = stats;
