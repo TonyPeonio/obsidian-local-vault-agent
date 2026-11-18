@@ -1686,24 +1686,36 @@ export const findInNote: ToolDefinition = {
 			const lower = pattern.toLowerCase();
 			find = (line) => line.toLowerCase().indexOf(lower);
 		}
-		const hits: { line: number; at: number }[] = [];
+		const hits: { line: number; at: number; under: string }[] = [];
 		const started = performance.now();
 		let searched = lines.length;
+		// The headings each line sits under, so a match in a long log says which entry it is in:
+		// "the decision about the belts" was found at once, and then the meeting it was made in was
+		// guessed at, section by section.
+		const stack: { level: number; text: string }[] = [];
+		let inFence = false;
 		for (let i = 0; i < lines.length; i++) {
 			// A slow expression on a very long note: stop and say so, as grep_vault does.
 			if (re && i % 200 === 199 && performance.now() - started > REGEX_BUDGET_MS) {
 				searched = i;
 				break;
 			}
+			if (/^\s*(```|~~~)/.test(lines[i])) inFence = !inFence;
+			const h = !inFence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+			if (h) {
+				while (stack.length && stack[stack.length - 1].level >= h[1].length) stack.pop();
+				stack.push({ level: h[1].length, text: h[2].trim() });
+			}
 			const at = find(lines[i]);
-			if (at >= 0) hits.push({ line: i, at });
+			// A lone top-level title is the note's name again; the path starts below it.
+			if (at >= 0) hits.push({ line: i, at, under: (stack.length > 1 && stack[0].level === 1 ? stack.slice(1) : stack).map((x) => x.text).join(" › ") });
 		}
 		if (searched < lines.length) note = `(This pattern is slow: the search was stopped after ${REGEX_BUDGET_MS / 1000} s at line ${searched} of ${lines.length}, so the result is incomplete. Use a simpler pattern.)\n${note}`;
 		if (hits.length === 0) {
 			return searched < lines.length ? `${note}No match in the lines searched so far.` : `${note}No lines in ${path} contain "${pattern}". The note has ${lines.length} lines (${content.length} characters).`;
 		}
-		const blocks = hits.slice(0, limit).map(({ line: i, at }) => {
-			const rows: string[] = [];
+		const blocks = hits.slice(0, limit).map(({ line: i, at, under }) => {
+			const rows: string[] = under ? [`under ${under}:`] : [];
 			for (let j = Math.max(0, i - 1); j <= Math.min(lines.length - 1, i + 1); j++) {
 				// A paragraph is one line: show the part around the match, and only the start of its neighbours.
 				rows.push(`${j === i ? ">" : " "} ${String(j + 1).padStart(4)} | ${j === i ? clipLine(lines[j], FIND_LINE_CHARS, at) : clipLine(lines[j], FIND_CONTEXT_CHARS)}`);

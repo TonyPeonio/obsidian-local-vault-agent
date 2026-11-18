@@ -508,6 +508,30 @@ describe("search_passages", () => {
 	});
 });
 
+describe("find_in_note says where in the note a match is", () => {
+	it("names the headings each match sits under, leaving out a lone title", async () => {
+		const vault = freshVault();
+		vault.seed(
+			"Clubs/Log.md",
+			["# Robot club log", "", "## 2026-08-11", "", "- budget talk", "", "## 2026-08-18", "", "- **Decision:** replace the GT2 belts with GT3.", "", "### Actions", "", "- Marcus orders the belts", "", "```", "## not a heading, belts in code", "```"].join("\n"),
+		);
+		const { ctx } = makeCtx(vault);
+		const out = await findInNote.execute({ path: "Clubs/Log.md", pattern: "belts" }, ctx);
+		expect(out).toContain("under 2026-08-18:\n     8 | \n>    9 | - **Decision:** replace the GT2 belts with GT3.");
+		expect(out).toContain("under 2026-08-18 › Actions:");
+		// A line inside a code block is still under the last real heading.
+		expect(out.match(/under 2026-08-18 › Actions:/g)).toHaveLength(2);
+		expect(out).not.toContain("Robot club log ›");
+	});
+
+	it("says nothing extra for a match before any heading", async () => {
+		const vault = freshVault();
+		vault.seed("Flat.md", "no headings here\njust belts\n");
+		const { ctx } = makeCtx(vault);
+		expect(await findInNote.execute({ path: "Flat.md", pattern: "belts" }, ctx)).not.toContain("under ");
+	});
+});
+
 describe("a write to a heading that a note has more than once", () => {
 	const lectures = [
 		"# Lectures",
