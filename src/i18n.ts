@@ -84,6 +84,8 @@ const en = {
 	"set.conventions.name": "Conventions note",
 	"set.conventions.desc": "A note in your vault that is given to the agent on every message, like a CLAUDE.md: folder meanings, naming rules, things to never touch.",
 	"set.conventions.button": "Create / open",
+	"cmd.conventions": "Draft the conventions note from this vault",
+	"notice.conventions.same": "The conventions note already describes the vault as it is.",
 	"set.inbox.name": "Daily notes inbox heading",
 	"set.inbox.desc": "For 'Process my daily notes': the section of each daily note where loose captures land, without the #.",
 	"set.topics.name": "Topic notes folder",

@@ -23,6 +23,7 @@ import { evaluateSetup, guessTier, type MachineTier } from "./setup";
 import { editSelectionPrompt, processDailyNotesPrompt, reformatPrompt, summarizePrompt } from "./prompts";
 import { frontmatterText, keywordSearch } from "./search";
 import { DEFAULT_SETTINGS, SAMPLING, isExcluded, migrateSettings, type LocalVaultAgentSettings } from "./settings";
+import { describeVault, refreshDescription } from "./describe-vault";
 import { LocalVaultAgentSettingTab } from "./settings-tab";
 import { ALL_TOOLS } from "./tools";
 import type { ApprovalRequest, ChangeRecord, ChatMessage, NoteInfo, SearchHit } from "./types";
@@ -285,6 +286,11 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			id: "process-daily-notes",
 			name: t("cmd.daily"),
 			callback: () => void this.processDailyNotes(),
+		});
+		this.addCommand({
+			id: "draft-conventions",
+			name: t("cmd.conventions"),
+			callback: () => void this.updateConventions(),
 		});
 		this.addCommand({
 			id: "suggest-improvements",
@@ -1315,6 +1321,25 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			citations: s.citations,
 			answerLanguage: s.answerLanguage,
 		};
+	}
+
+	/** The conventions note as the vault itself suggests it (see describe-vault.ts). */
+	draftConventions(path: string): string {
+		return describeVault(this.vault, { excluded: this.settings.excludedFolders.filter((f, i, all) => all.findIndex((x) => x.toLowerCase() === f.toLowerCase()) === i), today: localDate(new Date()), conventionsPath: path });
+	}
+
+	/** Creates the conventions note from the vault, or rewrites its counted part; shown as a diff first. */
+	async updateConventions(): Promise<void> {
+		const name = this.settings.conventionsNote.trim() || DEFAULT_SETTINGS.conventionsNote;
+		const path = this.vault.resolve(name) ?? normalizePath(/\.md$/i.test(name) ? name : `${name}.md`);
+		const before = this.vault.exists(path) ? await this.vault.read(path) : null;
+		const after = refreshDescription(before, this.draftConventions(path));
+		if (before !== null && after === before) {
+			new Notice(t("notice.conventions.same"));
+			return;
+		}
+		const ok = await this.writeWithApproval({ tool: before === null ? "create_note" : "edit_note", path, before: before ?? "", after, summary: before === null ? `Create ${path} from this vault` : `Update the vault description in ${path}` });
+		if (ok) await this.app.workspace.openLinkText(path, "", true);
 	}
 
 	private lastWarm = 0;

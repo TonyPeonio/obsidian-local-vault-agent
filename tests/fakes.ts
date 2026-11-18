@@ -144,7 +144,15 @@ export class FakeVault implements VaultAccess {
 		// is keyed by the name a link ends in and rebuilt only after a write.
 		const backlinks = (this.linkers().get(me) ?? []).filter((other) => other !== path);
 		const headings = Array.from(content.matchAll(/^(#{1,6}) (.+)$/gm)).map((m) => `${m[1]} ${m[2]}`);
-		return { tags: [...tags, ...fmTags], links, backlinks, headings, frontmatter: {} };
+		// Simple properties only (key: value, key: [a, b]), which is all the tests and the benchmark vault use.
+		const frontmatter: Record<string, unknown> = {};
+		for (const line of fm?.[1].split("\n") ?? []) {
+			const m = /^([A-Za-z_][\w-]*):\s*(.*)$/.exec(line);
+			if (!m) continue;
+			const value = m[2].trim();
+			frontmatter[m[1]] = /^\[.*\]$/.test(value) ? value.slice(1, -1).split(",").map((v) => v.trim()).filter(Boolean) : value.replace(/^"(.*)"$/, "$1");
+		}
+		return { tags: [...tags, ...fmTags], links, backlinks, headings, frontmatter };
 	}
 
 	private linkerMap: Map<string, string[]> | null = null;

@@ -414,7 +414,8 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 									let path = p.vault.resolve(s.conventionsNote);
 									if (!path) {
 										path = normalizePath(/\.md$/i.test(s.conventionsNote) ? s.conventionsNote : `${s.conventionsNote}.md`);
-										await p.vault.create(path, conventionsTemplate());
+										// A draft counted from this vault (folders, naming, shared sections, properties), not a generic example.
+										await p.vault.create(path, p.vault.listNotes().length >= 5 ? p.draftConventions(path) : conventionsTemplate());
 										new Notice(`Created ${path}. Edit it like any note.`);
 									}
 									await this.app.workspace.openLinkText(path, "", true);

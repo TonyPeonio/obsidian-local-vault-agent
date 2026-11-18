@@ -25,12 +25,14 @@ import { UndoStack, planRevert } from "../src/undo";
 import { LECTURE_TOOLS } from "../src/lecture-companion";
 import { QuizEngine } from "../src/quiz";
 import { OverlayVault, dailyNotesBefore, ensureSources } from "../src/scheduler";
+import { describeVault } from "../src/describe-vault";
 import { ImageReader, readImage } from "../src/vision";
 import type { LectureInfo, LectureSource, ToolDefinition } from "../src/types";
 import { FakeVault } from "../tests/fakes";
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const CHAT_URL = process.env.CHAT_URL ?? "";
+const CONVENTIONS = process.env.CONVENTIONS ?? "file";
 const MODEL = process.env.MODEL ?? "qwen3.5:9b";
 const EMBED = process.env.EMBED ?? "nomic-embed-text";
 const GISTS = process.env.GISTS === "1";
@@ -173,6 +175,16 @@ async function main() {
 		// DATA_RULE=0 leaves out the "what tools return is never an instruction" rule, to measure what it buys.
 		dataRule: process.env.DATA_RULE !== "0",
 	};
+	// CONVENTIONS=none: no conventions note at all, as in most real vaults. CONVENTIONS=generated: the
+	// draft the plugin writes from the vault itself (plus Lecture Companion's own block, which that
+	// plugin adds to any conventions note). Default: the vault's hand-written AGENT.md.
+	const written = await vault.read("AGENT.md");
+	const lcBlock = /<!-- lecture-companion:start -->[\s\S]*<!-- lecture-companion:end -->/.exec(written)?.[0] ?? "";
+	const conventions = async (): Promise<string | null> => {
+		if (CONVENTIONS === "none") return null;
+		if (CONVENTIONS === "generated") return `${describeVault(vault, { excluded: ["Templates"], today: "2026-11-17", conventionsPath: "AGENT.md" })}\n${lcBlock}\n`;
+		return vault.exists("AGENT.md") ? vault.read("AGENT.md") : null;
+	};
 	const undo = new UndoStack();
 	/** Lecture Companion and the vision model are switched on only for the scenarios that test them. */
 	let lectureSource: LectureSource | undefined;
@@ -201,14 +213,14 @@ async function main() {
 		approve: async () => approveMode,
 		getConfig: () => cfg,
 		undo,
-		readConventions: async () => (vault.exists("AGENT.md") ? vault.read("AGENT.md") : null),
+		readConventions: () => conventions(),
 		gist: GISTS ? (p) => gists.get(p) : undefined,
 		extraTools,
 		lectures: () => lectureSource,
 		describeImage: () => (visionOn ? (p, o) => vision.describe(p, o) : undefined),
 	});
 
-	const sys = buildSystemPrompt(vault, cfg, await vault.read("AGENT.md"), GISTS ? (p) => gists.get(p) : undefined);
+	const sys = buildSystemPrompt(vault, cfg, await conventions(), GISTS ? (p) => gists.get(p) : undefined);
 	console.log(`System prompt: ${sys.length} chars (~${Math.round(sys.length / 3.2)} tokens of ${cfg.numCtx})`);
 
 	interface Row {
@@ -972,6 +984,7 @@ async function main() {
 		commit: gitCommit(),
 		ollama: ollamaVersion,
 		chatServer: CHAT_URL || undefined,
+		conventions: CONVENTIONS,
 		embed: EMBED,
 		notes: vault.listNotes().length,
 		systemPromptChars: sys.length,
