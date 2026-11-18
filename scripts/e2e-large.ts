@@ -186,6 +186,7 @@ async function main() {
 		search: async (q, limit) => fuseRankings([await index.search(q, limit * 2), await keywordSearch(vault, q, limit * 2)], limit),
 		searchPassages: (q, limit) => index.searchPassages(q, limit),
 		weakMatchBelow: () => weakMatchThreshold(EMBED),
+		absentWords: (q) => index.absentWords(q),
 		approve: async () => approveMode,
 		getConfig: () => cfg,
 		undo,

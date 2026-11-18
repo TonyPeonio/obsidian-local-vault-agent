@@ -187,6 +187,8 @@ export interface ToolContext {
 	search: (query: string, limit: number) => Promise<SearchHit[]>;
 	/** Chunk-level semantic search; undefined when no embedding index is available. */
 	searchPassages?: (query: string, limit: number) => Promise<Passage[]>;
+	/** The words of a question that no indexed note contains; search_passages names them. */
+	absentWords?: (query: string) => string[];
 	/** A best passage score under this means "nothing close": search_passages then says so (depends on the embedding model; undefined = never). */
 	weakMatchBelow?: number;
 	/** Ask the user to approve a mutation. Resolves to the decision. */

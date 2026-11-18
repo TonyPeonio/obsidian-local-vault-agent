@@ -102,6 +102,20 @@ describe("LexicalIndex", () => {
 		expect(lex.search("marker421", 3)[0].path).toBe("renamed.md");
 	});
 
+	it("names the question's words that no note contains in any form", () => {
+		const lex = build();
+		// "decide" is covered by the "Decisions" heading; "wheels" is nowhere.
+		expect(lex.absentWords("What did I decide about the chess robot's wheels?")).toEqual(["wheels"]);
+		expect(lex.absentWords("how do I calibrate the wheels")).toEqual(["calibrate", "wheels"]);
+		lex.setFile("Projects/Setup.md", [{ heading: "", text: "Calibration takes ten minutes." }]);
+		expect(lex.absentWords("how do I calibrate the wheels")).toEqual(["wheels"]);
+		// Short words, numbers and identifiers are never called absent; nor is anything in an empty index.
+		expect(lex.absentWords("the 24V bus and x9")).toEqual([]);
+		expect(new LexicalIndex().absentWords("wheels")).toEqual([]);
+		// A word in a heading or a note's name is in the vault.
+		expect(lex.absentWords("hall sensors")).toEqual([]);
+	});
+
 	it("returns nothing for a question made only of unknown words or an empty index", () => {
 		expect(build().search("zzzz qqqq", 5)).toEqual([]);
 		expect(new LexicalIndex().search("gantry", 5)).toEqual([]);

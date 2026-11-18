@@ -514,6 +514,11 @@ export class SemanticIndex {
 		});
 	}
 
+	/** The question's words that appear in no indexed note (see `LexicalIndex.absentWords`). */
+	absentWords(query: string): string[] {
+		return this.ready ? this.lex.absentWords(query) : [];
+	}
+
 	/** One unit vector per indexed note: the normalised mean of its chunk vectors. */
 	noteVectors(): Map<string, Float32Array> {
 		const out = new Map<string, Float32Array>();

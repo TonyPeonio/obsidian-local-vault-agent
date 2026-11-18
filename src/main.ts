@@ -211,6 +211,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				}
 			},
 			weakMatchBelow: () => weakMatchThreshold(this.settings.embeddingModel),
+			absentWords: (q) => this.index.absentWords(q),
 			approve: (req) => {
 				const modal = new ApprovalModal(this.app, req);
 				modal.open();

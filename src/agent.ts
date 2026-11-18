@@ -319,6 +319,8 @@ export interface AgentDeps {
 	searchPassages?: ToolContext["searchPassages"];
 	/** See `ToolContext.weakMatchBelow`. */
 	weakMatchBelow?: () => number | undefined;
+	/** See `ToolContext.absentWords`. */
+	absentWords?: ToolContext["absentWords"];
 	approve: (req: ApprovalRequest) => Promise<ApprovalDecision>;
 	getConfig: () => AgentConfig;
 	configDir?: string;
@@ -515,6 +517,7 @@ export class Agent {
 			search: this.deps.search,
 			searchPassages: this.deps.searchPassages,
 			weakMatchBelow: this.deps.weakMatchBelow?.(),
+			absentWords: this.deps.absentWords,
 			maxResultChars: cfg.maxToolResultChars,
 			configDir: this.deps.configDir,
 			signal,

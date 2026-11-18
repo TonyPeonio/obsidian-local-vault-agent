@@ -156,6 +156,25 @@ export class LexicalIndex {
 	}
 
 	/**
+	 * The question's words that no note contains, in any form: no indexed word even starts with
+	 * the same four letters. "What did I decide about the wheels?" in a vault that never mentions
+	 * wheels is answered with passages about everything else in the question, and a small model
+	 * reads those as the answer; told that "wheels" appears nowhere, it can say so. Deliberately
+	 * cautious: words of four letters or more only, and "decide" counts as present when the notes
+	 * say "decided" or "decision".
+	 */
+	absentWords(query: string): string[] {
+		if (this.live === 0) return [];
+		const words = Array.from(new Set(queryTerms(query))).filter((w) => w.length >= 4 && /^\p{L}+$/u.test(w));
+		if (words.length === 0) return [];
+		const missing = new Set(words.map((w) => w.slice(0, 4)));
+		for (const term of this.postings.keys()) {
+			if (missing.delete(term.slice(0, 4)) && missing.size === 0) break;
+		}
+		return words.filter((w) => missing.has(w.slice(0, 4)));
+	}
+
+	/**
 	 * The chunks that best match the query's words, best first. `textOf` (the chunk's text) lets a
 	 * chunk that contains the whole question as a phrase rank above one that only has its words.
 	 * `extraTerms` are searched as given, on top of the question's own words (the ISO dates a
