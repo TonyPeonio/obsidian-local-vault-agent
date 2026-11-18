@@ -5,7 +5,7 @@ import { BusyGate } from "./busy";
 import { LEGACY_SUGGESTIONS_NOTE, gardenFixes, gardenVault, planGardenAction, renderGardenChat, renderPlanResult, type GardenAction, type GardenReport, type PlannedChange } from "./gardener";
 import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, type IndexData, type IndexManifest, type IndexStatus, type StoredFile } from "./index";
-import { ObsidianVault } from "./obsidian-vault";
+import { ObsidianVault, findEditorView } from "./obsidian-vault";
 import { OllamaClient, placementWarning, sameModel } from "./ollama";
 import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
 import { applyConceptLinks, conceptNames, isConceptNote, suggestConcepts } from "./concepts";
@@ -630,17 +630,9 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		await target?.send(reformatPrompt(file.path, content));
 	}
 
-	/** The markdown editor showing the active note, even when the chat panel has focus. */
-	private activeEditorView(): MarkdownView | null {
-		const direct = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (direct) return direct;
-		const path = this.activeNote()?.path;
-		if (!path) return null;
-		for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-			const view = leaf.view;
-			if (view instanceof MarkdownView && view.file?.path === path) return view;
-		}
-		return null;
+	/** The markdown editor the user means, even when the chat panel has the focus: the one they were last in. */
+	activeEditorView(): MarkdownView | null {
+		return findEditorView(this.app);
 	}
 
 	/** Asks for an instruction and has the agent rewrite the selected text (command and /edit). */

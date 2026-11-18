@@ -280,6 +280,8 @@ const en = {
 	"notice.nothingUndo": "Nothing to undo.",
 	"notice.wait": "Wait for the current reply to finish, or stop it, first.",
 	"notice.jobRunning": "{job} is running in the background. Wait for it to finish, or stop it, first.",
+	"notice.insert.noNote": "Open a note in the editor first, or click into the one you mean.",
+	"notice.insert.done": "Inserted at the cursor in {note}.",
 	"notice.sampleCreated": "Created {n} sample notes in {folder}.",
 	"notice.sampleExists": "The sample notes are already in {folder}.",
 } as const;

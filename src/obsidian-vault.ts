@@ -1,4 +1,5 @@
-import { App, MarkdownView, TFile, getAllTags, normalizePath } from "obsidian";
+import { App, MarkdownView, TFile, getAllTags, normalizePath, type WorkspaceLeaf } from "obsidian";
+import { pickEditorTarget, type EditorCandidate } from "./editor-target";
 import type { FileInfo, NoteInfo, NoteMetadata, VaultAccess } from "./types";
 
 /** `VaultAccess` backed by the live Obsidian app. */
@@ -192,8 +193,25 @@ export class ObsidianVault implements VaultAccess {
 	}
 
 	getSelection(): string | null {
-		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		// Asked for while the user is typing in the chat, so the focused view is the chat, not the note.
+		const view = findEditorView(this.app);
 		const sel = view?.editor?.getSelection();
 		return sel && sel.length > 0 ? sel : null;
 	}
+}
+
+/**
+ * The markdown editor the user means when they act from the chat panel: the focused one, else the
+ * one they were last in, else one showing the active note (see `pickEditorTarget`).
+ */
+export function findEditorView(app: App): MarkdownView | null {
+	const ws = app.workspace;
+	const candidate = (leaf: WorkspaceLeaf | null): EditorCandidate<MarkdownView> | null => (leaf && leaf.view instanceof MarkdownView ? { view: leaf.view, path: leaf.view.file?.path ?? null } : null);
+	const active = ws.getActiveFile();
+	return pickEditorTarget({
+		focused: ws.getActiveViewOfType(MarkdownView),
+		recent: candidate(ws.getMostRecentLeaf()),
+		open: ws.getLeavesOfType("markdown").map(candidate).filter((c): c is EditorCandidate<MarkdownView> => c !== null),
+		activePath: active ? active.path : null,
+	});
 }

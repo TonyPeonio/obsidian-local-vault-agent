@@ -1,5 +1,5 @@
 import { sameModel } from "./ollama";
-import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
 import { AUTO_CONTINUE_TEXT, FOLLOW_THROUGH_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
 import { unattendedWrites } from "./approval";
@@ -960,14 +960,16 @@ export class AgentView extends ItemView {
 		});
 	}
 
+	/** Puts `text` at the cursor (over the selection) of the note the user was last in; the chat has the focus when this is clicked. */
 	insertAtCursor(text: string): void {
-		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		const view = this.plugin.activeEditorView();
 		if (!view) {
-			new Notice("Open a note in the editor first.");
+			new Notice(t("notice.insert.noNote"));
 			return;
 		}
 		view.editor.replaceSelection(text);
-		new Notice("Inserted into the note.");
+		// Named, because the note is not the panel the user is looking at.
+		new Notice(t("notice.insert.done", { note: view.file?.basename ?? "" }));
 	}
 }
 
