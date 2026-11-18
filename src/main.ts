@@ -6,7 +6,7 @@ import { LEGACY_SUGGESTIONS_NOTE, gardenFixes, gardenVault, planGardenAction, re
 import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, type IndexData, type IndexManifest, type IndexStatus, type StoredFile } from "./index";
 import { ObsidianVault, findEditorView } from "./obsidian-vault";
-import { OllamaClient, placementWarning, sameModel } from "./ollama";
+import { OllamaClient, placementWarning, type ModelInfo } from "./ollama";
 import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
 import { applyConceptLinks, conceptNames, isConceptNote, suggestConcepts } from "./concepts";
 import { ConceptModal, HistoryModal, QuizModal } from "./feature-modals";
@@ -20,7 +20,7 @@ import { setLocale, t } from "./i18n";
 import { log } from "./log";
 import { buildReport, chatTranscript, reportTitle, surveyUrl, type ReportInfo } from "./report";
 import { SAMPLE_FOLDER, sampleNotes } from "./sample";
-import { evaluateSetup, guessTier, type MachineTier } from "./setup";
+import { checksServerAtStartup, evaluateSetup, guessTier, serverProblem, type MachineTier } from "./setup";
 import { editSelectionPrompt, processDailyNotesPrompt, reformatPrompt, summarizePrompt } from "./prompts";
 import { frontmatterText, fuseRankings, keywordSearch } from "./search";
 import { DEFAULT_SETTINGS, SAMPLING, isExcluded, migrateSettings, type LocalVaultAgentSettings } from "./settings";
@@ -432,7 +432,9 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			// closed are found by syncAll below.
 			this.registerEvent(this.app.vault.on("create", (f) => f instanceof TFile && f.extension === "md" && changed(f)));
 			await this.loadDailyNoteSettings();
-			void this.checkOllamaOnce();
+			// No notice at start-up: the server is checked aloud when the chat is opened or a command is run.
+			// With a scheduled job switched on it is looked at now, for the log only.
+			if (checksServerAtStartup(this.settings)) void this.checkOllamaOnce(true);
 			await this.index.load();
 			await this.gists.load();
 			// Embeddings first (fast, small model), then gists (chat model), so they never run together.
@@ -550,23 +552,28 @@ export default class LocalVaultAgentPlugin extends Plugin {
 
 	private ollamaChecked = false;
 
-	/** One Notice per session when Ollama or the chosen model is not available, with the fix. */
-	private async checkOllamaOnce(): Promise<void> {
+	/**
+	 * One Notice per session when the server or a chosen model is not available, with the fix.
+	 * Called when the user opens the chat, runs an agent command or sends a message, never just
+	 * because Obsidian started. `quiet` (start-up, when a scheduled job is switched on) writes to
+	 * the log only and does not use up the session's one notice.
+	 */
+	async checkOllamaOnce(quiet = false): Promise<void> {
 		if (this.ollamaChecked) return;
-		this.ollamaChecked = true;
+		if (!quiet) this.ollamaChecked = true;
+		let models: ModelInfo[] | null = null;
+		let serverError: string | undefined;
 		try {
-			const models = await this.client.listModels();
-			const missing: string[] = [];
-			if (!models.some((m) => sameModel(m.name, this.settings.model))) missing.push(this.settings.model);
-			if (this.settings.semanticSearch && !models.some((m) => sameModel(m.name, this.settings.embeddingModel))) missing.push(this.settings.embeddingModel);
-			if (missing.length) {
-				log.warn(`Models not installed: ${missing.join(", ")}`);
-				this.notifyError(`Local Vault Agent: model${missing.length === 1 ? "" : "s"} not installed: ${missing.join(", ")}. Open the setup checklist to download ${missing.length === 1 ? "it" : "them"}, or pick another model in settings.`, { setup: true });
-			}
+			models = await this.client.listModels();
 		} catch (err) {
-			log.error(`Server unreachable at load: ${(err as Error).message}`);
-			this.notifyError(`Local Vault Agent cannot reach ${this.settings.provider === "ollama" ? "Ollama" : "the model server"} at ${this.client.baseUrl} (${(err as Error).message}). Start it or fix the URL in settings.`, { setup: true });
+			serverError = (err as Error).message ?? String(err);
 		}
+		const s = this.settings;
+		const problem = serverProblem({ provider: s.provider, baseUrl: this.client.baseUrl, models, serverError, chatModel: s.model, embeddingModel: s.embeddingModel, semanticSearch: s.semanticSearch });
+		if (!problem) return;
+		if (models) log.warn(problem.log);
+		else log.error(problem.log);
+		if (!quiet) this.notifyError(problem.message, { setup: true });
 	}
 
 	private placementChecked = false;
@@ -1414,6 +1421,9 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	}
 
 	async activateView(): Promise<AgentView | null> {
+		// The user is opening the chat or running an agent command: now is when a missing server matters.
+		// (Not on the very first open: the setup checklist opens then and shows the same, with the fixes.)
+		if (this.settings.setupShown) void this.checkOllamaOnce();
 		const { workspace } = this.app;
 		let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(VIEW_TYPE)[0] ?? null;
 		if (!leaf) {

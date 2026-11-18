@@ -563,6 +563,8 @@ export class AgentView extends ItemView {
 			await this.runSlash(slash.id);
 			return;
 		}
+		// A panel restored with the workspace was never "opened": the first message is when a missing server is reported.
+		void this.plugin.checkOllamaOnce();
 		// Everything below calls the model, one job at a time: a scheduled job may be running.
 		// (Ending a quiz needs no model.) The text stays in the box when it cannot be sent.
 		if (this.plugin.busy.busy && !(this.quiz && QUIZ_END.test(text))) {
