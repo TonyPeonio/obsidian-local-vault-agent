@@ -38,6 +38,16 @@ export class ScrollFollow {
 		this.lastTop = m.scrollTop;
 	}
 
+	/**
+	 * The reader asked to go up (wheel, key, finger). This is known before the list has moved, and
+	 * taken at once: text that arrives between the request and the scroll must not pull the list
+	 * back to the bottom. Ignored when there is nothing to scroll.
+	 */
+	scrollingUp(m: ScrollMetrics): void {
+		if (m.scrollHeight - m.clientHeight <= 1) return;
+		this.following = false;
+	}
+
 	/** Something was added to the conversation. Returns whether the view should scroll to the bottom. */
 	contentAdded(): boolean {
 		if (this.following) return true;
@@ -49,6 +59,11 @@ export class ScrollFollow {
 	jump(): void {
 		this.following = true;
 		this.unseen = false;
+	}
+
+	/** Whether the list is kept at the bottom (the reader has not scrolled away). */
+	get pinned(): boolean {
+		return this.following;
 	}
 
 	/** Whether the "jump to latest" control is shown. */

@@ -17,6 +17,7 @@
     "bench-matrix": "node scripts/bench-matrix.mjs",
     "bench:scale": "esbuild scripts/bench-scale.ts --bundle --platform=node --format=cjs --outfile=.e2e/bench-scale.cjs --log-level=warning && node --expose-gc --max-old-space-size=8192 .e2e/bench-scale.cjs",
     "bench:render": "esbuild scripts/bench-render.ts --bundle --platform=node --format=cjs --outfile=.e2e/bench-render.cjs --log-level=warning && node .e2e/bench-render.cjs",
+    "e2e:dom": "node scripts/dom-check/run.mjs",
     "e2e:obsidian": "npm run build && npm --prefix e2e-obsidian install --no-audit --no-fund && npm --prefix e2e-obsidian test"
   },
   "keywords": [

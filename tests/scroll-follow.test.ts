@@ -131,6 +131,28 @@ describe("ScrollFollow", () => {
 		expect(list.distance).toBe(0);
 	});
 
+	it("takes a wheel, key or finger going up at its word, before the list has moved", () => {
+		const { follow, list } = chat();
+		for (let i = 0; i < 20; i++) list.grow(60);
+		// The request to scroll comes first; a piece of text arrives before the browser has scrolled.
+		follow.scrollingUp(list.metrics());
+		const at = list.scrollTop;
+		list.grow(60);
+		expect(list.scrollTop).toBe(at);
+		expect(follow.showJump).toBe(true);
+		// Then the list moves, and stays where the reader put it.
+		list.scrollBy(-100);
+		list.grow(60);
+		expect(list.scrollTop).toBe(at - 100);
+	});
+
+	it("ignores a wheel going up when there is nothing to scroll", () => {
+		const { follow, list } = chat();
+		list.grow(-100);
+		follow.scrollingUp(list.metrics());
+		expect(follow.showJump).toBe(false);
+	});
+
 	it("starts at the bottom of an empty or short chat", () => {
 		const { follow, list } = chat();
 		expect(follow.showJump).toBe(false);

@@ -141,6 +141,32 @@ export class AgentView extends ItemView {
 			},
 			{ passive: true },
 		);
+		// The list gets shorter when a bar, the queue or a taller message box appears under it: a reader
+		// who was at the end stays at the end.
+		const resized = new ResizeObserver(() => {
+			if (this.follow.pinned) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+		});
+		resized.observe(this.messagesEl);
+		this.register(() => resized.disconnect());
+		// The wheel, a key or a finger says "up" before the list has moved; taken at its word, so that
+		// text arriving in the same instant does not pull the list back down first.
+		const up = () => {
+			this.follow.scrollingUp(this.messagesEl);
+			this.syncJump();
+		};
+		this.messagesEl.addEventListener("wheel", (e) => e.deltaY < 0 && up(), { passive: true });
+		this.messagesEl.addEventListener("keydown", (e) => ["PageUp", "ArrowUp", "Home"].includes(e.key) && up());
+		let touchY: number | null = null;
+		this.messagesEl.addEventListener("touchstart", (e) => void (touchY = e.touches[0]?.clientY ?? null), { passive: true });
+		this.messagesEl.addEventListener(
+			"touchmove",
+			(e) => {
+				const y = e.touches[0]?.clientY;
+				// The finger moves down to bring earlier text into view.
+				if (touchY !== null && y !== undefined && y > touchY + 4) up();
+			},
+			{ passive: true },
+		);
 		this.jumpBtn = root.createDiv({ cls: "lva-jump-row" }).createEl("button", { cls: "lva-jump" });
 		setIcon(this.jumpBtn.createSpan({ cls: "lva-jump-icon" }), "arrow-down");
 		this.jumpBtn.createSpan({ text: t("view.jump") });
@@ -851,6 +877,16 @@ export class AgentView extends ItemView {
 			contextTokens: this.usage ? this.usage.promptTokens + this.usage.completionTokens : this.prefixTokens,
 			messageChars: text.length,
 		});
+		/** The attached picture the vision model is reading, before the agent's turn starts. */
+		let reading: { n: number; total: number } | null = null;
+		/** Writes what the turn is doing into the status line. */
+		const draw = () => {
+			const now = Date.now();
+			const parts = [reading ? t("view.phase.image", reading) : phaseText(tp.phase(now))];
+			if (calls > 0) parts.push(t("view.status.calls", { calls }));
+			parts.push(t("view.status.secs", { secs: Math.round((now - started) / 1000) }));
+			this.updateStatus(parts.join(" · "));
+		};
 		let askingLoaded = false;
 		/** Whether the chat model is in memory, so a wait of a minute says "Loading the model…" instead of nothing; asked again while it loads. */
 		const askLoaded = () => {
@@ -858,23 +894,20 @@ export class AgentView extends ItemView {
 			askingLoaded = true;
 			this.plugin.client
 				.ps()
-				.then((running) => tp.setLoaded(running.some((r) => sameModel(r.name, this.plugin.settings.model))))
+				.then((running) => {
+					tp.setLoaded(running.some((r) => sameModel(r.name, this.plugin.settings.model)));
+					// Shown at once, not at the next tick of the clock.
+					draw();
+				})
 				// A server that cannot say: the line says "Reading the prompt…".
 				.catch(() => undefined)
 				.finally(() => {
 					askingLoaded = false;
 				});
 		};
-		/** The attached picture the vision model is reading, before the agent's turn starts. */
-		let reading: { n: number; total: number } | null = null;
 		const progress = () => {
-			const now = Date.now();
-			const phase = tp.phase(now);
-			if (phase.kind === "loading" && !reading) askLoaded();
-			const parts = [reading ? t("view.phase.image", reading) : phaseText(phase)];
-			if (calls > 0) parts.push(t("view.status.calls", { calls }));
-			parts.push(t("view.status.secs", { secs: Math.round((now - started) / 1000) }));
-			this.updateStatus(parts.join(" · "));
+			if (tp.phase(Date.now()).kind === "loading" && !reading) askLoaded();
+			draw();
 		};
 		/** What the model is streaming right now, so the status line changes when it does and not on every piece. */
 		let streaming: "thinking" | "content" | null = null;

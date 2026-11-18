@@ -225,4 +225,5 @@ async function main(): Promise<void> {
 	}
 }
 
-if (process.argv[1] && /bench-render/.test(process.argv[1])) void main();
+// Run as a script; imported by the tests and by the DOM check (in a browser, where there is no process), it only exports.
+if (typeof process !== "undefined" && process.argv?.[1] && /bench-render/.test(process.argv[1])) void main();
