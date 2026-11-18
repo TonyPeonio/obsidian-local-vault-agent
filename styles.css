@@ -607,6 +607,47 @@
 	margin-top: var(--size-4-1);
 }
 
+/* Scrolled up while text arrives: the list stays put and this button goes to the latest */
+.lva-jump-row {
+	position: relative;
+	flex: none;
+	height: 0;
+}
+.lva-jump {
+	position: absolute;
+	right: 12px;
+	bottom: 8px;
+	z-index: 5;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	height: 26px;
+	padding: 0 10px;
+	font-size: var(--font-ui-smaller);
+	border-radius: 999px;
+	box-shadow: var(--shadow-s);
+}
+.lva-jump-icon {
+	display: inline-flex;
+}
+.lva-jump.lva-jump-new {
+	color: var(--text-on-accent);
+	background: var(--interactive-accent);
+}
+
+/* Read by screen readers, not shown: a reply that finished streaming is announced once from here */
+.lva-sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
 /* Keyboard users: a visible focus ring on everything clickable in the chat and its dialogs */
 .lva-root button:focus-visible,
 .lva-root select:focus-visible,
@@ -626,6 +667,7 @@
 	width: 44px;
 }
 .is-mobile .lva-chip,
+.is-mobile .lva-jump,
 .is-mobile .lva-undo-btn,
 .is-mobile .lva-icon-btn {
 	min-height: 36px;

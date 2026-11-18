@@ -14,6 +14,8 @@ import { VoiceRecorder } from "./voice";
 import { t, type I18nKey } from "./i18n";
 import { log } from "./log";
 import { SAMPLE_QUESTIONS } from "./sample";
+import { ScrollFollow } from "./scroll-follow";
+import { StreamRenderer, nextRenderDelay } from "./stream-blocks";
 import { describeCall, describeResult, iconFor } from "./tool-cards";
 import { stillApplied } from "./undo";
 import type { ChangeRecord, ChatMessage, ToolCall, UsageInfo } from "./types";
@@ -59,6 +61,11 @@ export class AgentView extends ItemView {
 	/** How each tool call of this session ended, written onto the saved chat so a restored one is drawn as it was. */
 	private outcomes = new WeakMap<ToolCall, ToolOutcome>();
 	private recorder = new VoiceRecorder();
+	/** Not visible: what a screen reader is told once, such as a reply that has finished streaming. */
+	private announcerEl!: HTMLElement;
+	/** Whether new text pulls the list to the bottom: only while the reader is there. */
+	private follow = new ScrollFollow();
+	private jumpBtn!: HTMLButtonElement;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -111,8 +118,27 @@ export class AgentView extends ItemView {
 		refresh.addEventListener("click", () => void this.populateModels(true));
 
 		// Messages
-		// A live region: screen readers announce new messages as they arrive.
+		// A live region: screen readers announce new messages as they arrive. A reply that is being
+		// written is kept out of it (it changes several times a second) and read once when it is finished.
 		this.messagesEl = root.createDiv({ cls: "lva-messages", attr: { role: "log", "aria-live": "polite", "aria-label": t("view.messages") } });
+		this.announcerEl = root.createDiv({ cls: "lva-sr-only", attr: { role: "status", "aria-live": "polite" } });
+		// Scrolled up to read: new text stays below, and this button goes to it.
+		this.messagesEl.addEventListener(
+			"scroll",
+			() => {
+				this.follow.onScroll(this.messagesEl);
+				this.syncJump();
+			},
+			{ passive: true },
+		);
+		this.jumpBtn = root.createDiv({ cls: "lva-jump-row" }).createEl("button", { cls: "lva-jump" });
+		setIcon(this.jumpBtn.createSpan({ cls: "lva-jump-icon" }), "arrow-down");
+		this.jumpBtn.createSpan({ text: t("view.jump") });
+		this.jumpBtn.addEventListener("click", () => {
+			this.scrollToBottom(true);
+			this.inputEl.focus();
+		});
+		this.jumpBtn.hide();
 		this.renderWelcome();
 		void this.restoreChat();
 
@@ -287,7 +313,7 @@ export class AgentView extends ItemView {
 		this.messagesEl.querySelector(".lva-welcome")?.remove();
 		await this.renderHistory(messages);
 		this.updateStatus();
-		this.scrollToBottom();
+		this.scrollToBottom(true);
 	}
 
 	/** Saves the conversation, with how each tool call ended, so it can be drawn again after a restart. */
@@ -338,6 +364,8 @@ export class AgentView extends ItemView {
 		this.syncApproveAll();
 		this.usage = null;
 		this.messagesEl.empty();
+		this.follow.jump();
+		this.syncJump();
 		this.renderWelcome();
 		this.inputEl.focus();
 	}
@@ -423,8 +451,21 @@ export class AgentView extends ItemView {
 		this.statusEl.toggleClass("lva-ctx-warn", warn);
 	}
 
-	private scrollToBottom(): void {
-		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+	/**
+	 * Follows what was just added to the conversation, when the reader is at the bottom. When they
+	 * have scrolled up, the list stays where it is and the "jump to latest" button is shown. `force`
+	 * goes to the bottom regardless (the user's own message, or the button).
+	 */
+	private scrollToBottom(force = false): void {
+		if (force) this.follow.jump();
+		if (this.follow.contentAdded()) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+		this.syncJump();
+	}
+
+	private syncJump(): void {
+		this.jumpBtn.toggle(this.follow.showJump);
+		this.jumpBtn.toggleClass("lva-jump-new", this.follow.hasUnseen);
+		this.jumpBtn.setAttribute("aria-label", t(this.follow.hasUnseen ? "view.jump.new" : "view.jump"));
 	}
 
 	/** Runs a `/command` from the composer. */
@@ -479,7 +520,7 @@ export class AgentView extends ItemView {
 				this.messagesEl.querySelector(".lva-welcome")?.remove();
 				const el = this.messagesEl.createDiv({ cls: "lva-msg lva-assistant" });
 				await this.renderMarkdown(HELP_TEXT, el.createDiv({ cls: "lva-bubble lva-markdown" }));
-				this.scrollToBottom();
+				this.scrollToBottom(true);
 				break;
 			}
 			default:
@@ -497,7 +538,7 @@ export class AgentView extends ItemView {
 		// History must start with a user message, hence the pair.
 		this.conversation.messages.push({ role: "user", content: userText }, { role: "assistant", content: markdown });
 		this.saveChat();
-		this.scrollToBottom();
+		this.scrollToBottom(true);
 		return root;
 	}
 
@@ -611,7 +652,8 @@ export class AgentView extends ItemView {
 			if (attached.length) {
 				user.createDiv({ cls: "lva-attached", text: `Attached: ${attached.map((p) => p.replace(/\.md$/i, "")).join(", ")}` });
 			}
-			this.scrollToBottom();
+			// The reader's own message: always shown, wherever they had scrolled to.
+			this.scrollToBottom(true);
 			await this.plugin.agent.run(
 				this.conversation,
 				message,
@@ -625,14 +667,9 @@ export class AgentView extends ItemView {
 						live.turn?.appendThinking(d);
 						this.scrollToBottom();
 					},
-					onAssistantDelta: (d) => {
-						live.turn?.appendContent(d);
-						this.scrollToBottom();
-					},
-					onAssistantDone: (m) => {
-						void live.turn?.finish(m);
-						this.scrollToBottom();
-					},
+					// The renderer says when it has drawn something (contentAdded): the text is not on screen yet here.
+					onAssistantDelta: (d) => live.turn?.appendContent(d),
+					onAssistantDone: (m) => void live.turn?.finish(m),
 					onToolStart: (call) => {
 						live.turn?.toolStart(call);
 						this.scrollToBottom();
@@ -813,7 +850,7 @@ export class AgentView extends ItemView {
 	private addUser(text: string): void {
 		this.messagesEl.querySelector(".lva-welcome")?.remove();
 		this.messagesEl.createDiv({ cls: "lva-msg lva-user" }).createDiv({ cls: "lva-bubble", text });
-		this.scrollToBottom();
+		this.scrollToBottom(true);
 	}
 
 	private async addAssistant(markdown: string): Promise<void> {
@@ -984,6 +1021,16 @@ export class AgentView extends ItemView {
 		this.remember(userText, md);
 	}
 
+	/** Says `text` to screen readers once, without showing it. */
+	announce(text: string): void {
+		this.announcerEl.setText(text);
+	}
+
+	/** Called after something was added to the conversation: follows it when the reader is at the end. */
+	contentAdded(): void {
+		this.scrollToBottom();
+	}
+
 	async renderMarkdown(markdown: string, el: HTMLElement): Promise<void> {
 		el.empty();
 		await MarkdownRenderer.render(this.app, markdown, el, this.plugin.vault.getActiveNotePath() ?? "", this);
@@ -1022,6 +1069,16 @@ class TurnRenderer {
 	private thinking = "";
 	private renderTimer: number | null = null;
 	private toolCards = new Map<ToolCall, HTMLDetailsElement>();
+	/** Draws the reply block by block while it arrives, so finished paragraphs are not drawn again. */
+	private stream: StreamRenderer<Node>;
+	/** Renders run one after another; this is the last one. */
+	private work: Promise<void> = Promise.resolve();
+	private rendering = false;
+	/** Text arrived while a render was running. */
+	private dirty = false;
+	private lastRenderMs = 0;
+	/** The reply is finished or was stopped: nothing more is drawn from the stream. */
+	private closed = false;
 
 	constructor(
 		private view: AgentView,
@@ -1029,14 +1086,29 @@ class TurnRenderer {
 		private plugin: LocalVaultAgentPlugin,
 	) {
 		this.root = parent.createDiv({ cls: "lva-msg lva-assistant" });
-		this.contentEl = this.root.createDiv({ cls: "lva-bubble lva-markdown lva-streaming" });
+		// Not announced while it is being written; the finished reply is read once (see finish).
+		this.contentEl = this.root.createDiv({ cls: "lva-bubble lva-markdown lva-streaming", attr: { "aria-live": "off" } });
+		const contentEl = this.contentEl;
+		this.stream = new StreamRenderer<Node>({
+			render: async (markdown) => {
+				// Rendered off screen and moved in afterwards, so the bubble never shows a half-built block.
+				const holder = createDiv();
+				await view.renderMarkdown(markdown, holder);
+				return Array.from(holder.childNodes);
+			},
+			append: (nodes) => contentEl.append(...nodes),
+			remove: (nodes) => {
+				for (const n of nodes) n.parentNode?.removeChild(n);
+			},
+			same: (a, b) => a.isEqualNode(b),
+		});
 	}
 
 	appendThinking(delta: string): void {
 		this.thinking += delta;
 		if (!this.plugin.settings.showThinking) return;
 		if (!this.thinkingEl) {
-			this.thinkingEl = this.root.createEl("details", { cls: "lva-thinking" });
+			this.thinkingEl = this.root.createEl("details", { cls: "lva-thinking", attr: { "aria-live": "off" } });
 			this.thinkingEl.open = true;
 			this.thinkingEl.createEl("summary", { text: "Thinking…" });
 			this.thinkingBody = this.thinkingEl.createDiv({ cls: "lva-thinking-body" });
@@ -1047,18 +1119,55 @@ class TurnRenderer {
 
 	appendContent(delta: string): void {
 		this.content += delta;
-		if (this.renderTimer) return;
-		this.renderTimer = window.setTimeout(() => {
-			this.renderTimer = null;
-			void this.view.renderMarkdown(this.content, this.contentEl);
-		}, 120);
+		this.schedule();
 	}
 
-	async finish(message: ChatMessage): Promise<void> {
+	/** Draws what has arrived, soon: not more often than every 120 ms, and less often when drawing is slow. */
+	private schedule(): void {
+		if (this.closed) return;
+		if (this.rendering) {
+			this.dirty = true;
+			return;
+		}
+		if (this.renderTimer !== null) return;
+		this.renderTimer = window.setTimeout(() => {
+			this.renderTimer = null;
+			void this.renderNow();
+		}, nextRenderDelay(this.lastRenderMs));
+	}
+
+	private async renderNow(): Promise<void> {
+		this.rendering = true;
+		this.dirty = false;
+		const started = performance.now();
+		const text = this.content;
+		await this.enqueue(async () => {
+			if (!this.closed) await this.stream.update(text);
+		});
+		this.lastRenderMs = performance.now() - started;
+		this.rendering = false;
+		if (this.closed) return;
+		this.view.contentAdded();
+		if (this.dirty) this.schedule();
+	}
+
+	/** Runs `job` after every render started before it: two renders at once would each place their own nodes. */
+	private enqueue(job: () => Promise<void>): Promise<void> {
+		this.work = this.work.then(job).catch((err) => log.warn(`Drawing the reply failed: ${(err as Error).message ?? String(err)}`));
+		return this.work;
+	}
+
+	/** Nothing more is drawn from the stream; a render that is under way still completes. */
+	private close(): void {
+		this.closed = true;
 		if (this.renderTimer !== null) {
 			window.clearTimeout(this.renderTimer);
 			this.renderTimer = null;
 		}
+	}
+
+	async finish(message: ChatMessage): Promise<void> {
+		this.close();
 		if (this.thinkingEl) {
 			this.thinkingEl.open = false;
 			this.thinkingEl.querySelector("summary")!.setText("Thinking (click to show)");
@@ -1066,12 +1175,16 @@ class TurnRenderer {
 		this.content = message.content;
 		this.contentEl.removeClass("lva-streaming");
 		if (this.content.trim()) {
-			await this.view.renderMarkdown(this.content, this.contentEl);
+			// The whole reply, rendered once more as one text; what is on screen and already matches stays (and keeps a selection).
+			const text = this.content;
+			await this.enqueue(() => this.stream.finish(text));
 			addAnswerActions(this.view, this.root, this.content);
+			this.view.announce(this.contentEl.textContent ?? "");
 		} else {
 			// A pure tool-call turn: nothing to show in the bubble.
 			this.contentEl.remove();
 		}
+		this.view.contentAdded();
 	}
 
 	toolStart(call: ToolCall): void {
@@ -1083,13 +1196,11 @@ class TurnRenderer {
 	 * the "still writing" cursor, and mark tool calls that never answered as stopped instead of running.
 	 */
 	abandon(): void {
-		if (this.renderTimer !== null) {
-			window.clearTimeout(this.renderTimer);
-			this.renderTimer = null;
-		}
 		if (this.contentEl.hasClass("lva-streaming")) {
 			this.contentEl.removeClass("lva-streaming");
-			if (this.content.trim()) void this.view.renderMarkdown(this.content, this.contentEl);
+			const text = this.content;
+			this.close();
+			if (text.trim()) void this.enqueue(() => this.stream.finish(text));
 			else this.contentEl.remove();
 		}
 		for (const card of this.toolCards.values()) {

@@ -189,6 +189,8 @@ const en = {
 	"view.undo": "Undo",
 	"view.undone": "Undone",
 	"view.restored": "Restored from the previous session.",
+	"view.jump": "Jump to latest",
+	"view.jump.new": "Jump to latest: there is new text below",
 	"view.tool.failed": "failed",
 	"view.tool.stopped": "stopped",
 	"view.stopped": "Stopped.",
