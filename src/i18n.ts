@@ -154,6 +154,7 @@ const en = {
 	"cmd.review": "Review changes from scheduled jobs",
 	"cmd.runNightly": "Run the nightly daily-notes job now (changes wait for review)",
 	"cmd.runDigest": "Write this week's digest now (waits for review)",
+	"cmd.stopJob": "Stop the running scheduled job",
 	"cmd.gists": "Rebuild note gists",
 	"cmd.index": "Rebuild semantic index",
 	"cmd.report": "Report a problem",
@@ -207,6 +208,17 @@ const en = {
 	"view.status.indexError": "Index: {error}",
 	"view.status.working": "Working… {calls} tool call(s) · {secs} s",
 	"view.status.context": "Context {used} / {total} ({pct}%)",
+
+	// Scheduled jobs while they run
+	"job.running": "{job} is running in the background.",
+	"job.stopping": "Stopping: {job}…",
+	"job.stop": "Stop",
+	"job.stopped": "{job} was stopped. Nothing was queued; it runs again at its next time, or now from the command palette.",
+	"job.failed": "{job} failed: {error}",
+	"job.failedRetry": "{job} failed: {error} It will be tried again in {minutes} minutes.",
+	"job.failedGaveUp": "{job} failed {n} times in a row: {error} It will run again at its next scheduled time; you can also run it from the command palette.",
+	"job.statusBar": "Scheduled job running",
+	"job.statusBar.label": "{job} is running: click to stop it",
 
 	// Approval dialog
 	"approve.approve": "Approve",

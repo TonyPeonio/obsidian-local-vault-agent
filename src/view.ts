@@ -33,6 +33,11 @@ export class AgentView extends ItemView {
 	private approveAllEl!: HTMLElement;
 	private approveAllText!: HTMLElement;
 	private approveAllShown: "chat" | "setting" | null = null;
+	/** The bar that names a scheduled job while it runs, with "Stop". */
+	private jobBarEl!: HTMLElement;
+	private jobBarText!: HTMLElement;
+	private jobStopBtn!: HTMLButtonElement;
+	private unsubscribeBusy: (() => void) | null = null;
 	/** The right to use the model while a chat turn or a quiz step of this view runs; Stop aborts through it. */
 	private lease: Lease | null = null;
 	/** Turns (by their list of reported changes) that already show the partial-undo offer. */
@@ -117,6 +122,15 @@ export class AgentView extends ItemView {
 		approveOff.addEventListener("click", () => this.turnOffApproveAll());
 		this.approveAllEl.hide();
 
+		// A scheduled job has the model: the chat says so (a message would be refused) and can stop it.
+		this.jobBarEl = root.createDiv({ cls: "lva-job-bar", attr: { role: "status" } });
+		setIcon(this.jobBarEl.createSpan({ cls: "lva-job-bar-icon" }), "clock");
+		this.jobBarText = this.jobBarEl.createSpan({ cls: "lva-job-bar-text" });
+		this.jobStopBtn = this.jobBarEl.createEl("button", { cls: "lva-chip", text: t("job.stop") });
+		this.jobStopBtn.addEventListener("click", () => this.plugin.stopJob());
+		this.unsubscribeBusy = this.plugin.busy.onChange(() => this.syncJobBar());
+		this.syncJobBar();
+
 		// Composer
 		const composer = root.createDiv({ cls: "lva-composer" });
 		this.inputEl = composer.createEl("textarea", {
@@ -184,6 +198,8 @@ export class AgentView extends ItemView {
 		this.unsubscribeStatus = null;
 		this.unsubscribeGists?.();
 		this.unsubscribeGists = null;
+		this.unsubscribeBusy?.();
+		this.unsubscribeBusy = null;
 	}
 
 	/** Put text into the composer and focus it (used by commands). */
@@ -323,6 +339,16 @@ export class AgentView extends ItemView {
 	private noticeBusy(): void {
 		const holder = this.plugin.busy.holder;
 		new Notice(holder?.owner === "job" ? t("notice.jobRunning", { job: holder.label }) : t("notice.wait"));
+	}
+
+	/** Shows the running scheduled job, if any, with its Stop button ("Stopping…" once it was pressed). */
+	private syncJobBar(): void {
+		const holder = this.plugin.busy.holder;
+		const job = holder?.owner === "job" ? holder : null;
+		this.jobBarEl.toggle(job !== null);
+		if (!job) return;
+		this.jobBarText.setText(t(job.stopped ? "job.stopping" : "job.running", { job: job.label }));
+		this.jobStopBtn.disabled = job.stopped;
 	}
 
 	/** Shows or hides the "written without a diff" bar to match this chat's approve-all and the global setting. */

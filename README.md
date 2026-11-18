@@ -181,6 +181,7 @@ Things to try:
 | Report a problem | A GitHub issue with redacted diagnostics that you review first; nothing is sent automatically |
 | Run the nightly daily-notes job now | Runs the scheduled job immediately; its changes wait for review |
 | Write this week's digest now | Runs the weekly digest immediately; the note waits for review |
+| Stop the running scheduled job | Stops a scheduled job in the middle (offered only while one runs); nothing of it is queued |
 
 ### How it works
 
@@ -314,7 +315,12 @@ the vault, and what it would have written waits in `pending.json` until you are 
 keyboard, when a notice and a status-bar badge (*🤖 3 to review*) offer the review. Each change is
 then an ordinary diff; one whose note you edited in the meantime is carried over when the edits do
 not overlap and skipped when they do. The commands *Run the nightly daily-notes job now* and
-*Write this week's digest now* run them on demand.
+*Write this week's digest now* run them on demand. A job and a chat turn never run at the same
+time: a job that comes due while you chat waits a minute, and a message sent while a job runs is
+refused with a notice. While a job runs the chat shows a bar with **Stop** (also the command
+*Stop the running scheduled job*, or a click on the status-bar badge); a stopped run queues
+nothing. A run that fails, for example because Ollama was not running, is tried again after 5, 15
+and 60 minutes before it is given up until its next scheduled time.
 
 **Images and scans.** With a vision model the agent gets `read_image`: it transcribes the text in
 an image (printed or handwritten) and describes diagrams, charts and photos, and it reads scanned

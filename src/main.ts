@@ -13,7 +13,7 @@ import { ConceptModal, HistoryModal, QuizModal } from "./feature-modals";
 import { cosine } from "./index";
 import { LECTURE_TOOLS, lectureCompanionApi, type LectureCompanionApi, type LocalVaultAgentApi } from "./lecture-companion";
 import { QuizEngine } from "./quiz";
-import { JOB_NAMES, OverlayVault, PendingQueue, digestPath, digestPrompt, dueJobs, localDate, planPending, recentNotes, renderDigest, type JobId } from "./scheduler";
+import { JOB_NAMES, OverlayVault, PendingQueue, afterRun, digestPath, digestPrompt, dueJobs, localDate, planPending, recentNotes, renderDigest, type JobId, type JobOutcome, type JobRetry } from "./scheduler";
 import { ImageReader, readImage, type VisionData } from "./vision";
 import { ReportModal, SetupModal } from "./help-modals";
 import { setLocale, t } from "./i18n";
@@ -57,6 +57,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	/** Last time the user typed or clicked in Obsidian (ms), to know they are present. */
 	private lastActivity = Date.now();
 	private jobRunning = false;
+	/** Scheduled runs that failed and wait to be tried again (in memory: after a restart they are simply due). */
+	private jobRetries: Partial<Record<JobId, JobRetry>> = {};
 	private pendingNotified = 0;
 	private statusListeners = new Set<(s: IndexStatus) => void>();
 	private gistListeners = new Set<(s: GistStatus) => void>();
@@ -362,6 +364,15 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			callback: () => void this.runJob("digest", true),
 		});
 		this.addCommand({
+			id: "stop-scheduled-job",
+			name: t("cmd.stopJob"),
+			checkCallback: (checking) => {
+				if (this.busy.holder?.owner !== "job") return false;
+				if (!checking) this.stopJob();
+				return true;
+			},
+		});
+		this.addCommand({
 			id: "rebuild-gists",
 			name: t("cmd.gists"),
 			callback: async () => {
@@ -445,7 +456,12 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		// Scheduled jobs: checked every minute while Obsidian is open; the user's presence is a key or click.
 		this.statusBar = this.addStatusBarItem();
 		this.statusBar.addClass("lva-pending-badge");
-		this.registerDomEvent(this.statusBar, "click", () => void this.reviewPending());
+		this.registerDomEvent(this.statusBar, "click", () => {
+			if (this.busy.holder?.owner === "job") this.offerStopJob();
+			else void this.reviewPending();
+		});
+		// The badge also shows a job while it runs.
+		this.register(this.busy.onChange(() => this.updateStatusBar()));
 		const seen = () => {
 			const away = Date.now() - this.lastActivity > 5 * 60_000;
 			this.lastActivity = Date.now();
@@ -1107,7 +1123,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	private async tick(): Promise<void> {
 		// A job that comes due while a chat turn or a quiz step runs waits for the next check (a minute later).
 		if (!this.jobRunning && !this.busy.busy) {
-			const due = dueJobs(new Date(), this.settings, this.settings.jobRuns);
+			const due = dueJobs(new Date(), this.settings, this.settings.jobRuns, this.jobRetries);
 			for (const job of due) await this.runJob(job, false);
 		}
 		this.notifyPending();
@@ -1129,26 +1145,81 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			return;
 		}
 		this.jobRunning = true;
-		this.settings.jobRuns[job] = Date.now();
-		await this.saveSettings();
 		if (manual) new Notice(`${JOB_NAMES[job]}: running in the background; the changes will wait for your review.`);
+		let outcome: JobOutcome = "failed";
+		let error = "";
 		try {
-			const changes = job === "daily" ? await this.runDailyJob() : await this.runDigestJob();
-			const added = this.pending.add(job, changes);
-			if (added.length) {
-				this.pendingNotified = 0;
-				this.notifyPending(manual);
-			} else if (manual) new Notice(`${JOB_NAMES[job]}: nothing to change.`);
+			const changes = job === "daily" ? await this.runDailyJob(lease.signal) : await this.runDigestJob(lease.signal);
+			// A run that was stopped is half a run: nothing of it is queued.
+			if (lease.stopped) outcome = "stopped";
+			else {
+				outcome = "done";
+				const added = this.pending.add(job, changes);
+				if (added.length) {
+					this.pendingNotified = 0;
+					this.notifyPending(manual);
+				} else if (manual) new Notice(`${JOB_NAMES[job]}: nothing to change.`);
+			}
 		} catch (err) {
-			log.error(`${JOB_NAMES[job]} failed: ${(err as Error).message}`);
-			this.notifyError(`${JOB_NAMES[job]} failed: ${(err as Error).message}`);
+			if (lease.stopped) outcome = "stopped";
+			else error = (err as Error).message ?? String(err);
 		} finally {
 			lease.release();
 			this.jobRunning = false;
 		}
+		await this.settleJob(job, manual, outcome, error);
 	}
 
-	private async runDailyJob() {
+	/** Stops the scheduled job that is running, if one is. Returns whether there was one. */
+	stopJob(): boolean {
+		return this.busy.stop("job");
+	}
+
+	/** A notice naming the running job with a Stop button (the status-bar badge was clicked). */
+	private offerStopJob(): void {
+		const holder = this.busy.holder;
+		if (holder?.owner !== "job") return;
+		const frag = createFragment();
+		frag.createSpan({ text: `${t(holder.stopped ? "job.stopping" : "job.running", { job: holder.label })} ` });
+		if (!holder.stopped) {
+			const btn = frag.createEl("button", { text: t("job.stop") });
+			btn.addEventListener("click", () => {
+				btn.disabled = true;
+				this.stopJob();
+			});
+		}
+		new Notice(frag, 10000);
+	}
+
+	/**
+	 * After a run: records it as the job's last run, or leaves it due and sets when to try again.
+	 * The run is recorded here, when it is over, never when it starts, so a failed run is retried
+	 * (after 5, 15 and 60 minutes) instead of being skipped until the next scheduled time.
+	 */
+	private async settleJob(job: JobId, manual: boolean, outcome: JobOutcome, error: string): Promise<void> {
+		const name = JOB_NAMES[job];
+		if (outcome === "stopped") new Notice(t("job.stopped", { job: name }), 8000);
+		if (outcome === "failed") log.error(`${name} failed: ${error}`);
+		if (manual && outcome === "failed") {
+			// Run by hand: the user sees the error and decides; the schedule is left as it was.
+			this.notifyError(t("job.failed", { job: name, error }));
+			return;
+		}
+		const earlier = manual ? undefined : this.jobRetries[job];
+		const plan = afterRun(outcome, Date.now(), earlier);
+		if (plan.retry) this.jobRetries[job] = plan.retry;
+		else delete this.jobRetries[job];
+		if (plan.record) {
+			this.settings.jobRuns[job] = Date.now();
+			await this.saveSettings();
+		}
+		if (outcome !== "failed") return;
+		// One notice for the first failure and one when it is given up; the retries in between only go to the log.
+		if (plan.gaveUp) this.notifyError(t("job.failedGaveUp", { job: name, error, n: (earlier?.failures ?? 0) + 1 }));
+		else if (plan.retry?.failures === 1) this.notifyError(t("job.failedRetry", { job: name, error, minutes: Math.round((plan.retry.retryAt - Date.now()) / 60_000) }));
+	}
+
+	private async runDailyJob(signal?: AbortSignal) {
 		await this.loadDailyNoteSettings();
 		const overlay = new OverlayVault(this.vault);
 		const since = localDate(new Date(Date.now() - 2 * 86_400_000));
@@ -1167,11 +1238,11 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		});
 		const s = this.settings;
 		const prompt = processDailyNotesPrompt({ folder: this.dailyFolder, heading: s.dailyInboxHeading, destination: s.dailyTopicsFolder, move: s.dailyMoveItems, since });
-		await agent.run({ id: "scheduled", messages: [], approveAll: true }, prompt, {});
+		await agent.run({ id: "scheduled", messages: [], approveAll: true }, prompt, {}, signal);
 		return overlay.changes();
 	}
 
-	private async runDigestJob() {
+	private async runDigestJob(signal?: AbortSignal) {
 		const now = new Date();
 		const weekOf = localDate(now);
 		const path = digestPath(this.settings.digestFolder, weekOf);
@@ -1191,6 +1262,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			think: false,
 			options: { num_ctx: this.settings.numCtx, temperature: 0.4 },
 			keep_alive: this.settings.keepAlive,
+			signal,
 		});
 		const content = renderDigest(weekOf, res.message.content, notes);
 		if (this.vault.exists(path)) return [{ path, tool: "edit_note" as const, before: await this.vault.read(path), after: content }];
@@ -1215,9 +1287,11 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	private updateStatusBar(): void {
 		if (!this.statusBar) return;
 		const n = this.pending.size;
-		this.statusBar.setText(n ? `🤖 ${n} to review` : "");
-		this.statusBar.toggle(n > 0);
-		this.statusBar.setAttribute("aria-label", n ? `${n} change${n === 1 ? "" : "s"} from scheduled jobs: click to review` : "");
+		const holder = this.busy.holder;
+		const running = holder?.owner === "job" ? holder.label : null;
+		this.statusBar.setText(running ? `🤖 ${t("job.statusBar")}` : n ? `🤖 ${n} to review` : "");
+		this.statusBar.toggle(running !== null || n > 0);
+		this.statusBar.setAttribute("aria-label", running ? t("job.statusBar.label", { job: running }) : n ? `${n} change${n === 1 ? "" : "s"} from scheduled jobs: click to review` : "");
 	}
 
 	/** Walks the queued changes as diffs: approve writes, reject drops, a change that no longer fits is dropped with a notice. */

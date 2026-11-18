@@ -55,15 +55,55 @@ export function lastScheduled(job: JobId, now: Date, s: ScheduleSettings): Date 
 /**
  * Jobs whose latest scheduled time has passed since they last ran. A job with no recorded run is
  * not due: turning a job on records "now" as its last run, so it first runs at its next time.
+ * A job that failed is not due again before its `retryAt` (see `afterRun`).
  */
-export function dueJobs(now: Date, s: ScheduleSettings, lastRuns: Partial<Record<JobId, number>>): JobId[] {
+export function dueJobs(now: Date, s: ScheduleSettings, lastRuns: Partial<Record<JobId, number>>, retries: Partial<Record<JobId, JobRetry>> = {}): JobId[] {
 	const out: JobId[] = [];
 	for (const job of ["daily", "digest"] as JobId[]) {
 		const at = lastScheduled(job, now, s);
 		const last = lastRuns[job];
+		const retry = retries[job];
+		if (retry && retry.retryAt > now.getTime()) continue;
 		if (at && typeof last === "number" && last < at.getTime()) out.push(job);
 	}
 	return out;
+}
+
+/** How a scheduled run ended: it produced its changes (possibly none), the user stopped it, or it threw. */
+export type JobOutcome = "done" | "stopped" | "failed";
+
+/** A job that failed and is waiting to be tried again (kept in memory: a restart tries again at once). */
+export interface JobRetry {
+	/** Failed attempts for the scheduled time that is due. */
+	failures: number;
+	/** Not before this moment (ms). */
+	retryAt: number;
+}
+
+/** Waits before a failed scheduled run is tried again; after the last one the run is given up until the job's next scheduled time. */
+export const RETRY_DELAYS_MS = [5 * 60_000, 15 * 60_000, 60 * 60_000];
+
+export interface AfterRun {
+	/** Record the run as the job's last run, so it is not due again until its next scheduled time. */
+	record: boolean;
+	/** Set when the run failed and will be tried again. */
+	retry?: JobRetry;
+	/** True when the last retry failed too: the run is recorded and the user is told. */
+	gaveUp: boolean;
+}
+
+/**
+ * What a finished scheduled run means for the schedule. The run is recorded only now, not when it
+ * starts: a run that failed (Ollama not running at 2 a.m.) is tried again after 5, 15 and 60
+ * minutes instead of being skipped until the next night, and Obsidian closing in the middle of a
+ * run leaves it due. A run the user stopped is recorded: they said no for this time.
+ */
+export function afterRun(outcome: JobOutcome, now: number, previous?: JobRetry): AfterRun {
+	if (outcome !== "failed") return { record: true, gaveUp: false };
+	const failures = (previous?.failures ?? 0) + 1;
+	const delay = RETRY_DELAYS_MS[failures - 1];
+	if (delay === undefined) return { record: true, gaveUp: true };
+	return { record: false, retry: { failures, retryAt: now + delay }, gaveUp: false };
 }
 
 /** YYYY-MM-DD in local time. */

@@ -322,7 +322,8 @@
 }
 
 /* Changes are being written without a diff: said next to the message box for as long as it is so */
-.lva-approve-all {
+.lva-approve-all,
+.lva-job-bar {
 	display: flex;
 	align-items: center;
 	gap: 6px;
@@ -332,17 +333,27 @@
 	border-left: 3px solid var(--text-warning);
 	background: var(--background-secondary);
 }
-.lva-approve-all-icon {
+.lva-approve-all-icon,
+.lva-job-bar-icon {
 	flex: none;
 	display: inline-flex;
 	color: var(--text-warning);
 }
-.lva-approve-all-text {
+.lva-approve-all-text,
+.lva-job-bar-text {
 	flex: 1;
 	min-width: 0;
 }
-.lva-approve-all .lva-chip {
+.lva-approve-all .lva-chip,
+.lva-job-bar .lva-chip {
 	flex: none;
+}
+/* A scheduled job is running in the background (same place, calmer colour) */
+.lva-job-bar {
+	border-left-color: var(--interactive-accent);
+}
+.lva-job-bar-icon {
+	color: var(--text-accent);
 }
 
 .lva-settings-textarea {
