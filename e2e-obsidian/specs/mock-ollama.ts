@@ -12,6 +12,8 @@ export class MockOllama {
 	private server: Server | null = null;
 	private replies: Reply[] = [];
 	readonly chats: Record<string, unknown>[] = [];
+	/** Warm-up requests received (one-token requests the plugin sends when the chat box is focused). */
+	warmUps = 0;
 	url = "";
 
 	script(replies: Reply[]): void {
@@ -58,7 +60,16 @@ export class MockOllama {
 		if (path === "/api/ps") return json({ models: [] });
 		if (path === "/api/show") return json({ capabilities: ["completion", "tools"] });
 		if (path === "/api/chat") {
-			this.chats.push(await this.body(req));
+			const sent = await this.body(req);
+			// The warm-up the plugin sends when the chat box is focused asks for a single token: it is
+			// answered with one, is not a turn, and takes none of the scripted replies.
+			if ((sent.options as { num_predict?: number } | undefined)?.num_predict === 1) {
+				this.warmUps++;
+				res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+				res.end(JSON.stringify({ message: { role: "assistant", content: "" }, done: true, done_reason: "length", prompt_eval_count: 100, eval_count: 1 }) + "\n");
+				return;
+			}
+			this.chats.push(sent);
 			const reply = this.replies.shift() ?? { content: "(no scripted reply left)" };
 			res.writeHead(200, { "Content-Type": "application/x-ndjson" });
 			if ("tool" in reply) {
