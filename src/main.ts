@@ -184,6 +184,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			getVisionModel: () => this.settings.visionModel,
 			getChatModel: () => this.settings.model,
 			keepAlive: () => this.settings.keepAlive,
+			chatNumCtx: () => this.settings.numCtx,
 			readBinary: async (path) => {
 				const file = this.app.vault.getFileByPath(normalizePath(path));
 				if (!file) throw new Error(`File not found: ${path}`);

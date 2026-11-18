@@ -172,6 +172,7 @@ async function main() {
 		getVisionModel: () => process.env.VISION_MODEL ?? "",
 		getChatModel: () => MODEL,
 		keepAlive: () => "10m",
+		chatNumCtx: () => NUM_CTX,
 		readBinary: (p) => vault.readBinary(p),
 		load: async () => null,
 		save: async () => {},

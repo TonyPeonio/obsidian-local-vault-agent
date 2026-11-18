@@ -101,6 +101,8 @@ const EDIT_REQUEST =
 /** Questions about the vault's shape, not its content: answered by listing and grepping, not by passages. */
 const STRUCTURAL = /\b(how many|count|every note|all (of )?(the |my )?notes|each note|which notes|notes? (that|which) (are|have|lack|contain)|empty|orphan|unlinked|duplicates?|largest|longest|shortest|last modified|recently (modified|edited|changed|created)|folders?|tags?)\b/i;
 const QUESTION_WORD = /^(what|what's|when|where|who|whom|whose|why|how|which|did|do|does|is|are|was|were|have|has|had|can|could|should|tell me|remind me|find|show me|summari[sz]e|explain|describe|give me|any)\b/i;
+/** With Lecture Companion's tools on offer, what was said in a lecture or a meeting is theirs to answer (they return the timestamped paragraphs). */
+const LECTURE_QUESTION = /\b(lectures?|class|professor|lecturer|instructor|said|say|recording|meeting|transcript|talk)\b/i;
 /** Words that point back into the conversation: such a message is answered from it, and is a poor search query. */
 const POINTS_BACK = /\b(that|this|those|these|it|its|them|they|he|she|there|then|same|above|previous|earlier|again)\b/i;
 
@@ -584,7 +586,7 @@ export class Agent {
 		};
 		// A question about the notes: make the search the model would make, and hand it the result
 		// as if it had asked. Only when it found passages; otherwise the model starts as usual.
-		if ((cfg.preSearch ?? true) && this.deps.searchPassages && toolByName.has("search_passages") && looksLikeVaultQuestion(userText, turn === 0)) {
+		if ((cfg.preSearch ?? true) && this.deps.searchPassages && toolByName.has("search_passages") && looksLikeVaultQuestion(userText, turn === 0) && !(toolByName.has("lecture_transcript") && LECTURE_QUESTION.test(userText))) {
 			const call: ToolCall = { function: { name: "search_passages", arguments: { query: userText.trim(), limit: PRE_SEARCH_LIMIT } } };
 			const { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
 			if (signal?.aborted) return;

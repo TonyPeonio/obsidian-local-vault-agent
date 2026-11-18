@@ -138,18 +138,30 @@ describe("passage search by meaning and by words", () => {
 		expect((await index.searchPassages("A3144", 1))[0].path).toBe("Projects/Hall Sensors.md");
 	});
 
-	it("puts the sections and notes dated the day a question names first", async () => {
+	it("puts the sections and notes dated the day a question names first, the one with the question's words on top", async () => {
 		const { index } = setup(notes);
 		await index.syncAll();
-		const hits = await index.searchPassages("What was covered in CSCI 406 on September 10?", 4);
+		const hits = await index.searchPassages("What was covered in CSCI 406 on September 10?", 6);
+		// The lecture section headed by that day, in the note the question names, before anything else.
 		expect(hits[0]).toMatchObject({ path: "School/Lectures - CSCI 406.md" });
 		expect(hits[0].crumb?.startsWith("2026-09-10")).toBe(true);
-		// The daily note of that day is dated by its name.
-		expect(hits.slice(0, 3).map((h) => h.path)).toContain("Daily/2026-09-10.md");
-		// Half the places at most are kept for dated passages: the rest is still the best of everything.
-		expect(hits).toHaveLength(4);
-		const without = await index.searchPassages("What was covered in CSCI 406 on September 10?", 4, 3, undefined, { dates: false });
-		expect(without).toHaveLength(4);
+		// The daily note of that day is dated by its name, and is among the dated results.
+		expect(hits.slice(0, 4).map((h) => h.path)).toContain("Daily/2026-09-10.md");
+		// Places are left for the best of everything else: the other notes are still there.
+		expect(hits.some((h) => !h.path.includes("2026-09-10") && !(h.crumb ?? "").includes("2026-09-10"))).toBe(true);
+		const without = await index.searchPassages("What was covered in CSCI 406 on September 10?", 6, 3, undefined, { dates: false });
+		expect(without.length).toBe(hits.length);
+	});
+
+	it("ranks the passages of a day by the question's words, not by meaning", async () => {
+		const { index } = setup({
+			"Daily/2026-10-21.md": ["# 2026-10-21", "Mood: ok.", "## Done", "- Implemented re-homing every 50 moves.", "## Tomorrow", "- [ ] Laundry"].join("\n\n"),
+			"Daily/2026-10-22.md": ["# 2026-10-22", "## Done", "- Bought parts."].join("\n\n"),
+			"Projects/Robot.md": "What did I get done: a list of what I get done on any day.",
+		});
+		await index.syncAll();
+		const hits = await index.searchPassages("What did I get done on October 21?", 4);
+		expect(hits[0]).toMatchObject({ path: "Daily/2026-10-21.md", heading: "Done" });
 	});
 
 	it("still answers with embeddings only when asked to, and honours the per-note limit in both modes", async () => {

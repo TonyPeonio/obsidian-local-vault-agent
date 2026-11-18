@@ -42,6 +42,8 @@ export interface VisionDeps {
 	getVisionModel(): string;
 	getChatModel(): string;
 	keepAlive(): string;
+	/** The chat's context size. An image read by the chat model itself asks for the same: a different size makes Ollama load the model again (21 s measured), and once more for the next chat request. */
+	chatNumCtx?(): number;
 	readBinary(path: string): Promise<ArrayBuffer>;
 	/** PNG of one page of a PDF, for scanned pages; absent when PDFs cannot be rendered. */
 	renderPdfPage?(path: string, page: number): Promise<ArrayBuffer>;
@@ -126,7 +128,7 @@ export class ImageReader {
 					model,
 					messages: [{ role: "user", content: prompt, images: [image] }],
 					think,
-					options: { num_ctx: 8192, temperature: 0.2 },
+					options: { num_ctx: model === this.deps.getChatModel() && this.deps.chatNumCtx ? this.deps.chatNumCtx() : 8192, temperature: 0.2 },
 					keep_alive: this.deps.keepAlive(),
 				});
 				const text = res.message.content.trim();

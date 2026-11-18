@@ -115,6 +115,13 @@ async function buildQueries(vault: FakeVault, facts: Facts): Promise<Query[]> {
 		const span = sectionSpan(await read(l.note), l.date);
 		if (span && said[l.date]) out.push({ set: "transcript", q: said[l.date], gold: [{ path: l.note, span }] });
 	}
+	// A day asked for in words: the answer is that day's own note, its "Done" section when it has one.
+	const dailies = vault.listNotes().map((n) => n.path).filter((p) => /^Daily\/\d{4}-\d{2}-\d{2}\.md$/.test(p)).sort();
+	for (let i = 0; i < dailies.length; i += 6) {
+		const day = dailies[i].slice(6, 16);
+		const span = sectionSpan(await read(dailies[i]), "Done");
+		out.push({ set: "daily-date", q: `What did I get done on ${spokenDate(day)}?`, gold: [{ path: dailies[i], span }] });
+	}
 	for (const m of facts.daily.messy) {
 		out.push({ set: "daily-topic", q: `my notes about ${m.topic}`, gold: [{ path: m.note }] });
 		out.push({ set: "exact-phrase", q: m.phrase, gold: [{ path: m.note }] });

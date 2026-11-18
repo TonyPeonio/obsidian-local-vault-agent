@@ -1,0 +1,1196 @@
+{
+  "version": "0.9.0",
+  "tag": "hybrid",
+  "embed": "nomic-embed-text",
+  "k": 6,
+  "vault": {
+    "dir": "test-vault-large",
+    "notes": 333,
+    "chunks": 1085
+  },
+  "questions": 240,
+  "unanswerable": 15,
+  "results": {
+    "passages-dense": {
+      "sets": {
+        "lecture-term": {
+          "n": 60,
+          "hit1": 52,
+          "hit3": 57,
+          "hitK": 59,
+          "mrr": 54.83333333333333,
+          "noteHitK": 59
+        },
+        "lecture-topic": {
+          "n": 60,
+          "hit1": 60,
+          "hit3": 60,
+          "hitK": 60,
+          "mrr": 60,
+          "noteHitK": 60
+        },
+        "lecture-date": {
+          "n": 60,
+          "hit1": 0,
+          "hit3": 0,
+          "hitK": 2,
+          "mrr": 0.3666666666666667,
+          "noteHitK": 9
+        },
+        "transcript": {
+          "n": 2,
+          "hit1": 2,
+          "hit3": 2,
+          "hitK": 2,
+          "mrr": 2,
+          "noteHitK": 2
+        },
+        "daily-date": {
+          "n": 22,
+          "hit1": 0,
+          "hit3": 1,
+          "hitK": 1,
+          "mrr": 0.3333333333333333,
+          "noteHitK": 1
+        },
+        "daily-topic": {
+          "n": 6,
+          "hit1": 3,
+          "hit3": 4,
+          "hitK": 5,
+          "mrr": 3.533333333333333,
+          "noteHitK": 5
+        },
+        "exact-phrase": {
+          "n": 6,
+          "hit1": 5,
+          "hit3": 5,
+          "hitK": 5,
+          "mrr": 5,
+          "noteHitK": 5
+        },
+        "exact-code": {
+          "n": 2,
+          "hit1": 2,
+          "hit3": 2,
+          "hitK": 2,
+          "mrr": 2,
+          "noteHitK": 2
+        },
+        "person": {
+          "n": 10,
+          "hit1": 8,
+          "hit3": 10,
+          "hitK": 10,
+          "mrr": 8.666666666666668,
+          "noteHitK": 10
+        },
+        "concept": {
+          "n": 12,
+          "hit1": 9,
+          "hit3": 10,
+          "hitK": 12,
+          "mrr": 9.783333333333333,
+          "noteHitK": 12
+        }
+      },
+      "all": {
+        "n": 240,
+        "hit1": 141,
+        "hit3": 151,
+        "hitK": 158,
+        "mrr": 146.51666666666668,
+        "noteHitK": 165
+      },
+      "msPerQuery": 27.3,
+      "separation": {
+        "auc": 0.973,
+        "answerableMedian": 0.724,
+        "unanswerableMedian": 0.598,
+        "cut": 0.677,
+        "answerableAboveCut": 84.6,
+        "unanswerableBelowCut": 100,
+        "unanswerableMax": 0.675,
+        "answerableMin": 0.561
+      }
+    },
+    "passages": {
+      "sets": {
+        "lecture-term": {
+          "n": 60,
+          "hit1": 52,
+          "hit3": 59,
+          "hitK": 60,
+          "mrr": 55.416666666666664,
+          "noteHitK": 60
+        },
+        "lecture-topic": {
+          "n": 60,
+          "hit1": 60,
+          "hit3": 60,
+          "hitK": 60,
+          "mrr": 60,
+          "noteHitK": 60
+        },
+        "lecture-date": {
+          "n": 60,
+          "hit1": 60,
+          "hit3": 60,
+          "hitK": 60,
+          "mrr": 60,
+          "noteHitK": 60
+        },
+        "transcript": {
+          "n": 2,
+          "hit1": 2,
+          "hit3": 2,
+          "hitK": 2,
+          "mrr": 2,
+          "noteHitK": 2
+        },
+        "daily-date": {
+          "n": 22,
+          "hit1": 22,
+          "hit3": 22,
+          "hitK": 22,
+          "mrr": 22,
+          "noteHitK": 22
+        },
+        "daily-topic": {
+          "n": 6,
+          "hit1": 3,
+          "hit3": 3,
+          "hitK": 4,
+          "mrr": 3.25,
+          "noteHitK": 4
+        },
+        "exact-phrase": {
+          "n": 6,
+          "hit1": 6,
+          "hit3": 6,
+          "hitK": 6,
+          "mrr": 6,
+          "noteHitK": 6
+        },
+        "exact-code": {
+          "n": 2,
+          "hit1": 2,
+          "hit3": 2,
+          "hitK": 2,
+          "mrr": 2,
+          "noteHitK": 2
+        },
+        "person": {
+          "n": 10,
+          "hit1": 8,
+          "hit3": 9,
+          "hitK": 10,
+          "mrr": 8.583333333333334,
+          "noteHitK": 10
+        },
+        "concept": {
+          "n": 12,
+          "hit1": 8,
+          "hit3": 11,
+          "hitK": 12,
+          "mrr": 9.583333333333332,
+          "noteHitK": 12
+        }
+      },
+      "all": {
+        "n": 240,
+        "hit1": 223,
+        "hit3": 234,
+        "hitK": 238,
+        "mrr": 228.83333333333334,
+        "noteHitK": 238
+      },
+      "msPerQuery": 43.6,
+      "separation": {
+        "auc": 0.973,
+        "answerableMedian": 0.724,
+        "unanswerableMedian": 0.598,
+        "cut": 0.677,
+        "answerableAboveCut": 84.6,
+        "unanswerableBelowCut": 100,
+        "unanswerableMax": 0.675,
+        "answerableMin": 0.561
+      }
+    },
+    "notes-hybrid": {
+      "sets": {
+        "lecture-term": {
+          "n": 60,
+          "hit1": 55,
+          "hit3": 60,
+          "hitK": 60,
+          "mrr": 57.5,
+          "noteHitK": 60
+        },
+        "lecture-topic": {
+          "n": 60,
+          "hit1": 60,
+          "hit3": 60,
+          "hitK": 60,
+          "mrr": 60,
+          "noteHitK": 60
+        },
+        "lecture-date": {
+          "n": 60,
+          "hit1": 3,
+          "hit3": 46,
+          "hitK": 60,
+          "mrr": 23.666666666666664,
+          "noteHitK": 60
+        },
+        "transcript": {
+          "n": 2,
+          "hit1": 2,
+          "hit3": 2,
+          "hitK": 2,
+          "mrr": 2,
+          "noteHitK": 2
+        },
+        "daily-date": {
+          "n": 22,
+          "hit1": 0,
+          "hit3": 4,
+          "hitK": 11,
+          "mrr": 3.033333333333333,
+          "noteHitK": 11
+        },
+        "daily-topic": {
+          "n": 6,
+          "hit1": 3,
+          "hit3": 4,
+          "hitK": 5,
+          "mrr": 3.7,
+          "noteHitK": 5
+        },
+        "exact-phrase": {
+          "n": 6,
+          "hit1": 5,
+          "hit3": 6,
+          "hitK": 6,
+          "mrr": 5.5,
+          "noteHitK": 6
+        },
+        "exact-code": {
+          "n": 2,
+          "hit1": 2,
+          "hit3": 2,
+          "hitK": 2,
+          "mrr": 2,
+          "noteHitK": 2
+        },
+        "person": {
+          "n": 10,
+          "hit1": 2,
+          "hit3": 5,
+          "hitK": 10,
+          "mrr": 4.533333333333333,
+          "noteHitK": 10
+        },
+        "concept": {
+          "n": 12,
+          "hit1": 7,
+          "hit3": 12,
+          "hitK": 12,
+          "mrr": 9.333333333333332,
+          "noteHitK": 12
+        }
+      },
+      "all": {
+        "n": 240,
+        "hit1": 139,
+        "hit3": 201,
+        "hitK": 228,
+        "mrr": 171.26666666666662,
+        "noteHitK": 228
+      },
+      "msPerQuery": 38.5,
+      "separation": {
+        "auc": 0.694,
+        "answerableMedian": 0.033,
+        "unanswerableMedian": 0.032,
+        "cut": 0.031,
+        "answerableAboveCut": 91.7,
+        "unanswerableBelowCut": 46.7,
+        "unanswerableMax": 0.033,
+        "answerableMin": 0.016
+      }
+    }
+  },
+  "misses": {
+    "passages-dense": [
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 406 on September 3?",
+        "got": [
+          "School/CSCI 406 - Algorithms/HW3 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 406 on September 10?",
+        "got": [
+          "School/CSCI 406 - Algorithms/HW2 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/CSCI 406.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 406 on September 17?",
+        "got": [
+          "School/CSCI 406 - Algorithms/HW2 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md"
+        ]
+      },
+      {
+        "set": "lecture-term",
+        "q": "What did the lecture say about exchange argument?",
+        "got": [
+          "Journal/2026-08-08.md",
+          "School/CSCI 406 - Algorithms/HW3 - CSCI 406.md",
+          "Archive/Spring 2026/HASS 200 - Technical Writing/Lectures - HASS 200.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 406 on September 24?",
+        "got": [
+          "School/CSCI 406 - Algorithms/HW2 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 406 on October 1?",
+        "got": [
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW2 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/CSCI 406.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 406 on October 8?",
+        "got": [
+          "School/CSCI 406 - Algorithms/HW2 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 406 on October 15?",
+        "got": [
+          "School/CSCI 406 - Algorithms/HW2 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW3 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 406 on October 22?",
+        "got": [
+          "School/CSCI 406 - Algorithms/HW2 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 406 on October 29?",
+        "got": [
+          "School/CSCI 406 - Algorithms/HW2 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/CSCI 406.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 406 on November 5?",
+        "got": [
+          "School/CSCI 406 - Algorithms/CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW2 - CSCI 406.md",
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 470 on September 4?",
+        "got": [
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW1 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/CSCI 470.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 470 on September 11?",
+        "got": [
+          "School/CSCI 470 - Machine Learning/HW1 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 470 on September 18?",
+        "got": [
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW1 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/CSCI 470.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 470 on September 25?",
+        "got": [
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW1 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/CSCI 470.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 470 on October 2?",
+        "got": [
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW1 - CSCI 470.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 470 on October 9?",
+        "got": [
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW1 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW3 - CSCI 470.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 470 on October 16?",
+        "got": [
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW1 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/CSCI 470.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 470 on October 23?",
+        "got": [
+          "School/CSCI 470 - Machine Learning/HW3 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 470 on October 30?",
+        "got": [
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW3 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/CSCI 470.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 470 on November 6?",
+        "got": [
+          "School/CSCI 470 - Machine Learning/HW2 - CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/CSCI 470.md",
+          "School/CSCI 470 - Machine Learning/HW3 - CSCI 470.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 478 on September 5?",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/HW1 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW2 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/CSCI 478.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 478 on September 12?",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/HW1 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW2 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW3 - CSCI 478.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 478 on September 19?",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/HW1 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW2 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/CSCI 478.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 478 on September 26?",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/HW2 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW1 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW3 - CSCI 478.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 478 on October 3?",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/HW3 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW3 - CSCI 478.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 478 on October 10?",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/HW2 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW1 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW3 - CSCI 478.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 478 on October 17?",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/HW2 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW1 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/CSCI 478.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 478 on October 24?",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/HW2 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW1 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/CSCI 478.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 478 on October 31?",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/HW1 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW2 - CSCI 478.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 478 on November 7?",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW3 - CSCI 478.md",
+          "School/CSCI 478 - Bioinformatics/HW1 - CSCI 478.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 370 on September 9?",
+        "got": [
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/HW3 - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 370 on September 16?",
+        "got": [
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/HW3 - CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 370 on September 23?",
+        "got": [
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/HW3 - CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/HW2 - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 370 on September 30?",
+        "got": [
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/HW3 - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 370 on October 7?",
+        "got": [
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/HW3 - CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 370 on October 14?",
+        "got": [
+          "School/CSCI 370 - Advanced Software Engineering/HW2 - CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 370 on October 21?",
+        "got": [
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/HW3 - CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/HW1 - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in CSCI 370 on October 28?",
+        "got": [
+          "School/CSCI 370 - Advanced Software Engineering/CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/HW3 - CSCI 370.md",
+          "School/CSCI 370 - Advanced Software Engineering/HW2 - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in MATH 332 on September 3?",
+        "got": [
+          "School/MATH 332 - Linear Algebra/HW3 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW3 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in MATH 332 on September 10?",
+        "got": [
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW1 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in MATH 332 on September 17?",
+        "got": [
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW1 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/MATH 332.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in MATH 332 on September 24?",
+        "got": [
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW1 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/MATH 332.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in MATH 332 on October 1?",
+        "got": [
+          "School/MATH 332 - Linear Algebra/HW1 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW1 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in MATH 332 on October 8?",
+        "got": [
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/MATH 332.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in MATH 332 on October 15?",
+        "got": [
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW3 - MATH 332.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in MATH 332 on October 22?",
+        "got": [
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW1 - MATH 332.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in MATH 332 on October 29?",
+        "got": [
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW1 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in MATH 332 on November 5?",
+        "got": [
+          "School/MATH 332 - Linear Algebra/MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW2 - MATH 332.md",
+          "School/MATH 332 - Linear Algebra/HW1 - MATH 332.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in PHGN 200 on September 6?",
+        "got": [
+          "School/PHGN 200 - Physics II/HW2 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW1 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW3 - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in PHGN 200 on September 13?",
+        "got": [
+          "School/PHGN 200 - Physics II/HW2 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW1 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW3 - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in PHGN 200 on September 20?",
+        "got": [
+          "School/PHGN 200 - Physics II/HW2 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW1 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW3 - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in PHGN 200 on September 27?",
+        "got": [
+          "School/PHGN 200 - Physics II/HW1 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW3 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW2 - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in PHGN 200 on October 4?",
+        "got": [
+          "School/PHGN 200 - Physics II/HW2 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW1 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW3 - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in PHGN 200 on October 11?",
+        "got": [
+          "School/PHGN 200 - Physics II/HW2 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW1 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW3 - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in PHGN 200 on October 18?",
+        "got": [
+          "School/PHGN 200 - Physics II/HW2 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW1 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW3 - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in PHGN 200 on October 25?",
+        "got": [
+          "School/PHGN 200 - Physics II/HW2 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW1 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW3 - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in PHGN 200 on November 1?",
+        "got": [
+          "School/PHGN 200 - Physics II/HW1 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW2 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW3 - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "lecture-date",
+        "q": "What was covered in PHGN 200 on November 8?",
+        "got": [
+          "School/PHGN 200 - Physics II/HW2 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW3 - PHGN 200.md",
+          "School/PHGN 200 - Physics II/HW1 - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on June 2?",
+        "got": [
+          "Daily/2026-06-24.md",
+          "Daily/2026-07-26.md",
+          "Daily/2026-06-12.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on June 9?",
+        "got": [
+          "Daily/2026-06-24.md",
+          "Daily/2026-09-10.md",
+          "Daily/2026-06-27.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on June 17?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-06-24.md",
+          "Daily/2026-06-12.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on June 25?",
+        "got": [
+          "Daily/2026-06-27.md",
+          "Daily/2026-06-12.md",
+          "Daily/2026-07-01.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on July 7?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-06-24.md",
+          "Daily/2026-07-01.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on July 14?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-07-01.md",
+          "Daily/2026-06-24.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on July 20?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-07-01.md",
+          "Daily/2026-06-24.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on July 28?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-07-01.md",
+          "Daily/2026-06-24.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on August 3?",
+        "got": [
+          "Daily/2026-07-01.md",
+          "Daily/2026-06-27.md",
+          "Daily/2026-07-26.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on August 11?",
+        "got": [
+          "Daily/2026-07-01.md",
+          "Daily/2026-06-27.md",
+          "Daily/2026-07-26.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on August 18?",
+        "got": [
+          "Daily/2026-07-01.md",
+          "Daily/2026-06-27.md",
+          "Daily/2026-07-26.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on August 25?",
+        "got": [
+          "Daily/2026-07-01.md",
+          "Daily/2026-06-27.md",
+          "Daily/2026-06-12.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on September 2?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-10-18.md",
+          "Daily/2026-06-24.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on September 9?",
+        "got": [
+          "Daily/2026-10-18.md",
+          "Daily/2026-07-26.md",
+          "Daily/2026-09-18.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on September 15?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-09-18.md",
+          "Daily/2026-09-10.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on September 22?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-06-27.md",
+          "Daily/2026-06-24.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on October 2?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-06-24.md",
+          "Daily/2026-08-19.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on October 8?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-06-24.md",
+          "Daily/2026-08-23.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on October 17?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-06-24.md",
+          "Daily/2026-06-12.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on October 23?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-06-27.md",
+          "Daily/2026-07-01.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on October 31?",
+        "got": [
+          "Daily/2026-06-27.md",
+          "Daily/2026-07-26.md",
+          "Daily/2026-06-24.md"
+        ]
+      },
+      {
+        "set": "exact-phrase",
+        "q": "Rahul Nandkishore",
+        "got": [
+          "Daily/2026-10-24.md",
+          "Daily/2026-06-04.md",
+          "Daily/2026-08-12.md"
+        ]
+      },
+      {
+        "set": "daily-topic",
+        "q": "my notes about immunology lecture",
+        "got": [
+          "AGENT.md",
+          "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+          "School/CSCI 406 - Algorithms/HW1 - CSCI 406.md"
+        ]
+      }
+    ],
+    "passages": [
+      {
+        "set": "daily-topic",
+        "q": "my notes about workshop and hackathon planning",
+        "got": [
+          "Meetings/2026-07-02 Tomás Herrera - hackathon planning.md",
+          "Meetings/2026-09-03 Sam Delgado - hackathon planning.md",
+          "Meetings/2026-09-13 Marcus Vale - hackathon planning.md"
+        ]
+      },
+      {
+        "set": "daily-topic",
+        "q": "my notes about immunology lecture",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+          "School/PHGN 200 - Physics II/Lectures - PHGN 200.md",
+          "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+        ]
+      }
+    ],
+    "notes-hybrid": [
+      {
+        "set": "daily-date",
+        "q": "What did I get done on June 2?",
+        "got": [
+          "Daily/2026-06-12.md",
+          "Daily/2026-06-24.md",
+          "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on June 9?",
+        "got": [
+          "Daily/2026-06-12.md",
+          "Daily/2026-06-24.md",
+          "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on July 7?",
+        "got": [
+          "Daily/2026-06-12.md",
+          "Daily/2026-07-26.md",
+          "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on July 14?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "Daily/2026-10-14.md",
+          "Daily/2026-07-01.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on July 20?",
+        "got": [
+          "Daily/2026-06-12.md",
+          "Daily/2026-07-26.md",
+          "School/PHGN 200 - Physics II/Lectures - PHGN 200.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on August 3?",
+        "got": [
+          "Daily/2026-06-12.md",
+          "Daily/2026-07-01.md",
+          "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on September 2?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md",
+          "Daily/2026-10-18.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on September 9?",
+        "got": [
+          "Daily/2026-10-18.md",
+          "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md",
+          "Daily/2026-07-26.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on October 2?",
+        "got": [
+          "Daily/2026-07-26.md",
+          "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md",
+          "Daily/2026-06-24.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on October 8?",
+        "got": [
+          "Daily/2026-06-12.md",
+          "Daily/2026-07-26.md",
+          "School/CSCI 370 - Advanced Software Engineering/Lectures - CSCI 370.md"
+        ]
+      },
+      {
+        "set": "daily-date",
+        "q": "What did I get done on October 31?",
+        "got": [
+          "Daily/2026-06-12.md",
+          "Daily/2026-06-27.md",
+          "Daily/2026-08-31.md"
+        ]
+      },
+      {
+        "set": "daily-topic",
+        "q": "my notes about immunology lecture",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+          "AGENT.md",
+          "Archive/Spring 2026/CSCI 358 - Discrete Math/Lectures - CSCI 358.md"
+        ]
+      }
+    ]
+  }
+}

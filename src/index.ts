@@ -522,27 +522,33 @@ export class SemanticIndex {
 					c.dated = dates.some((d) => where.includes(d));
 				}
 			}
-			// Up to half the places go to passages dated the day the question names, best first; the
-			// rest are the best of everything, with the per-note limit over both.
+			// Most places go to passages dated the day the question names; the rest are the best of
+			// everything, with the per-note limit over both. Dated passages are ranked by their words,
+			// not by meaning: the note named after the day comes first, then sections headed by it,
+			// and among those the one whose heading or text has the question's other words ("What
+			// did I get done on the 21st?" is the "Done" section, which by meaning lost to a to-do
+			// list for the next day).
 			const taken = new Map<string, number>();
-			const picked = new Set<Cand>();
+			const picked: Cand[] = [];
 			const take = (c: Cand): boolean => {
 				const n = taken.get(c.path) ?? 0;
-				if (picked.has(c) || n >= perNote) return false;
+				if (picked.includes(c) || n >= perNote) return false;
 				taken.set(c.path, n + 1);
-				picked.add(c);
+				picked.push(c);
 				return true;
 			};
-			let reserved = dates.length ? Math.ceil(limit / 2) : 0;
-			for (const c of all) {
-				if (reserved <= 0) break;
-				if (c.dated && take(c)) reserved--;
+			if (dates.length) {
+				let reserved = Math.max(Math.ceil(limit / 2), limit - 2);
+				for (const c of all.filter((x) => x.dated).sort((x, y) => y.lex - x.lex || y.score - x.score)) {
+					if (reserved <= 0) break;
+					if (take(c)) reserved--;
+				}
 			}
 			for (const c of all) {
-				if (picked.size >= limit) break;
+				if (picked.length >= limit) break;
 				take(c);
 			}
-			ranked = all.filter((c) => picked.has(c)).sort((x, y) => Number(y.dated) - Number(x.dated) || y.score - x.score);
+			ranked = picked;
 		}
 		return ranked.flatMap((r) => {
 			const chunk = this.files.get(r.path)?.chunks[r.idx];
