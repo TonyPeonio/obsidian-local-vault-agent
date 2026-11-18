@@ -473,11 +473,12 @@ to create a note and end its answer with a given phrase), which passed 8 of 8 in
 left out on purpose: the 0.8.0 runs took 264 s (207–348) on a quiet machine, but the 0.9.0 runs
 shared the machine with other work, and a time taken under load says nothing. What does not
 depend on load is how much the model has to do, and that is the two right-hand columns. The
-0.9.0 runs are from about two thirds of the way through the release's changes; the closing run
-on the finished code was not completed (see the release notes). Five further scenarios added
-after those runs (a 39,000-character log, a table, two notes with one name, properties, open
-tasks) are run with `ONLY=long-note,table-row,same-name,properties,open-tasks`; the first four
-scored 27 of 27 in the median of five runs.
+0.9.0 runs are from about two thirds of the way through the release's changes. Five further
+scenarios were added after them (a 39,000-character log, a table, two notes with one name,
+properties, open tasks), which brings the suite to 190 checks; the first four scored 27 of 27 in
+the median of five runs on their own. The finished agent code was run through all 190 once,
+before the chat-panel work was merged: 185 of 190 (`bench/0.9.0-v4-1.json`). It was meant to be
+five runs; see the release notes for why it was one.
 
 Search is measured on its own, without a chat model, by `npm run bench:retrieval`: 240
 questions whose answering passage is known, on the same vault.
