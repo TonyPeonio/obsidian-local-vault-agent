@@ -2,6 +2,7 @@ import { sameModel } from "./ollama";
 import { ItemView, MarkdownRenderer, MarkdownView, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type LocalVaultAgentPlugin from "./main";
 import { AUTO_CONTINUE_TEXT, FOLLOW_THROUGH_TEXT, GROUNDING_PREFIX, newConversation, type Conversation } from "./agent";
+import { unattendedWrites } from "./approval";
 import { recordOutcomes, restoredCards, type ToolOutcome } from "./chat-restore";
 import { ComposerSuggest } from "./composer-suggest";
 import type { GardenFix, GardenReport } from "./gardener";
@@ -27,6 +28,10 @@ export class AgentView extends ItemView {
 	private sendBtn!: HTMLButtonElement;
 	private statusEl!: HTMLElement;
 	private modelSelect!: HTMLSelectElement;
+	/** The bar above the message box that says changes are being written without a diff, with "Turn off". */
+	private approveAllEl!: HTMLElement;
+	private approveAllText!: HTMLElement;
+	private approveAllShown: "chat" | "setting" | null = null;
 	private abort: AbortController | null = null;
 	/** Turns (by their list of reported changes) that already show the partial-undo offer. */
 	private partialOffered = new WeakSet<ChangeRecord[]>();
@@ -102,6 +107,14 @@ export class AgentView extends ItemView {
 		this.renderWelcome();
 		void this.restoreChat();
 
+		// "Approve all" is never silent: while changes are written without a diff, this bar says so.
+		this.approveAllEl = root.createDiv({ cls: "lva-approve-all", attr: { role: "status" } });
+		setIcon(this.approveAllEl.createSpan({ cls: "lva-approve-all-icon" }), "alert-triangle");
+		this.approveAllText = this.approveAllEl.createSpan({ cls: "lva-approve-all-text" });
+		const approveOff = this.approveAllEl.createEl("button", { cls: "lva-chip", text: t("view.approveAll.off") });
+		approveOff.addEventListener("click", () => this.turnOffApproveAll());
+		this.approveAllEl.hide();
+
 		// Composer
 		const composer = root.createDiv({ cls: "lva-composer" });
 		this.inputEl = composer.createEl("textarea", {
@@ -132,7 +145,10 @@ export class AgentView extends ItemView {
 			}
 		});
 		this.inputEl.addEventListener("input", () => this.autoGrow());
-		this.inputEl.addEventListener("focus", () => this.updateMic());
+		this.inputEl.addEventListener("focus", () => {
+			this.updateMic();
+			this.syncApproveAll();
+		});
 		// Voice input goes through Lecture Companion's whisper server; without it there is no button.
 		this.micBtn = composer.createEl("button", { cls: "clickable-icon lva-mic", attr: { "aria-label": t("view.mic") } });
 		setIcon(this.micBtn, "mic");
@@ -276,6 +292,7 @@ export class AgentView extends ItemView {
 		this.quizSources.clear();
 		void this.plugin.clearChat();
 		this.conversation = newConversation();
+		this.syncApproveAll();
 		this.usage = null;
 		this.messagesEl.empty();
 		this.renderWelcome();
@@ -300,7 +317,29 @@ export class AgentView extends ItemView {
 		this.abort = null;
 	}
 
+	/** Shows or hides the "written without a diff" bar to match this chat's approve-all and the global setting. */
+	private syncApproveAll(): void {
+		const why = unattendedWrites(this.conversation.approveAll, this.plugin.settings.autoApproveEdits);
+		if (why === this.approveAllShown) return;
+		this.approveAllShown = why;
+		if (why) this.approveAllText.setText(t(why === "chat" ? "view.approveAll.chat" : "view.approveAll.setting"));
+		this.approveAllEl.toggle(why !== null);
+	}
+
+	/** One click: diffs are shown again, from the next change on (also of a turn that is running). */
+	private turnOffApproveAll(): void {
+		this.conversation.approveAll = false;
+		if (this.plugin.settings.autoApproveEdits) {
+			this.plugin.settings.autoApproveEdits = false;
+			void this.plugin.saveSettings();
+		}
+		this.syncApproveAll();
+		this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.approveAll.offNote") });
+		this.scrollToBottom();
+	}
+
 	private updateStatus(extra?: string): void {
+		this.syncApproveAll();
 		const s = this.plugin.index.status();
 		const parts: string[] = [];
 		if (extra) parts.push(extra);
@@ -535,6 +574,8 @@ export class AgentView extends ItemView {
 					},
 					onChange: (change, call) => {
 						made.push(change);
+						// The first write after "Approve all" was granted: show the bar at once.
+						this.syncApproveAll();
 						const seen = this.outcomes.get(call);
 						this.outcomes.set(call, { ok: seen?.ok ?? true, changes: [...(seen?.changes ?? []), change.id] });
 						turn?.attachUndo(call, change);

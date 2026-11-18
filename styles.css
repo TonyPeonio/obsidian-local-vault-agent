@@ -309,6 +309,41 @@
 	justify-content: flex-end;
 	gap: 8px;
 }
+/* The question "approve everything from here on?": its text on a line of its own above the two answers */
+.lva-approval-buttons.lva-approval-confirming {
+	flex-wrap: wrap;
+}
+.lva-approval-confirm {
+	flex-basis: 100%;
+	padding: var(--size-4-2) var(--size-4-3);
+	border-left: 3px solid var(--text-warning);
+	background: var(--background-secondary);
+	border-radius: var(--radius-s);
+}
+
+/* Changes are being written without a diff: said next to the message box for as long as it is so */
+.lva-approve-all {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 8px;
+	font-size: var(--font-ui-smaller);
+	border-top: 1px solid var(--background-modifier-border);
+	border-left: 3px solid var(--text-warning);
+	background: var(--background-secondary);
+}
+.lva-approve-all-icon {
+	flex: none;
+	display: inline-flex;
+	color: var(--text-warning);
+}
+.lva-approve-all-text {
+	flex: 1;
+	min-width: 0;
+}
+.lva-approve-all .lva-chip {
+	flex: none;
+}
 
 .lva-settings-textarea {
 	width: 100%;

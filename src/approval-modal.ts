@@ -1,17 +1,32 @@
 import { App, Modal } from "obsidian";
+import { approvalKey, approvalStep, type ApprovalAction, type ApprovalStage, type ApproveAllScope } from "./approval";
 import { computeDiff } from "./diff";
 import { t } from "./i18n";
 import type { ApprovalDecision, ApprovalRequest } from "./types";
 
-/** Shows a line diff of a proposed change and resolves with the user's decision. */
+/**
+ * Shows a line diff of a proposed change and resolves with the user's decision.
+ *
+ * "Approve all" (when offered) takes two separate actions: the button, or Ctrl/Cmd+Shift+A, only
+ * opens a question in the dialog; the grant is the answer to it. No single key grants it.
+ */
 export class ApprovalModal extends Modal {
 	private decision: ApprovalDecision = "reject";
 	private resolve!: (d: ApprovalDecision) => void;
 	readonly result: Promise<ApprovalDecision>;
+	private stage: ApprovalStage = "choose";
+	private buttonsEl!: HTMLElement;
+	private hintEl!: HTMLElement;
+	private approveBtn: HTMLButtonElement | null = null;
 
+	/**
+	 * @param all What "approve all" covers here: the rest of the chat ("chat"), the rest of a batch
+	 * of changes ("batch"), or not offered ("none", for a single change such as an undo).
+	 */
 	constructor(
 		app: App,
 		private req: ApprovalRequest,
+		private all: ApproveAllScope = "none",
 	) {
 		super(app);
 		this.result = new Promise<ApprovalDecision>((res) => (this.resolve = res));
@@ -35,28 +50,68 @@ export class ApprovalModal extends Modal {
 			row.createSpan({ cls: "lva-diff-text", text: line.text });
 		}
 
-		const buttons = contentEl.createDiv({ cls: "lva-approval-buttons" });
-		const reject = buttons.createEl("button", { text: t("approve.reject") });
-		reject.addEventListener("click", () => this.finish("reject"));
-		const approveAll = buttons.createEl("button", { text: t("approve.all") });
-		approveAll.addEventListener("click", () => this.finish("approve-all"));
-		const approve = buttons.createEl("button", { text: t("approve.approve"), cls: "mod-cta" });
-		approve.addEventListener("click", () => this.finish("approve"));
-		approve.focus();
-		contentEl.createDiv({ cls: "lva-approval-hint", text: t("approve.hint") });
+		this.buttonsEl = contentEl.createDiv({ cls: "lva-approval-buttons" });
+		this.hintEl = contentEl.createDiv({ cls: "lva-approval-hint" });
+		this.renderStage();
+
 		this.scope.register([], "Enter", (e) => {
 			// A button the user tabbed to keeps its own Enter behaviour.
 			const focused = activeDocument.activeElement;
-			if (focused && focused.instanceOf(HTMLButtonElement) && focused !== approve) return true;
+			if (focused && focused.instanceOf(HTMLButtonElement) && focused !== this.approveBtn) return true;
 			e.preventDefault();
-			this.finish("approve");
+			const action = approvalKey(this.stage, { key: "Enter" }, this.all);
+			if (action) this.act(action);
 			return false;
 		});
-		this.scope.register([], "a", (e) => {
+		// The chord only asks: it opens the question below the diff, with the focus on "Back".
+		this.scope.register(["Mod", "Shift"], "a", (e) => {
 			e.preventDefault();
-			this.finish("approve-all");
+			const action = approvalKey(this.stage, { key: "a", mod: true, shift: true }, this.all);
+			if (action) this.act(action);
 			return false;
 		});
+	}
+
+	/** The buttons for the stage the dialog is in: the three choices, or the question about approving everything. */
+	private renderStage(): void {
+		const buttons = this.buttonsEl;
+		buttons.empty();
+		this.approveBtn = null;
+		buttons.toggleClass("lva-approval-confirming", this.stage === "confirm-all");
+		if (this.stage === "choose") {
+			const reject = buttons.createEl("button", { text: t("approve.reject") });
+			reject.addEventListener("click", () => this.act("reject"));
+			if (this.all !== "none") {
+				const approveAll = buttons.createEl("button", { text: t(this.all === "chat" ? "approve.all" : "approve.allBatch"), cls: "lva-approve-all-btn" });
+				approveAll.addEventListener("click", () => this.act("ask-all"));
+			}
+			const approve = buttons.createEl("button", { text: t("approve.approve"), cls: "mod-cta" });
+			approve.addEventListener("click", () => this.act("approve"));
+			this.approveBtn = approve;
+			approve.focus();
+			this.hintEl.setText(t(this.all === "none" ? "approve.hint" : "approve.hint.all"));
+			return;
+		}
+		buttons.createDiv({ cls: "lva-approval-confirm", text: t(this.all === "chat" ? "approve.confirm.chat" : "approve.confirm.batch"), attr: { role: "alert" } });
+		const back = buttons.createEl("button", { text: t("approve.confirm.back") });
+		back.addEventListener("click", () => this.act("back"));
+		const yes = buttons.createEl("button", { text: t("approve.confirm.yes"), cls: "mod-warning lva-approve-all-yes" });
+		yes.addEventListener("click", () => this.act("confirm-all"));
+		// Focus on the way back, so a second Enter never grants it.
+		back.focus();
+		this.hintEl.setText("");
+	}
+
+	private act(action: ApprovalAction): void {
+		const next = approvalStep(this.stage, action, this.all);
+		if (next.decision) {
+			this.finish(next.decision);
+			return;
+		}
+		if (next.stage !== this.stage) {
+			this.stage = next.stage;
+			this.renderStage();
+		}
 	}
 
 	private finish(decision: ApprovalDecision): void {

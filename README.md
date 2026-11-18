@@ -196,7 +196,7 @@ empty everything under a heading), `replace_note`, `move_note` (links are update
 `list_lectures` and `lecture_transcript` when Lecture Companion is installed, `read_image` when a
 vision model is available. It calls
 them in a loop until the task is done, then reports. Every write opens an approval dialog with a
-line diff before touching the vault (Enter approves, A approves all in this chat, Esc rejects).
+line diff before touching the vault (Enter approves, Esc rejects; *Approve all in this chat* asks once more before it is granted, and the chat shows a bar with *Turn off* for as long as it is on).
 
 **What it sees on every message.** Besides your question, the model gets an outline of the whole
 vault — every note's folder, name, headings and tags, budgeted to the context window — and, when
@@ -611,7 +611,7 @@ problem*.
 ## Accessibility and mobile
 
 - **Keyboard.** Everything in the chat is reachable with Tab and has a visible focus ring. In the
-  diff dialog Enter approves, A approves all in this chat, Esc rejects, and the diff itself is
+  diff dialog Enter approves, Esc rejects, Ctrl/Cmd+Shift+A asks about approving all in this chat, and the diff itself is
   focusable and scrolls with the arrow keys. `@` and `/` open pickers driven by the arrow keys
   and Enter.
 - **Screen readers.** Icon buttons, the model picker, the message box and the diff have labels;

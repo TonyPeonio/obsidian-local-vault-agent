@@ -70,7 +70,7 @@ const en = {
 
 	// Settings: agent
 	"set.autoApprove.name": "Auto-approve edits",
-	"set.autoApprove.desc": "Skip the diff approval dialog and let the agent write to notes directly. Not recommended; you can also choose 'Approve all' per chat.",
+	"set.autoApprove.desc": "Skip the diff approval dialog and let the agent write to notes directly. Not recommended; you can also choose 'Approve all in this chat' in the diff dialog, which the chat shows while it is on.",
 	"set.autoContinue.name": "Keep going when the model asks for permission",
 	"set.autoContinue.desc": "Small models like to stop with 'Would you like me to proceed?'. When on, the agent answers yes for you (up to three times per message) so multi-note tasks run to the end. Every write still goes through approval.",
 	"set.maxIter.name": "Max tool calls per message",
@@ -196,6 +196,10 @@ const en = {
 	"view.report": "Report this problem",
 	"view.partial": "{n} change(s) were applied before the turn ended. Each was approved on its own and is complete; you can take them all back.",
 	"view.partial.undo": "Undo these changes",
+	"view.approveAll.chat": "Approve all is on: changes in this chat are written without a diff.",
+	"view.approveAll.setting": "Auto-approve edits is on in settings: every change is written without a diff.",
+	"view.approveAll.off": "Turn off",
+	"view.approveAll.offNote": "Approve all is off: the next change shows its diff first.",
 	"view.status.keyword": "Keyword search only",
 	"view.status.indexing": "Indexing… {done} notes ({pending} left)",
 	"view.status.index": "Index: {notes} notes, {chunks} chunks",
@@ -205,9 +209,15 @@ const en = {
 
 	// Approval dialog
 	"approve.approve": "Approve",
-	"approve.all": "Approve all in this chat",
+	"approve.all": "Approve all in this chat…",
+	"approve.allBatch": "Approve all remaining…",
 	"approve.reject": "Reject",
-	"approve.hint": "Enter approves · A approves all in this chat · Esc rejects",
+	"approve.hint": "Enter approves · Esc rejects",
+	"approve.hint.all": "Enter approves · Esc rejects · Ctrl/Cmd+Shift+A asks about approving all",
+	"approve.confirm.chat": "Approve every further change in this chat without showing its diff? It stays on until you turn it off above the message box or start a new chat. Each change can still be undone.",
+	"approve.confirm.batch": "Write the remaining changes of this batch without showing their diffs? Each change can still be undone from the change history.",
+	"approve.confirm.yes": "Yes, approve all",
+	"approve.confirm.back": "Back to the diff",
 	"approve.diff": "Proposed change, line by line",
 
 	// Report a problem

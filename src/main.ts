@@ -208,7 +208,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				}
 			},
 			approve: (req) => {
-				const modal = new ApprovalModal(this.app, req);
+				const modal = new ApprovalModal(this.app, req, "chat");
 				modal.open();
 				return modal.result;
 			},
@@ -692,7 +692,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		let stopped = false;
 		for (const change of plan.changes) {
 			if (!approveAll) {
-				const modal = new ApprovalModal(this.app, { tool: change.tool, path: change.path, before: change.before, after: change.after, summary: change.summary });
+				const modal = new ApprovalModal(this.app, { tool: change.tool, path: change.path, before: change.before, after: change.after, summary: change.summary }, "batch");
 				modal.open();
 				const decision = await modal.result;
 				if (decision === "reject") {
@@ -1228,7 +1228,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				continue;
 			}
 			if (!approveAll) {
-				const modal = new ApprovalModal(this.app, { tool: item.tool, path: item.path, before: plan.before, after: plan.after, summary: `${item.summary} (${new Date(item.time).toLocaleString()})` });
+				const modal = new ApprovalModal(this.app, { tool: item.tool, path: item.path, before: plan.before, after: plan.after, summary: `${item.summary} (${new Date(item.time).toLocaleString()})` }, "batch");
 				modal.open();
 				const decision = await modal.result;
 				if (decision === "reject") {
@@ -1306,7 +1306,10 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			keepAlive: s.keepAlive,
 			maxIterations: s.maxIterations,
 			maxToolResultChars: s.maxToolResultChars,
-			autoApprove: s.autoApproveEdits,
+			// Read at every write, not once per message: "Turn off" in the chat takes effect for the very next change of a running turn.
+			get autoApprove() {
+				return s.autoApproveEdits;
+			},
 			autoContinue: s.autoContinue,
 			extraSystemPrompt: s.extraSystemPrompt,
 			citations: s.citations,
