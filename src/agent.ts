@@ -656,6 +656,11 @@ export class Agent {
 		let writes = 0;
 		/** Notes the model read this turn, in order, for the sources footer. */
 		const readPaths: string[] = [];
+		// Notes attached to the message (and the passages from notes they link to) were read too.
+		for (const m of userText.matchAll(/^--- (?:Attached note: (.+?\.md)|From (.+?\.md)(?: › .*?)?, which the attached note links to) ---$/gm)) {
+			const path = m[1] ?? m[2];
+			if (path && !readPaths.includes(path)) readPaths.push(path);
+		}
 		/** Notes grep_vault matched this turn; an answer given straight from a grep cites these. */
 		const hitPaths: string[] = [];
 		/** The text search_passages returned per note, so an answer that quotes a passage cites its note. */

@@ -693,6 +693,26 @@ describe("a reply that will not stop", () => {
 	});
 });
 
+describe("notes attached to the message", () => {
+	it("are sources of the answer, with the notes whose passages came along", async () => {
+		const { agent } = setup([{ content: "The net is kirin-2026-10 and its validation loss was 0.071." }]);
+		const conv = newConversation();
+		const message = [
+			"[[Projects/Chess Robot]] What net and what loss?",
+			"",
+			"(The user attached the following note to this message.)",
+			"",
+			"--- Attached note: Projects/Chess Robot.md ---",
+			"# Chess Robot",
+			"",
+			"--- From Ideas/Sensors.md › Runs, which the attached note links to ---",
+			"- validation loss 0.071",
+		].join("\n");
+		await agent.run(conv, message, {});
+		expect(conv.messages.at(-1)?.content).toContain("Sources: [[Projects/Chess Robot]], [[Ideas/Sensors]]");
+	});
+});
+
 describe("what is added to a reply", () => {
 	it("goes on the reply that ends the turn, not on one that is sent back to the model", async () => {
 		const { agent, ollama } = setup(
