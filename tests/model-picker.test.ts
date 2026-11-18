@@ -24,6 +24,15 @@ describe("the chat model picker", () => {
 		expect(options.map((o) => o.value)).toEqual(["llama3.1:8b"]);
 	});
 
+	it("does not hide a model the server sent an empty capability list for: that is 'cannot tell', not 'can do nothing'", () => {
+		const models = [model("qwen3.5:9b", 6.6 * GB, ["completion", "tools"]), model("imported-model:latest", 4 * GB, []), model("bge-m3", 1.2 * GB, [])];
+		const options = chatModelOptions(models, [], "qwen3.5:9b");
+		// Judged by name, like a server that reports nothing: the import stays, the embedding model goes.
+		expect(options.map((o) => o.value)).toEqual(["qwen3.5:9b", "imported-model:latest"]);
+		expect(unusableReason(models[1])).toBeNull();
+		expect(unusableReason(models[2])).toBe("embedding model");
+	});
+
 	it("shows the size and what is in memory now", () => {
 		const models = [model("qwen3.5:9b", 6.6 * GB), model("qwen3.5:4b", 3.4 * GB), model("small", 640e6)];
 		const options = chatModelOptions(models, [running("qwen3.5:9b", 8.1 * GB, 8.1 * GB)], "qwen3.5:9b");

@@ -27,7 +27,11 @@ export function formatModelSize(bytes: number): string {
 }
 
 /** Why the agent cannot use an installed model, or null when it can (as far as the server says). */
-export function unusableReason(m: ModelInfo): string | null {
+export function unusableReason(model: ModelInfo): string | null {
+	// An empty list is a server that could not tell (a model file it cannot inspect), not a model that
+	// can do nothing: it is judged by its name, as when no list is sent. Hiding a model that works is
+	// worse than listing one that does not.
+	const m = model.capabilities?.length ? model : { ...model, capabilities: undefined };
 	if (isEmbedding(m)) return "embedding model";
 	if (!canCallTools(m)) return "cannot call tools";
 	return null;
