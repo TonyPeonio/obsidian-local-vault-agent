@@ -95,7 +95,7 @@ describe("grep_vault within the result budget", () => {
 		const shown = (out.match(/^Notes\/Note \d+\.md:\d+ \[## Heading\]: /gm) ?? []).length;
 		expect(shown).toBeGreaterThan(5);
 		expect(shown).toBeLessThan(60);
-		expect(out).toContain(`\n…${80 - shown} more matching lines not shown; narrow with folder or a more specific pattern.\n`);
+		expect(out).toContain(`\n…${80 - shown} more matching lines not shown; narrow with folder or a more specific pattern, or set notes_only: true for every note.\n`);
 		expect(out).toMatch(/call list_sections\(\{containing: \["needle", "<other text>"\]\}\) once instead of reading them\.$/);
 	});
 	it("counts every note with a match, shown or not", async () => {
@@ -205,6 +205,25 @@ describe("lists within the result budget", () => {
 		const shown = (out.match(/^> +\d+ \| item/gm) ?? []).length;
 		expect(shown).toBeGreaterThan(5);
 		expect(out.endsWith(`\n…and ${200 - shown} more matches.`)).toBe(true);
+	});
+});
+
+describe("Sources from a grep with notes_only", () => {
+	it("cites the notes that a count-per-note grep listed", async () => {
+		const vault = new FakeVault({ "Projects/Chess Robot.md": "The gantry moves pieces with an electromagnet.", "Ideas/Sensors.md": "Hall sensors are cheap." });
+		const agent = new Agent({
+			client: new FakeOllama([{ tool: "grep_vault", args: { pattern: "electromagnet", notes_only: true } }, { content: "One note mentions it." }]).asClient(),
+			vault,
+			tools: ALL_TOOLS,
+			search: (q, l) => keywordSearch(vault, q, l),
+			approve: async () => "approve",
+			getConfig: () => ({ model: "fake", numCtx: 8192, temperature: 0, think: undefined, keepAlive: "1m", maxIterations: 4, maxToolResultChars: 4000, autoApprove: false, autoContinue: false, extraSystemPrompt: "" }),
+			now: () => new Date(2026, 10, 5, 12),
+		});
+		const conv = newConversation();
+		await agent.run(conv, "which notes mention the electromagnet?", {});
+		expect(conv.messages.find((m) => m.role === "tool")?.content).toBe("1 matching line in 1 note (lines per note):\nProjects/Chess Robot.md: 1");
+		expect(conv.messages.at(-1)?.content).toBe("One note mentions it.\n\nSources: [[Projects/Chess Robot]]");
 	});
 });
 

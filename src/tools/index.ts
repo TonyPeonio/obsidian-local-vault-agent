@@ -243,6 +243,31 @@ function fitBlocks(blocks: RowBlock[], budget: number): { text: string; rows: nu
 	return { text: out.join("\n"), rows, chars };
 }
 
+/** The most of one line that grep_vault prints. A prose paragraph is a single line in Obsidian, so a few uncut matches could fill the result. */
+const GREP_LINE_CHARS = 240;
+/** find_in_note is used to copy text for an edit, so it shows more of the matching line and less of its neighbours. */
+const FIND_LINE_CHARS = 400;
+const FIND_CONTEXT_CHARS = 160;
+
+/**
+ * A long line cut to about `max` characters around the match that starts at `at`, each cut
+ * marked with "…". A quarter of the window comes before the match so it reads in context.
+ */
+export function clipLine(line: string, max: number, at = 0): string {
+	// Cutting off a few characters saves nothing and costs the reader the end of the sentence.
+	if (line.length <= max + 40) return line;
+	let start = Math.max(0, at - Math.floor(max / 4));
+	if (start + max >= line.length) start = line.length - max;
+	else if (start > 0) {
+		// Start at a word when one begins nearby, before the match.
+		const space = line.indexOf(" ", start);
+		if (space >= 0 && space < Math.min(at, start + 24)) start = space + 1;
+	}
+	if (start < 24) start = 0;
+	const end = Math.min(line.length, start + max);
+	return `${start > 0 ? "…" : ""}${line.slice(start, end)}${end < line.length ? "…" : ""}`;
+}
+
 /** A passage is not shown shorter than this unless it is shorter itself; lower-ranked ones are left out instead. */
 const MIN_PASSAGE_CHARS = 600;
 const PASSAGE_CUT = "\n[… section truncated; read_section for the rest]";
@@ -411,15 +436,16 @@ export function extractSection(content: string, heading: string): { text: string
 export const grepVault: ToolDefinition = {
 	name: "grep_vault",
 	description:
-		"Search the text of every note for a literal string (case-insensitive) or a regular expression (set regex: true for ^, \\s, [A-Z], a|b and the like), like grep. Returns matching lines as `path:line [enclosing heading]: text` grouped by note, optionally with context lines. The right tool for 'every note that contains X', embeds, tags, headings or exact phrases; much cheaper than reading notes. With a heading as the pattern and context: 8 it shows the start of that section in every note at once.",
+		"Search every note's text for a literal string (case-insensitive) or a regular expression (set regex: true for ^, \\s, [A-Z], a|b). Returns matching lines as `path:line [enclosing heading]: text` grouped by note, a long line cut around the match. The right tool for 'every note that contains X', embeds, tags, headings or exact phrases; much cheaper than reading notes. With a heading as the pattern and context: 8 it shows the start of that section in every note at once.",
 	parameters: {
 		type: "object",
 		properties: {
-			pattern: { type: "string", description: "Literal text to look for, or a regular expression when regex is true." },
-			regex: { type: "boolean", description: "Treat pattern as a JavaScript regular expression (default false)." },
+			pattern: { type: "string", description: "Literal text, or a regular expression when regex is true." },
+			regex: { type: "boolean", description: "Pattern is a JavaScript regular expression." },
 			folder: { type: "string", description: "Only notes inside this folder (recursive)." },
-			context: { type: "integer", description: "Lines of context to show after each match (default 0, max 8)." },
-			limit: { type: "integer", description: "Maximum matching lines to return (default 60, max 200)." },
+			context: { type: "integer", description: "Lines to show after each match (default 0, max 8)." },
+			limit: { type: "integer", description: "Maximum matching lines (default 60, max 200)." },
+			notes_only: { type: "boolean", description: "Only list the notes that match, with a count each: for 'which notes contain X'." },
 		},
 		required: ["pattern"],
 	},
@@ -430,6 +456,7 @@ export const grepVault: ToolDefinition = {
 		const folder = str(args, "folder", false).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
 		const context = int(args, "context", 0, 0, 8);
 		const limit = int(args, "limit", 60, 1, 200);
+		const notesOnly = bool(args, "notes_only") || bool(args, "count_only") || bool(args, "paths_only");
 		let notes = ctx.vault.listNotes();
 		if (folder) {
 			// The folder wins when it exists: "Daily" must mean the Daily/ folder even when a note
@@ -445,12 +472,13 @@ export const grepVault: ToolDefinition = {
 		notes.sort((a, b) => a.path.localeCompare(b.path));
 		const texts = await Promise.all(notes.map((n) => ctx.vault.read(n.path)));
 
-		const scan = (test: (line: string) => boolean) => {
+		/** `find` returns where in the line the match starts, or -1. */
+		const scan = (find: (line: string) => number) => {
 			/** One matching line with its context lines, for the first `limit` matches. */
 			const hits: { path: string; rows: string[] }[] = [];
 			let total = 0;
-			/** Notes with at least one matching line, shown or not. */
-			let notesHit = 0;
+			/** Every note with at least one matching line, shown or not, and how many it has. */
+			const perNote: { path: string; count: number }[] = [];
 			notes.forEach((n, k) => {
 				const lines = texts[k].split("\n");
 				let inNote = 0;
@@ -460,22 +488,24 @@ export const grepVault: ToolDefinition = {
 					if (/^\s*(```|~~~)/.test(lines[i])) inFence = !inFence;
 					const h = !inFence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
 					if (h) heading = `${h[1]} ${h[2].trim()}`;
-					if (!test(lines[i])) continue;
+					const at = find(lines[i]);
+					if (at < 0) continue;
 					total++;
 					inNote++;
-					if (hits.length >= limit) continue;
-					const rows = [`${n.path}:${i + 1}${heading && !h ? ` [${heading}]` : ""}: ${lines[i]}`];
-					for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) rows.push(`${n.path}:${j + 1}- ${lines[j]}`);
+					if (notesOnly || hits.length >= limit) continue;
+					const rows = [`${n.path}:${i + 1}${heading && !h ? ` [${heading}]` : ""}: ${clipLine(lines[i], GREP_LINE_CHARS, at)}`];
+					for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) rows.push(`${n.path}:${j + 1}- ${clipLine(lines[j], GREP_LINE_CHARS)}`);
 					hits.push({ path: n.path, rows });
 				}
-				if (inNote) notesHit++;
+				if (inNote) perNote.push({ path: n.path, count: inNote });
 			});
-			return { hits, total, notesHit };
+			return { hits, total, perNote };
 		};
 		const literal = (p: string) => {
 			const lower = p.toLowerCase();
-			return (line: string) => line.toLowerCase().includes(lower);
+			return (line: string) => line.toLowerCase().indexOf(lower);
 		};
+		const byRegex = (re: RegExp) => (line: string) => re.exec(line)?.index ?? -1;
 		const compile = (p: string): RegExp | null => {
 			try {
 				return new RegExp(p, "i");
@@ -491,7 +521,7 @@ export const grepVault: ToolDefinition = {
 			pattern = tidyAlternation(rawPattern);
 			const re = compile(pattern);
 			if (re) {
-				result = scan((line) => re.test(line));
+				result = scan(byRegex(re));
 			} else {
 				note = `(The pattern is not a valid regular expression: ${tryRegexError(pattern)}. Searched for it as literal text instead.)\n`;
 				result = scan(literal(rawPattern));
@@ -504,7 +534,7 @@ export const grepVault: ToolDefinition = {
 				pattern = tidyAlternation(rawPattern);
 				const re = compile(pattern);
 				if (re) {
-					const asRegex = scan((line) => re.test(line));
+					const asRegex = scan(byRegex(re));
 					if (asRegex.total > 0) {
 						note = `(No line contains that text literally; it looks like a regular expression, so it was searched as one${pattern !== rawPattern ? `, as ${JSON.stringify(pattern)}` : ""}.)\n`;
 						result = asRegex;
@@ -515,15 +545,24 @@ export const grepVault: ToolDefinition = {
 			}
 		}
 		if (result.total === 0) return `${note}No note contains "${rawPattern}"${folder ? ` under ${folder}/` : ""}.`;
-		const { hits, total, notesHit } = result;
-		const head = `${note}${total} matching line${total === 1 ? "" : "s"} in ${notesHit} note${notesHit === 1 ? "" : "s"}:\n`;
+		const { hits, total, perNote } = result;
+		const counts = `${note}${total} matching line${total === 1 ? "" : "s"} in ${perNote.length} note${perNote.length === 1 ? "" : "s"}`;
+		if (notesOnly) {
+			// "Which notes contain X": every note fits where their lines would not.
+			perNote.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+			const head = `${counts} (lines per note):\n`;
+			const rows = perNote.map((p) => `${p.path}: ${p.count}`);
+			const keep = Math.max(1, fitCount(rows, ctx.maxResultChars - head.length - `\n…and ${rows.length} more notes; narrow with folder.`.length));
+			return `${head}${rows.slice(0, keep).join("\n")}${rows.length > keep ? `\n…and ${rows.length - keep} more notes; narrow with folder.` : ""}`;
+		}
+		const head = `${counts}:\n`;
 		// Many matches with context usually means "which of these sections also has X": that is
 		// one list_sections call, not a reading tour.
 		const hint =
 			total >= 8 && context > 0
 				? `\nTo know which of these sections also contain (or lack) another text, call list_sections({containing: [${JSON.stringify(rawPattern)}, "<other text>"]}) once instead of reading them.`
 				: "";
-		const more = (n: number, full: boolean) => (n > 0 ? `\n…${n} more matching lines not shown; narrow with folder or ${full ? "a more specific pattern" : "raise the limit"}.` : "");
+		const more = (n: number, full: boolean) => (n > 0 ? `\n…${n} more matching lines not shown; narrow with folder or ${full ? "a more specific pattern, or set notes_only: true for every note" : "raise the limit"}.` : "");
 		// Whole matches (a line with its context) while they fit, so the count of what is not
 		// shown and the hint are never cut off by a result that is too long.
 		const budget = ctx.maxResultChars - head.length - hint.length - more(total, true).length;
@@ -1309,7 +1348,8 @@ export const findInNote: ToolDefinition = {
 		const limit = int(args, "limit", 20, 1, 100);
 		const content = await ctx.vault.read(path);
 		const lines = content.split("\n");
-		let test: (line: string) => boolean;
+		/** Where in the line the match starts, or -1. */
+		let find: (line: string) => number;
 		let note = "";
 		let re: RegExp | null = null;
 		if (useRegex) {
@@ -1322,20 +1362,24 @@ export const findInNote: ToolDefinition = {
 		}
 		if (re) {
 			const compiled = re;
-			test = (line) => compiled.test(line);
+			find = (line) => compiled.exec(line)?.index ?? -1;
 		} else {
 			const lower = pattern.toLowerCase();
-			test = (line) => line.toLowerCase().includes(lower);
+			find = (line) => line.toLowerCase().indexOf(lower);
 		}
-		const hits: number[] = [];
-		for (let i = 0; i < lines.length; i++) if (test(lines[i])) hits.push(i);
+		const hits: { line: number; at: number }[] = [];
+		for (let i = 0; i < lines.length; i++) {
+			const at = find(lines[i]);
+			if (at >= 0) hits.push({ line: i, at });
+		}
 		if (hits.length === 0) {
 			return `${note}No lines in ${path} contain "${pattern}". The note has ${lines.length} lines (${content.length} characters).`;
 		}
-		const blocks = hits.slice(0, limit).map((i) => {
+		const blocks = hits.slice(0, limit).map(({ line: i, at }) => {
 			const rows: string[] = [];
 			for (let j = Math.max(0, i - 1); j <= Math.min(lines.length - 1, i + 1); j++) {
-				rows.push(`${j === i ? ">" : " "} ${String(j + 1).padStart(4)} | ${lines[j]}`);
+				// A paragraph is one line: show the part around the match, and only the start of its neighbours.
+				rows.push(`${j === i ? ">" : " "} ${String(j + 1).padStart(4)} | ${j === i ? clipLine(lines[j], FIND_LINE_CHARS, at) : clipLine(lines[j], FIND_CONTEXT_CHARS)}`);
 			}
 			return rows.join("\n");
 		});

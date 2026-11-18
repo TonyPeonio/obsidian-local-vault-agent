@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { keywordSearch } from "../src/search";
 import {
 	appendToNote,
+	clipLine,
 	createNote,
 	deleteFile,
 	editNote,
@@ -646,6 +647,87 @@ describe("grep_vault", () => {
 		vault.seed("Daily/d2.md", "![[Recording 1.m4a]]\n");
 		expect(await grepVault.execute({ pattern: "!\\[\\[Recording" }, ctx)).toMatch(/searched as one.*\n1 matching line/s);
 		expect(tidyAlternation("a|b")).toBe("a|b");
+	});
+});
+
+describe("grep_vault long lines and notes_only", () => {
+	// A prose paragraph is one line: 3,000 characters with the word two thirds of the way in.
+	const paragraph = (i: number) => `${"Filler sentence about nothing in particular. ".repeat(44)}Then the gantry${i} appears in the middle. ${"More filler after the match, on and on. ".repeat(25)}`;
+	it("cuts a long line to a window around the match, marked with …", async () => {
+		const vault = new FakeVault({ "Prose/Essay.md": `## Body\n\n${paragraph(7)}\n\nshort line with gantry7\n` });
+		const { ctx } = makeCtx(vault);
+		const out = await grepVault.execute({ pattern: "GANTRY7", context: 1 }, ctx);
+		const rows = out.split("\n");
+		expect(rows[0]).toBe("2 matching lines in 1 note:");
+		expect(rows[1]).toMatch(/^Prose\/Essay\.md:3 \[## Body\]: ….*Then the gantry7 appears in the middle\. .*…$/);
+		expect(rows[1].length).toBeLessThan(300);
+		// Context lines and short matching lines are not cut.
+		expect(rows[2]).toBe("Prose/Essay.md:4- ");
+		expect(rows[3]).toBe("Prose/Essay.md:5 [## Body]: short line with gantry7");
+		// A regular expression is cut around where it matched, too.
+		const re = await grepVault.execute({ pattern: "gantry\\d appears", regex: true }, ctx);
+		expect(re).toMatch(/^1 matching line in 1 note:\nProse\/Essay\.md:3 \[## Body\]: ….*gantry7 appears.*…$/);
+	});
+	it("shows every match of a prose vault where whole paragraphs would not fit", async () => {
+		const vault = new FakeVault();
+		for (let i = 0; i < 30; i++) vault.seed(`Prose/Essay ${String(i).padStart(2, "0")}.md`, paragraph(i));
+		const { ctx } = makeCtx(vault);
+		const out = await grepVault.execute({ pattern: "gantry" }, ctx);
+		expect(out.length).toBeLessThanOrEqual(12000);
+		expect(out).toMatch(/^30 matching lines in 30 notes:/);
+		for (let i = 0; i < 30; i++) expect(out).toContain(`the gantry${i} appears`);
+		expect(out).not.toContain("more matching lines");
+	});
+	it("lists only the notes with their counts when notes_only is set", async () => {
+		const vault = new FakeVault({ "A/one.md": "gantry\nx\ngantry again\nGantry", "B/two.md": "nothing", "B/three.md": "a gantry", "A/four.md": "gantry\ngantry" });
+		const { ctx } = makeCtx(vault);
+		expect(await grepVault.execute({ pattern: "gantry", notes_only: true }, ctx)).toBe("6 matching lines in 3 notes (lines per note):\nA/one.md: 3\nA/four.md: 2\nB/three.md: 1");
+		expect(await grepVault.execute({ pattern: "gantry", notes_only: "true", folder: "B" }, ctx)).toBe("1 matching line in 1 note (lines per note):\nB/three.md: 1");
+		expect(await grepVault.execute({ pattern: "zebra", notes_only: true }, ctx)).toMatch(/^No note contains "zebra"/);
+		// The limit is about lines; it does not hide notes here.
+		expect(await grepVault.execute({ pattern: "gantry", notes_only: true, limit: 1 }, ctx)).toContain("B/three.md: 1");
+	});
+	it("fits a long list of notes and says how many are left", async () => {
+		const vault = new FakeVault();
+		for (let i = 0; i < 200; i++) vault.seed(`Some Folder/Some Note With A Long Name ${String(i).padStart(3, "0")}.md`, "needle");
+		const { ctx } = makeCtx(vault, "approve", 2000);
+		const out = await grepVault.execute({ pattern: "needle", notes_only: true }, ctx);
+		expect(out.length).toBeLessThanOrEqual(2000);
+		const rows = (out.match(/\.md: 1$/gm) ?? []).length;
+		expect(rows).toBeGreaterThan(20);
+		expect(out.endsWith(`\n…and ${200 - rows} more notes; narrow with folder.`)).toBe(true);
+		// The lines mode points at it when the lines do not fit.
+		expect(await grepVault.execute({ pattern: "needle", limit: 200 }, ctx)).toMatch(/more matching lines not shown; narrow with folder or a more specific pattern, or set notes_only: true for every note\.$/);
+	});
+	it("clipLine keeps short lines whole and the match inside the window", () => {
+		expect(clipLine("short", 240, 2)).toBe("short");
+		const nearlyFits = "x".repeat(270);
+		expect(clipLine(nearlyFits, 240, 100)).toBe(nearlyFits);
+		const line = `${"a ".repeat(500)}NEEDLE${" b".repeat(500)}`;
+		const cut = clipLine(line, 240, 1000);
+		expect(cut.startsWith("…")).toBe(true);
+		expect(cut.endsWith("…")).toBe(true);
+		expect(cut.length).toBeLessThanOrEqual(242);
+		expect(cut.indexOf("NEEDLE")).toBeGreaterThan(40);
+		// At the start nothing is cut in front; at the end nothing behind.
+		expect(clipLine(line, 240, 3)).toBe(line.slice(0, 240) + "…");
+		expect(clipLine(`${"a ".repeat(500)}NEEDLE`, 240, 1000)).toBe("…" + `${"a ".repeat(500)}NEEDLE`.slice(-240));
+	});
+});
+
+describe("find_in_note long lines", () => {
+	it("shows the part of a long paragraph around the match and the start of its neighbours", async () => {
+		const before = "Before. ".repeat(100);
+		const para = `${"Filler sentence. ".repeat(100)}The exact phrase to edit is here. ${"Trailing words. ".repeat(100)}`;
+		const vault = new FakeVault({ "Essay.md": `${before}\n${para}\nshort after` });
+		const { ctx } = makeCtx(vault);
+		const out = await findInNote.execute({ path: "Essay", pattern: "exact phrase" }, ctx);
+		const rows = out.split("\n");
+		expect(rows[0]).toBe('1 match in Essay.md (3 lines). The matching line is marked with ">".');
+		expect(rows[1]).toBe(`     1 | ${before.slice(0, 160)}…`);
+		expect(rows[2]).toMatch(/^> {4}2 \| ….*The exact phrase to edit is here\. .*…$/);
+		expect(rows[2].length).toBeLessThan(420);
+		expect(rows[3]).toBe("     3 | short after");
 	});
 });
 

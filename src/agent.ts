@@ -649,7 +649,8 @@ ${LECTURE_TOOLS_HINT}`;
 						const header = /^# (.+?)(?: \(lines [^)]*\))?$/m.exec(result);
 						if (header && !readPaths.includes(header[1].trim())) readPaths.push(header[1].trim());
 					} else if (call.function.name === "grep_vault") {
-						for (const m of result.matchAll(/^(.+?\.md):\d+[ :-]/gm)) if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
+						// Lines ("path:12: text") or, with notes_only, a count per note ("path: 3").
+						for (const m of result.matchAll(/^(.+?\.md):(?:\d+[ :-]| \d+$)/gm)) if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
 					} else if (call.function.name === "search_passages") {
 						for (const block of result.split(/^(?=--- \[\d+\] )/m)) {
 							const m = /^--- \[\d+\] (.+?)(?: › .*)? \(score [^)]*\)\n?([\s\S]*)$/.exec(block);
