@@ -1,0 +1,58 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T20:35:01.482Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "tb9-7",
+  "only": "table-row",
+  "preSearch": true,
+  "commit": "bc8a5a5",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 1,
+    "calls": 1,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 1,
+    "modelSeconds": 1,
+    "promptSeconds": 0,
+    "passed": 7,
+    "checks": 7,
+    "failures": 15
+  },
+  "failed": [],
+  "scenarios": [
+    {
+      "id": "table-row",
+      "ms": 910,
+      "calls": 1,
+      "prompt": 12341,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 61,
+      "evalMs": 767,
+      "pass": 7,
+      "fail": 0,
+      "seconds": 0.91,
+      "completionTokens": 71,
+      "readChars": 36231,
+      "loadMs": 8,
+      "failed": [],
+      "tools": [
+        "search_passages"
+      ],
+      "answer": "Based on the motor comparison table in [[Projects/Motor comparison]], the motor used on the gantry Y axis is **M-122**.\n\nIts specifications are:\n- **Rated current:** 1.50 A\n- **Holding torque:** 20 N·cm\n- **Frame:** NEMA 17"
+    }
+  ]
+}

@@ -5,8 +5,10 @@ import type {
 	ToolDefinition,
 	VaultAccess,
 } from "../types";
+import { tableStart } from "../chunker";
 import { applyTextEdit } from "../diff";
 import { imageEmbeds } from "../embeds";
+import { queryTerms, tokenize } from "../search";
 import { hasFrontmatter } from "../prompts";
 
 /**
@@ -331,6 +333,74 @@ export function clipLine(line: string, max: number, at = 0): string {
 const MIN_PASSAGE_CHARS = 600;
 const PASSAGE_CUT = "\n[… section truncated; read_section for the rest]";
 
+/**
+ * A passage cut to `cap` characters, which always says that it was cut. It ends on a whole line
+ * when it has lines: a table row, a list item or a line of code is not shown in part (half a row
+ * reads as a row with fewer or other values).
+ */
+export function clipPassage(text: string, cap: number): string {
+	if (text.length <= cap) return text;
+	const line = text.lastIndexOf("\n", cap);
+	return text.slice(0, line >= cap / 2 ? line : cap).trimEnd() + PASSAGE_CUT;
+}
+
+/** A table with fewer rows than this is read without help. */
+const TABLE_AID_MIN_ROWS = 6;
+/** When more rows than this have the question's words, the words do not single out a row. */
+const TABLE_AID_MAX_ROWS = 3;
+
+function tableCells(row: string): string[] {
+	// A bar written `\|` is part of a cell (a wikilink with an alias, inside a table). No lookbehind: older iOS lacks it.
+	const kept = "\u0000";
+	return row
+		.trim()
+		.replace(/\\\|/g, kept)
+		.replace(/^\|/, "")
+		.replace(/\|$/, "")
+		.split("|")
+		.map((c) => c.split(kept).join("\\|").trim());
+}
+
+/**
+ * For a passage that holds a long table: the rows that have the question's words, written out
+ * with each value after the name of its column. A small model asked for one row of a table of
+ * thirty-six found the row and gave a value of the row above it (5 of 10 benchmark runs, the
+ * table complete and its heading row in view): rows that differ only in their numbers are easy to
+ * slip between, and a value's column has to be counted out. The words that tell rows apart are
+ * the question's words that the heading row does not have and at most three rows do. Nothing is
+ * added for a short table, when no row or too many rows have such a word, or for a row whose
+ * cells do not match the heading. Only the first table of the passage is looked at.
+ */
+export function tableRowsFor(text: string, query: string): string {
+	const lines = text.split("\n");
+	const at = tableStart(lines);
+	if (at < 0) return "";
+	const names = tableCells(lines[at]);
+	const rows: string[] = [];
+	for (let i = at + 2; i < lines.length && lines[i].includes("|"); i++) rows.push(lines[i]);
+	if (rows.length < TABLE_AID_MIN_ROWS || names.length < 2) return "";
+	const inHeading = new Set(tokenize(lines[at]));
+	const terms = queryTerms(query).filter((t) => !inHeading.has(t));
+	const words = rows.map((r) => new Set(tokenize(r)));
+	const telling = terms.filter((t) => {
+		const n = words.reduce((sum, w) => sum + (w.has(t) ? 1 : 0), 0);
+		return n > 0 && n <= TABLE_AID_MAX_ROWS;
+	});
+	if (telling.length === 0) return "";
+	const score = words.map((w) => telling.reduce((sum, t) => sum + (w.has(t) ? 1 : 0), 0));
+	const best = Math.max(...score);
+	const picked = rows.filter((_, i) => score[i] === best);
+	if (picked.length > TABLE_AID_MAX_ROWS) return "";
+	const stated: string[] = [];
+	for (const row of picked) {
+		const values = tableCells(row);
+		if (values.length !== names.length) continue;
+		stated.push(`- ${names.map((name, k) => `${name || `column ${k + 1}`}: ${values[k] || "(empty)"}`).join("; ")}`);
+	}
+	if (stated.length === 0) return "";
+	return `\n[The row${stated.length === 1 ? "" : "s"} of this table with the question's words, each value after its column heading:\n${stated.join("\n")}]`;
+}
+
 async function requestApproval(ctx: ToolContext, req: ApprovalRequest): Promise<void> {
 	const decision = await ctx.approve(req);
 	if (decision === "reject") {
@@ -426,11 +496,13 @@ export const searchPassages: ToolDefinition = {
 		// The passages share what the result can hold. Ranked best first, so when they cannot all
 		// have a useful length it is the last ones that are left out, and the first line says so.
 		const room = ctx.maxResultChars - intro(passages.length, passages.length).length;
+		// Worked out on the whole passage: the row asked about is then stated even when the table had to be cut before it.
+		const aids = passages.map((p) => tableRowsFor(p.text, query));
 		let shown = 0;
 		let fixed = 0;
 		let least = 0;
 		for (let i = 0; i < passages.length; i++) {
-			const need = heads[i].length + PASSAGE_CUT.length;
+			const need = heads[i].length + PASSAGE_CUT.length + aids[i].length;
 			const text = Math.min(passages[i].text.length, MIN_PASSAGE_CHARS);
 			if (shown > 0 && fixed + need + least + text > room) break;
 			fixed += need;
@@ -445,7 +517,7 @@ export const searchPassages: ToolDefinition = {
 			caps[i] = Math.min(passages[i].text.length, Math.max(200, Math.floor(left / (shown - k))));
 			left -= caps[i];
 		});
-		const rows = caps.map((cap, i) => heads[i] + (passages[i].text.length > cap ? passages[i].text.slice(0, cap) + PASSAGE_CUT : passages[i].text));
+		const rows = caps.map((cap, i) => heads[i] + clipPassage(passages[i].text, cap) + aids[i]);
 		return intro(shown, passages.length - shown) + rows.join("");
 	},
 };

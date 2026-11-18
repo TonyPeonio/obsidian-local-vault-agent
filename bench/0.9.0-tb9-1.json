@@ -1,0 +1,62 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T20:34:52.624Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "tb9-1",
+  "only": "table-row",
+  "preSearch": true,
+  "commit": "bc8a5a5",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 1,
+    "calls": 1,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 1,
+    "modelSeconds": 1,
+    "promptSeconds": 0,
+    "passed": 6,
+    "checks": 7,
+    "failures": 16
+  },
+  "failed": [
+    "table-row: gives 20 N·cm"
+  ],
+  "scenarios": [
+    {
+      "id": "table-row",
+      "ms": 671,
+      "calls": 1,
+      "prompt": 12341,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 62,
+      "evalMs": 516,
+      "pass": 6,
+      "fail": 1,
+      "seconds": 0.67,
+      "completionTokens": 48,
+      "readChars": 36231,
+      "loadMs": 9,
+      "failed": [
+        "gives 20 N·cm"
+      ],
+      "tools": [
+        "search_passages"
+      ],
+      "answer": "The motor used on the gantry Y axis is **M-122** (NEMA 17), with a rated current of **1.50 A** and holding torque of **16 N·cm**.\n\nSources: [[Projects/Motor comparison]], [[Daily/2026-10-14]]"
+    }
+  ]
+}

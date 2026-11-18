@@ -3,6 +3,7 @@ import { keywordSearch } from "../src/search";
 import {
 	appendToNote,
 	clipLine,
+	clipPassage,
 	createNote,
 	deleteFile,
 	editNote,
@@ -34,6 +35,7 @@ import {
 	sectionMatches,
 	searchNotes,
 	searchPassages,
+	tableRowsFor,
 	vaultOverview,
 } from "../src/tools";
 import type { ApprovalDecision, ApprovalRequest, ToolContext } from "../src/types";
@@ -503,6 +505,69 @@ describe("search_passages", () => {
 		expect(await searchPassages.execute({ query: "the wheels" }, ctx)).toMatch(/No note in the vault contains "wheels"/);
 		expect(await searchPassages.execute({ query: "gantry supply" }, ctx)).not.toMatch(/No note in the vault/);
 	});
+	describe("a passage that holds a table", () => {
+		const head = "| Part | Frame | Rated current | Holding torque | Notes |\n|---|---|---|---|---|";
+		const row = (i: number) => `| P-${100 + i} | size ${[14, 17, 23][i % 3]} | ${(0.4 + i * 0.05).toFixed(2)} A | ${12 + (i % 4) * 4} N·cm | ${i === 22 ? "drives the conveyor" : ""} |`;
+		const table = (n: number) => `${head}\n${Array.from({ length: n }, (_, i) => row(i)).join("\n")}`;
+
+		it("states the row with the question's words, each value after its column heading", () => {
+			const aid = tableRowsFor(table(36), "which part drives the conveyor, and what are its rated current and holding torque?");
+			expect(aid).toBe("\n[The row of this table with the question's words, each value after its column heading:\n- Part: P-122; Frame: size 17; Rated current: 1.50 A; Holding torque: 20 N·cm; Notes: drives the conveyor]");
+			// By an identifier too, and up to three rows.
+			expect(tableRowsFor(table(36), "holding torque of P-107")).toContain("- Part: P-107; Frame: size 17; Rated current: 0.75 A; Holding torque: 24 N·cm; Notes: (empty)]");
+			expect(tableRowsFor(table(36), "compare P-101 and P-102").match(/^- Part: /gm)).toHaveLength(2);
+		});
+
+		it("adds nothing when the words single out no row, for a short table, or for text without a table", () => {
+			// "size" is in every row, "torque" only in the heading row, "gearbox" nowhere.
+			expect(tableRowsFor(table(36), "what size and torque does the gearbox need?")).toBe("");
+			// Twelve rows are size 17: the word does not say which.
+			expect(tableRowsFor(table(36), "the one with 17")).toBe("");
+			expect(tableRowsFor(table(5), "which part drives the conveyor?")).toBe("");
+			expect(tableRowsFor("The conveyor is driven by P-122.\nIt draws 1.50 A.", "which part drives the conveyor?")).toBe("");
+			// A row whose cells do not match the heading is not restated.
+			const ragged = `${head}\n${Array.from({ length: 8 }, (_, i) => (i === 3 ? "| P-103 | odd | row |" : row(i))).join("\n")}`;
+			expect(tableRowsFor(ragged, "what about P-103?")).toBe("");
+			// A bar inside a cell, written as markdown needs it, stays in its cell.
+			const alias = `| Part | Note |\n|---|---|\n${Array.from({ length: 6 }, (_, i) => `| P-${i} | [[Motors/P-${i}\\|datasheet ${i === 4 ? "conveyor" : ""}]] |`).join("\n")}`;
+			expect(tableRowsFor(alias, "conveyor datasheet")).toContain("- Part: P-4; Note: [[Motors/P-4\\|datasheet conveyor]]");
+		});
+
+		it("hands the model the whole table with the row stated under it", async () => {
+			const { ctx } = makeCtx(freshVault());
+			ctx.searchPassages = async () => [{ path: "Projects/Parts.md", heading: "Parts", text: table(36), score: 0.7 }];
+			const out = await searchPassages.execute({ query: "which part drives the conveyor?" }, ctx);
+			expect(out).toContain(`--- [1] Projects/Parts.md › Parts (score 0.70)\n${table(36)}\n[The row of this table with the question's words`);
+			expect(out).not.toContain("section truncated");
+		});
+
+		it("cut to fit, ends on a whole row, says it was cut, and still states the row asked about", async () => {
+			const { ctx } = makeCtx(freshVault(), "approve", 1500);
+			ctx.searchPassages = async () => [{ path: "Projects/Parts.md", heading: "Parts", text: table(36), score: 0.7 }];
+			const out = await searchPassages.execute({ query: "which part drives the conveyor?" }, ctx);
+			expect(out.length).toBeLessThanOrEqual(1500);
+			const shown = out.split("\n").filter((l) => l.startsWith("| P-"));
+			expect(shown.length).toBeGreaterThan(5);
+			expect(shown.length).toBeLessThan(36);
+			// Every row shown is a row of the table, whole; the heading row is there; the cut is said.
+			for (const l of shown) expect(table(36)).toContain(`${l}\n`);
+			expect(out).toContain(head);
+			expect(out).toContain("[… section truncated; read_section for the rest]");
+			expect(shown.join("\n")).not.toContain("P-122");
+			expect(out).toContain("- Part: P-122; Frame: size 17; Rated current: 1.50 A; Holding torque: 20 N·cm; Notes: drives the conveyor]");
+		});
+
+		it("cuts prose with no line break where it has to, and a passage that fits is not marked", () => {
+			expect(clipPassage("short", 100)).toBe("short");
+			const prose = "word ".repeat(100);
+			expect(clipPassage(prose, 50)).toBe(`${prose.slice(0, 50).trimEnd()}\n[… section truncated; read_section for the rest]`);
+			// A line break in the first half of what fits would throw away most of it: the long line is cut instead.
+			const two = "first line\nsecond line that is long enough to be cut somewhere";
+			expect(clipPassage(two, 30)).toBe(`${two.slice(0, 30).trimEnd()}\n[… section truncated; read_section for the rest]`);
+			expect(clipPassage("- one item\n- two items\n- three items\n- four items", 30)).toBe("- one item\n- two items\n[… section truncated; read_section for the rest]");
+		});
+	});
+
 	it("falls back to keyword snippets without an index", async () => {
 		const { ctx } = makeCtx(freshVault());
 		const out = await searchPassages.execute({ query: "hall sensors" }, ctx);

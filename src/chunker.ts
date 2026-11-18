@@ -89,7 +89,7 @@ export function chunkMarkdown(content: string, opts: ChunkOptions = {}): Chunk[]
 			current = "";
 		};
 		for (const para of paragraphs) {
-			const pieces = para.length > max ? splitLong(para, max) : [para];
+			const pieces = para.length > max ? (splitTable(para, max) ?? splitLong(para, max)) : [para];
 			for (const piece of pieces) {
 				if (current && current.length + piece.length + 2 > target) flush();
 				current = current ? `${current}\n\n${piece}` : piece;
@@ -112,6 +112,47 @@ export function splitSentences(text: string): string[] {
 	}
 	if (start < text.length) out.push(text.slice(start));
 	return out.filter((s) => s.length > 0);
+}
+
+/** The line under a table's heading row: `|---|:--:|`, with or without the outer bars. */
+const TABLE_RULE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$|^\s*\|\s*:?-+:?\s*\|\s*$/;
+
+/** Where the table in these lines begins: the index of its heading row, or -1. */
+export function tableStart(lines: string[]): number {
+	for (let i = 1; i < lines.length; i++) if (TABLE_RULE.test(lines[i]) && lines[i - 1].includes("|")) return i - 1;
+	return -1;
+}
+
+/**
+ * A paragraph that holds a table too long for one chunk, cut between its rows, each piece under
+ * the table's heading row again. A table has no sentences, so `splitLong` cut it every `max`
+ * characters: in the middle of a row, and every piece after the first was rows of values with no
+ * column names. Null when the paragraph has no table.
+ */
+function splitTable(para: string, max: number): string[] | null {
+	const lines = para.split("\n");
+	const at = tableStart(lines);
+	if (at < 0) return null;
+	const head = `${lines[at]}\n${lines[at + 1]}`;
+	const out: string[] = [];
+	// Whatever stands before the table in the same paragraph stays with its first rows.
+	let current = lines.slice(0, at + 2).join("\n");
+	let rows = 0;
+	let inTable = true;
+	for (const line of lines.slice(at + 2)) {
+		if (inTable && !line.includes("|")) inTable = false;
+		if (rows > 0 && current.length + 1 + line.length > max) {
+			out.push(current);
+			current = inTable ? `${head}\n${line}` : line;
+			rows = 1;
+		} else {
+			current += `\n${line}`;
+			rows++;
+		}
+	}
+	out.push(current);
+	// A single row longer than a chunk is cut as any long text is.
+	return out.flatMap((piece) => (piece.length > max ? splitLong(piece, max) : [piece]));
 }
 
 function splitLong(text: string, max: number): string[] {

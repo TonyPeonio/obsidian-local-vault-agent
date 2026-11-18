@@ -1,0 +1,58 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T20:40:22.515Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "ta9-10",
+  "only": "table-row",
+  "preSearch": true,
+  "commit": "3defe0b+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 1,
+    "calls": 1,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 1,
+    "modelSeconds": 1,
+    "promptSeconds": 0,
+    "passed": 7,
+    "checks": 7,
+    "failures": 15
+  },
+  "failed": [],
+  "scenarios": [
+    {
+      "id": "table-row",
+      "ms": 804,
+      "calls": 1,
+      "prompt": 12409,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 55,
+      "evalMs": 672,
+      "pass": 7,
+      "fail": 0,
+      "seconds": 0.8,
+      "completionTokens": 63,
+      "readChars": 36433,
+      "loadMs": 7,
+      "failed": [],
+      "tools": [
+        "search_passages"
+      ],
+      "answer": "From [[Projects/Motor comparison]], the motor used on the gantry Y axis is **M-122**, which is a **NEMA 17** motor with:\n- **Rated current**: 1.50 A\n- **Holding torque**: 20 N·cm"
+    }
+  ]
+}
