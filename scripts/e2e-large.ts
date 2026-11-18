@@ -7,7 +7,9 @@
  *   GISTS=1 → also generate note gists first (slow) and use them in the outline.
  */
 import "../tests/setup";
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
+import { execSync } from "child_process";
+import { createHash } from "crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { deflateSync } from "zlib";
 import { basename, join, relative, resolve } from "path";
 import { Agent, buildSystemPrompt, looksLikePermissionQuestion, newConversation, type AgentConfig } from "../src/agent";
@@ -69,6 +71,25 @@ function loadVault(dir: string): FakeVault {
 	return vault;
 }
 
+/** Labels of failed checks per scenario, read off the log lines as they are printed, so every check site is covered. */
+const failedBy = new Map<string, string[]>();
+const answersBy = new Map<string, string>();
+const toolsBy = new Map<string, string[]>();
+const outTokensBy = new Map<string, number>();
+const loadMsBy = new Map<string, number>();
+{
+	let current = "";
+	const log = console.log.bind(console);
+	console.log = (...args: unknown[]) => {
+		const line = typeof args[0] === "string" ? args[0] : "";
+		const head = /^\n?=== \[([^\]]+)\]/.exec(line);
+		if (head) current = head[1];
+		const failed = /^ {2}FAIL {2}(.*)$/.exec(line);
+		if (failed) failedBy.set(current, [...(failedBy.get(current) ?? []), failed[1]]);
+		log(...args);
+	};
+}
+
 async function main() {
 	// VAULT_DIR picks the generated vault (see scripts/make-vault.mjs: OUT/SCALE); the facts file
 	// follows it by the generator's rule unless FACTS names one.
@@ -82,17 +103,33 @@ async function main() {
 	const original = new Map<string, string>();
 	for (const n of vault.listNotes()) original.set(n.path, await vault.read(n.path));
 	const client = new OllamaClient(() => OLLAMA_URL);
-	console.log(`Ollama ${await client.version()} at ${OLLAMA_URL}, model ${MODEL}; ${vault.listNotes().length} notes, ${facts.counts.chars} chars, ${facts.attachments.length} attachments`);
+	const ollamaVersion = await client.version();
+	console.log(`Ollama ${ollamaVersion} at ${OLLAMA_URL}, model ${MODEL}; ${vault.listNotes().length} notes, ${facts.counts.chars} chars, ${facts.attachments.length} attachments`);
 
-	let savedIndex: IndexData | null = null;
+	// The vectors are kept between runs while the vault, the embedding model and the code that
+	// decides what is embedded are unchanged: a run starts 10-25 s sooner.
+	const ih = createHash("sha1").update(EMBED);
+	for (const f of ["src/chunker.ts", "src/index.ts"]) ih.update(readFileSync(join(process.cwd(), f)));
+	for (const [p, c] of original) ih.update(p).update(c);
+	const indexCache = join(process.cwd(), ".e2e", `e2e-index-${ih.digest("hex").slice(0, 16)}.json`);
+	let savedIndex: IndexData | null = existsSync(indexCache) ? (JSON.parse(readFileSync(indexCache, "utf8")) as IndexData) : null;
+	const indexWasCached = savedIndex !== null;
 	const index = new SemanticIndex(client, vault, { load: async () => savedIndex, save: async (d) => void (savedIndex = d) }, {
 		getModel: () => EMBED,
 		isEnabled: () => true,
 		shouldIndex: (p) => !p.startsWith("Templates/"),
 	});
 	let t = Date.now();
+	await index.load();
 	await index.syncAll();
 	const is = index.status();
+	// An earlier run once scored a whole benchmark against an index of 0 notes: stop instead.
+	if (is.lastError || is.indexedFiles === 0) throw new Error(`the index was not built (${is.lastError ?? "0 notes indexed"}): is Ollama running with ${EMBED}?`);
+	if (!indexWasCached) {
+		await index.flush();
+		mkdirSync(join(process.cwd(), ".e2e"), { recursive: true });
+		if (savedIndex) writeFileSync(indexCache, JSON.stringify(savedIndex));
+	}
 	console.log(`Index: ${is.indexedFiles} notes, ${is.totalChunks} chunks in ${((Date.now() - t) / 1000).toFixed(1)} s`);
 
 	let savedGists: GistData | null = null;
@@ -238,12 +275,16 @@ async function main() {
 					steps++;
 					promptMs += u.promptEvalMs ?? 0;
 					evalMs += u.evalMs ?? 0;
+					outTokensBy.set(id, (outTokensBy.get(id) ?? 0) + u.completionTokens);
+					loadMsBy.set(id, (loadMsBy.get(id) ?? 0) + (u.loadMs ?? 0));
 				},
 			});
 		} catch (err) {
 			console.log(`  [error] ${(err as Error).message}`);
 		}
 		const ms = Date.now() - start;
+		answersBy.set(id, answer.trim().slice(0, 3000));
+		toolsBy.set(id, tools);
 		console.log(`--- ${(ms / 1000).toFixed(1)} s, ${tools.length} calls, max prompt ${maxPrompt} tok:\n${answer.trim().slice(0, 900)}\n`);
 		let pass = 0;
 		let fail = 0;
@@ -654,18 +695,22 @@ async function main() {
 		const since = dates[Math.max(0, dates.length - 3)];
 		const expected = messy.filter((m) => m.date >= since);
 		console.log(`\n=== [scheduled-daily] Nightly job in an overlay since ${since} (${expected.length} messy notes)`);
-		const before = new Map<string, string>();
-		for (const n of vault.listNotes()) before.set(n.path, await vault.read(n.path));
-		const overlay = new OverlayVault(vault);
+		// On a copy of the vault as generated: by now the distill scenario has compiled the same
+		// daily notes in the shared vault, which left this job nothing to do and failed three of
+		// its checks in every full run.
+		const pristine = new FakeVault();
+		for (const [p, c] of original) pristine.seed(p, c);
+		const before = new Map<string, string>(original);
+		const overlay = new OverlayVault(pristine);
 		const nightly = new Agent({
 			client,
 			vault: overlay,
 			tools: ALL_TOOLS.filter((t) => t.name !== "move_note" && t.name !== "delete_file"),
-			search: async (q, limit) => fuseRankings([await index.search(q, limit * 2), await keywordSearch(vault, q, limit * 2)], limit),
+			search: async (q, limit) => fuseRankings([await index.search(q, limit * 2), await keywordSearch(pristine, q, limit * 2)], limit),
 			searchPassages: (q, limit) => index.searchPassages(q, limit),
 			approve: async () => "approve",
 			getConfig: () => ({ ...cfg, autoApprove: true, citations: "off" }),
-			readConventions: async () => (vault.exists("AGENT.md") ? vault.read("AGENT.md") : null),
+			readConventions: async () => (pristine.exists("AGENT.md") ? pristine.read("AGENT.md") : null),
 		});
 		const start = Date.now();
 		let calls = 0;
@@ -680,11 +725,11 @@ async function main() {
 		const changes = await overlay.changes();
 		for (const c of changes) console.log(`  [queued] ${c.tool} ${c.path} (${c.after.length} chars)`);
 		let untouched = true;
-		for (const [path, content] of before) if (!vault.exists(path) || (await vault.read(path)) !== content) untouched = false;
+		for (const [path, content] of before) if (!pristine.exists(path) || (await pristine.read(path)) !== content) untouched = false;
 		const created = changes.filter((c) => c.tool === "create_note");
 		const edited = changes.filter((c) => c.tool === "edit_note" && c.path.startsWith("Daily/"));
 		const checks: [string, boolean][] = [
-			["the real vault is untouched", untouched && vault.listNotes().length === before.size],
+			["the real vault is untouched", untouched && pristine.listNotes().length === before.size],
 			[`queued ≥ 1 topic note (${created.length})`, created.length >= 1],
 			["every queued topic note has a Sources section", created.length > 0 && created.every((c) => /## Sources/.test(c.after))],
 			[`queued the inbox edits of ≥ ${Math.min(2, expected.length)} daily notes (${edited.length})`, edited.length >= Math.min(2, expected.length)],
@@ -774,6 +819,10 @@ async function main() {
 		temperature: TEMPERATURE,
 		presencePenalty: PRESENCE,
 		tag: TAG,
+		only: ONLY ?? undefined,
+		commit: gitCommit(),
+		ollama: ollamaVersion,
+		embed: EMBED,
 		notes: vault.listNotes().length,
 		systemPromptChars: sys.length,
 		totals: {
@@ -789,9 +838,19 @@ async function main() {
 			checks,
 			failures,
 		},
-		scenarios: rows.map((r) => ({ ...r, seconds: Math.round(r.ms / 10) / 100 })),
+		failed: rows.flatMap((r) => (failedBy.get(r.id) ?? []).map((label) => `${r.id}: ${label}`)),
+		scenarios: rows.map((r) => ({
+			...r,
+			seconds: Math.round(r.ms / 10) / 100,
+			completionTokens: outTokensBy.get(r.id),
+			loadMs: loadMsBy.get(r.id),
+			failed: failedBy.get(r.id) ?? [],
+			tools: toolsBy.get(r.id),
+			answer: answersBy.get(r.id),
+		})),
 	};
-	if (!ONLY) {
+	// A partial run (ONLY) is saved only under a tag, so it cannot replace a full run's file.
+	if (!ONLY || TAG) {
 		mkdirSync(join(process.cwd(), "bench"), { recursive: true });
 		const file = join(process.cwd(), "bench", `${version}${TAG ? `-${TAG}` : ""}.json`);
 		writeFileSync(file, JSON.stringify(result, null, 2) + "\n");
@@ -799,6 +858,16 @@ async function main() {
 	}
 	console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 	process.exit(failures === 0 ? 0 : 1);
+}
+
+function gitCommit(): string | undefined {
+	try {
+		const head = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+		const dirty = execSync("git status --porcelain -- src", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim() ? "+dirty" : "";
+		return head + dirty;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Seven-segment-ish 5×7 digits, enough to draw a number a vision model can read. */
