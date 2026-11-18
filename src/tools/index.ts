@@ -525,6 +525,18 @@ export function ambiguousHeading(heading: string, matches: SectionMatch[], path?
 	return `"${heading}" is the heading of ${matches.length} sections${path ? ` in ${path}` : ""}: ${shown}${matches.length > 8 ? ", …" : ""}. Say which one by its path, for example heading: "${matches[1].crumb}". Nothing was written.`;
 }
 
+/** Whether `path` has `text` as whole words: no letter or digit right before or after it, whatever the case. */
+export function pathHasWords(path: string, text: string): boolean {
+	const wanted = text.trim().toLowerCase();
+	if (!wanted) return false;
+	const p = path.toLowerCase();
+	const inWord = (ch: string | undefined) => ch !== undefined && /[\p{L}\p{N}]/u.test(ch);
+	for (let at = p.indexOf(wanted); at >= 0; at = p.indexOf(wanted, at + 1)) {
+		if (!inWord(p[at - 1]) && !inWord(p[at + wanted.length])) return true;
+	}
+	return false;
+}
+
 export const grepVault: ToolDefinition = {
 	name: "grep_vault",
 	description:
@@ -569,7 +581,10 @@ export const grepVault: ToolDefinition = {
 		// path, which neither a folder nor the pattern can say.
 		const inPath = str(args, "path_contains", false).trim();
 		if (inPath) {
-			notes = notes.filter((n) => n.path.toLowerCase().includes(inPath.toLowerCase()));
+			// A name is whole words where some path has it so: "Ana" is the notes on Ana, not also
+			// Management/ and Banana bread. Letters anywhere in a path only when no path has the words.
+			const whole = notes.filter((n) => pathHasWords(n.path, inPath));
+			notes = whole.length ? whole : notes.filter((n) => n.path.toLowerCase().includes(inPath.toLowerCase()));
 			if (notes.length === 0) throw new ToolError(`No note's path contains "${inPath}"${folder ? ` under ${folder}/` : ""}. Nothing was searched; list_notes shows the names there are.`);
 		}
 		const among = inPath ? ` among the ${notes.length} note${notes.length === 1 ? "" : "s"} whose path contains "${inPath}"` : "";

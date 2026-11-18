@@ -944,6 +944,49 @@ describe("search before the first reply", () => {
 		expect(ollama.requests[2].messages[2].tool_calls?.[0].function.name).toBe("search_passages");
 	});
 
+	it("keeps a short name to the notes that have it as a word of their path", async () => {
+		const vault = new FakeVault({
+			"People/Ana - weekly.md": "## Actions\n\n- [ ] send Ana the draft\n",
+			"Management/Budget.md": "## Actions\n\n- [ ] file the expenses\n",
+			"Recipes/Banana bread.md": "- [ ] buy bananas\n",
+		});
+		const ollama = new FakeOllama([{ content: "One." }]);
+		const agent = new Agent({ client: ollama.asClient(), vault, tools: ALL_TOOLS, search: async () => [], searchPassages: async () => [], approve: async () => "approve", getConfig: () => config });
+		await agent.run(newConversation(), "Which action items from my meetings with Ana are still open?", {});
+		expect(ollama.requests[0].messages[2].tool_calls?.[0].function.arguments).toMatchObject({ path_contains: "Ana" });
+		const result = ollama.requests[0].messages[3].content;
+		expect(result).toMatch(/^1 matching line in 1 note:/);
+		expect(result).toContain("People/Ana - weekly.md:3");
+		expect(result).not.toMatch(/Management|Banana/);
+	});
+
+	it("hands the unchecked boxes over when the search result opens with a remark, as with a very long line in the vault", async () => {
+		const vault = new FakeVault({
+			"Inbox/Pasted log.md": `# Pasted log\n\n${"0123456789".repeat(1001)}\n`,
+			"Projects/Plan.md": "# Plan\n\n- [ ] order the belts\n- [x] book the room\n",
+		});
+		const ollama = new FakeOllama([{ content: "One." }]);
+		const queries: string[] = [];
+		const agent = new Agent({
+			client: ollama.asClient(),
+			vault,
+			tools: ALL_TOOLS,
+			search: async () => [],
+			searchPassages: async (q) => {
+				queries.push(q);
+				return [{ path: "Projects/Plan.md", heading: "Plan", crumb: "Plan", text: "- [x] book the room", score: 0.8 }];
+			},
+			approve: async () => "approve",
+			getConfig: () => config,
+		});
+		await agent.run(newConversation(), "Which tasks are still open?", {});
+		expect(ollama.requests[0].messages[2].tool_calls?.[0].function.name).toBe("grep_vault");
+		const result = ollama.requests[0].messages[3].content;
+		expect(result).toContain("only searched up to there");
+		expect(result).toContain("1 matching line in 1 note:\nProjects/Plan.md:3 [# Plan]: - [ ] order the belts");
+		expect(queries).toEqual([]);
+	});
+
 	it("does not repeat the search when the model asks for the same one", async () => {
 		const { agent, queries } = withSearch(
 			[{ tool: "search_passages", args: { limit: PRE_SEARCH_LIMIT, query: "What did I decide about the power supply?" } }, { content: "24V." }],

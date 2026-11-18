@@ -4,7 +4,7 @@ import { answerLanguageLine, t } from "./i18n";
 import { effectiveContext } from "./openai";
 import { blockIdEdits, linkedTargets, planCitations, plainText, quotable, withPassages, type CitationMode } from "./citations";
 import { buildOutline, outlineBudget } from "./outline";
-import { ToolError, localDate, toOllamaTools } from "./tools";
+import { ToolError, localDate, pathHasWords, toOllamaTools } from "./tools";
 import { INVALID_ARGUMENTS } from "./types";
 import { safeMarkdown } from "./safe-markdown";
 import type { UndoStack } from "./undo";
@@ -161,12 +161,8 @@ export function asksForOpenTasks(text: string, firstTurn = true): boolean {
  * vault has.
  */
 export function nameInPaths(question: string, paths: string[]): string | null {
-	const lower = paths.map((p) => p.toLowerCase());
-	const inSomePath = (name: string): boolean => {
-		if (name.length < 3) return false;
-		const re = new RegExp(`(^|[^\\p{L}\\p{N}])${name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "u");
-		return lower.some((p) => re.test(p));
-	};
+	// The same test grep_vault's path_contains makes, so the notes searched are the ones the name was found in.
+	const inSomePath = (name: string): boolean => name.length >= 3 && paths.some((p) => pathHasWords(p, name));
 	let best: string | null = null;
 	const offer = (name: string) => {
 		if (inSomePath(name) && (best === null || name.length > best.length)) best = name;
@@ -632,12 +628,14 @@ export class Agent {
 	 */
 	warm(signal?: AbortSignal): Promise<void> {
 		if (this.warming) return this.warming;
-		const set = this.deps.getConfig();
+		const model = this.deps.getConfig().model;
 		const tools = [...this.deps.tools, ...(this.deps.extraTools?.() ?? [])];
 		const task = (async () => {
 			// Warming is when the server is asked again how large a window it has the model loaded with.
-			const reported = await this.deps.client.loadedContext(set.model, true);
+			const reported = await this.deps.client.loadedContext(model, true);
 			this.askAgain = false;
+			// Read after the answer (see `run`): otherwise the prompt warmed is the one for the window last learned, not the one the turn sends.
+			const set = this.deps.getConfig();
 			const cfg = inWindow(set, reported);
 			let conventions: string | null = null;
 			try {
@@ -676,14 +674,17 @@ export class Agent {
 		// A warm-up still reading the prompt: let it finish, then start from what it read.
 		if (this.warming) await this.warming.catch(() => undefined);
 		if (signal?.aborted) return;
-		const set = this.deps.getConfig();
 		const { client, vault } = this.deps;
 		// An OpenAI-compatible server is not told a context size as Ollama is: it has the one the model
 		// was loaded with, so that is the window to budget for when it is the smaller. Remembered by
 		// the client per server and model; asked anew only after a run that was refused for it.
-		const reported = await client.loadedContext(set.model, this.askAgain);
+		const reported = await client.loadedContext(this.deps.getConfig().model, this.askAgain);
 		this.askAgain = false;
 		if (signal?.aborted) return;
+		// Read after the server has answered: the plugin's configuration is already narrowed to the
+		// window the client last learned, and read before, a model loaded with more since would
+		// have this turn budgeted for the old, smaller window.
+		const set = this.deps.getConfig();
 		const cfg = inWindow(set, reported);
 		const tools = [...this.deps.tools, ...(this.deps.extraTools?.() ?? [])];
 		const now = this.deps.now ? this.deps.now() : new Date();
@@ -829,7 +830,8 @@ export class Agent {
 			const call: ToolCall = { function: { name: "grep_vault", arguments: { pattern: OPEN_TASK_PATTERN, regex: true, ...(name ? { path_contains: name } : {}), limit: 200 } } };
 			const { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
 			if (signal?.aborted) return;
-			if (ok && /^\d+ matching lines? in \d+ notes?/.test(result)) {
+			// The count line, wherever it is: grep_vault puts a remark before it when a line was too long to search whole or the search ran out of time.
+			if (ok && /^\d+ matching lines? in \d+ notes?/m.test(result)) {
 				handOver(call, result);
 				noteGrepHits(result);
 				handed = true;

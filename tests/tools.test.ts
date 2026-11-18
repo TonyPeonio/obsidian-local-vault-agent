@@ -1176,6 +1176,19 @@ describe("grep_vault with a note path as folder", () => {
 		await expect(grepVault.execute({ pattern: "- [ ]", path_contains: "Nobody" }, ctx)).rejects.toThrow('No note\'s path contains "Nobody". Nothing was searched');
 	});
 
+	it("path_contains takes a name as whole words where a path has it so: Ana is not Management or Banana", async () => {
+		const vault = freshVault();
+		vault.seed("People/Ana - weekly.md", "- [ ] send Ana the draft\n");
+		vault.seed("Management/Budget.md", "- [ ] file the expenses\n");
+		vault.seed("Recipes/Banana bread.md", "- [ ] buy bananas\n");
+		const { ctx } = makeCtx(vault);
+		expect(await grepVault.execute({ pattern: "- [ ]", path_contains: "Ana" }, ctx)).toBe("1 matching line in 1 note:\nPeople/Ana - weekly.md:1: - [ ] send Ana the draft");
+		expect(await grepVault.execute({ pattern: "- [ ]", path_contains: "ana -" }, ctx)).toContain("People/Ana - weekly.md:1");
+		// No path has these letters as words of their own: then any path that has them at all.
+		expect(await grepVault.execute({ pattern: "- [ ]", path_contains: "nana" }, ctx)).toBe("1 matching line in 1 note:\nRecipes/Banana bread.md:1: - [ ] buy bananas");
+		expect(await grepVault.execute({ pattern: "- [ ]", path_contains: "manage" }, ctx)).toContain("Management/Budget.md:1");
+	});
+
 	it("searches just that note", async () => {
 		const { ctx } = makeCtx(freshVault());
 		const out = await grepVault.execute({ pattern: "sensors", folder: "Ideas/Sensors.md" }, ctx);

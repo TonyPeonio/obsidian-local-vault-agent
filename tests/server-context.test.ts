@@ -290,6 +290,40 @@ describe("Agent with a server that says how large its window is", () => {
 		expect(ollama.contextAsks.map((a) => a.again)).toEqual([false, true, false]);
 	});
 
+	/** The plugin's own agentConfig(), which is already narrowed to the window the client last learned. */
+	function pluginSetup(turns: Scripted[], serverContext: number) {
+		const settings = { ...DEFAULT_SETTINGS };
+		const holder: { client?: unknown } = {};
+		const made = setup(turns, serverContext, () => LocalVaultAgentPlugin.prototype.agentConfig.call({ settings, client: holder.client } as unknown as LocalVaultAgentPlugin));
+		holder.client = made.ollama.asClient();
+		return made;
+	}
+
+	it("budgets the message after a refusal for the window the model was loaded with since, not the one last learned", async () => {
+		const { agent, ollama } = pluginSetup([{ content: "Hello!" }], 4096);
+		const conv = newConversation();
+		await expect(agent.run(conv, "hi", {})).rejects.toBeInstanceOf(ContextTooSmallError);
+		// The user did what the message said, with a window still below the setting of 32768.
+		ollama.serverContext = 16384;
+		await agent.run(conv, "hi", {});
+		expect(ollama.requests).toHaveLength(1);
+		expect(ollama.requests[0].options?.num_ctx).toBe(16384);
+		expect(ollama.requests[0].options?.num_predict).toBe(replyCap(16384));
+	});
+
+	it("warms the prompt for the window the server has now, which is the prompt the turn then sends", async () => {
+		const { agent, ollama } = pluginSetup([{ content: "" }, { content: "hello" }], 16384);
+		await ollama.loadedContext("learned earlier");
+		// Loaded again with more before the chat box is focused.
+		ollama.serverContext = 24576;
+		await agent.warm();
+		await agent.run(newConversation(), "hi", {});
+		const [warm, first] = ollama.requests;
+		expect(warm.options?.num_ctx).toBe(24576);
+		expect(first.options?.num_ctx).toBe(24576);
+		expect(warm.messages[0]).toEqual(first.messages[0]);
+	});
+
 	it("does not refuse when it is the plugin's own setting that is small: that is as it always was", async () => {
 		const { agent, ollama } = setup([{ content: "Hello!" }], 32768, () => ({ ...config, numCtx: 4096 }));
 		await agent.run(newConversation(), "hi", {});
@@ -399,6 +433,26 @@ describe("QuizEngine with a server that says how large its window is", () => {
 		await engine.questions("ML", [note], 5);
 		expect(ollama.requests[0].options?.num_ctx).toBe(4096);
 		expect(ollama.requests[0].messages[0].content.length).toBeLessThan(sourceBudget(4096) + 2500);
+	});
+
+	it("keeps ten notes within the server's window too, where 1,500 characters of each would not fit", async () => {
+		const ollama = new FakeOllama([reply]);
+		const engine = new QuizEngine(ollama.asClient(), async () => ({ model: "m", numCtx: 4096, keepAlive: "1m", serverCtx: 4096 }));
+		const notes = Array.from({ length: 10 }, (_, i) => ({ path: `L${i}.md`, content: note.content }));
+		await engine.questions("ML", notes, 5);
+		// 4096 tokens are about 13,000 characters, the reply included.
+		expect(ollama.requests[0].messages[0].content.length).toBeLessThan(sourceBudget(4096) + 2500);
+		for (const n of notes) expect(ollama.requests[0].messages[0].content).toContain(`--- ${n.path} ---`);
+	});
+
+	it("gives each of many notes its 1,500 characters as before when no small window is reported", async () => {
+		const notes = Array.from({ length: 40 }, (_, i) => ({ path: `L${i}.md`, content: note.content }));
+		for (const serverCtx of [undefined, 32768]) {
+			const ollama = new FakeOllama([reply]);
+			const engine = new QuizEngine(ollama.asClient(), () => ({ model: "m", numCtx: 32768, keepAlive: "1m", serverCtx }));
+			await engine.questions("ML", notes, 5);
+			expect(ollama.requests[0].messages[0].content.length).toBeGreaterThan(40 * 1500);
+		}
 	});
 
 	it("sends what it always sent when the server does not say", async () => {

@@ -382,7 +382,11 @@ export class QuizEngine {
 	async questions(topic: string, notes: { path: string; content: string }[], count = 5, signal?: AbortSignal): Promise<QuizQuestion[]> {
 		const now = this.config();
 		const cfg = now instanceof Promise ? await now : now;
-		const perNote = Math.max(1500, Math.floor(sourceBudget(cfg.serverCtx) / Math.max(1, notes.length)));
+		const budget = sourceBudget(cfg.serverCtx);
+		const share = Math.floor(budget / Math.max(1, notes.length));
+		// At least 1,500 characters of every note, except when a server's small window is what sets the
+		// budget: ten notes at 1,500 each are more than a 4096-token window holds, so there they share it.
+		const perNote = budget < SOURCE_CHARS ? Math.max(1, share) : Math.max(1500, share);
 		const prompt = questionsPrompt(topic, notes.map((n) => ({ path: n.path, text: quizSourceText(n.content, perNote) })), count);
 		const parsed = parseQuestions(await this.ask(prompt, signal, cfg), notes);
 		return parsed.slice(0, count);
