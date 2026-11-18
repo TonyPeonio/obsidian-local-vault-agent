@@ -123,6 +123,72 @@ export function openAIOptions(options: { temperature?: number; top_p?: number; p
 	return out;
 }
 
+/**
+ * Separates reasoning a server sends inline, as `<think>…</think>` at the start of the reply,
+ * from the reply itself. llama.cpp's server and vLLM send reasoning in its own field; LM Studio
+ * and others leave the tags in the text unless told otherwise, and the chat would then show the
+ * model's scratch work as its answer, and feed it back to the model on the next step. Fed the
+ * stream piece by piece; a tag cut in two by a chunk boundary is handled.
+ */
+export class ThinkSplitter {
+	private state: "start" | "thinking" | "content" = "start";
+	private held = "";
+
+	feed(piece: string): { content: string; thinking: string } {
+		let text = this.held + piece;
+		this.held = "";
+		let content = "";
+		let thinking = "";
+		while (text) {
+			if (this.state === "content") {
+				content += text;
+				break;
+			}
+			if (this.state === "start") {
+				const lead = text.replace(/^\s+/, "");
+				if (lead.startsWith("<think>")) {
+					this.state = "thinking";
+					text = lead.slice("<think>".length);
+					continue;
+				}
+				// Not enough yet to know whether the reply opens with the tag.
+				if (lead.length < "<think>".length && "<think>".startsWith(lead)) {
+					this.held = text;
+					break;
+				}
+				this.state = "content";
+				continue;
+			}
+			const end = text.indexOf("</think>");
+			if (end >= 0) {
+				thinking += text.slice(0, end);
+				this.state = "content";
+				text = text.slice(end + "</think>".length).replace(/^\s+/, "");
+				continue;
+			}
+			// Keep back a tail that could be the start of the closing tag.
+			let keep = 0;
+			for (let k = Math.min(text.length, "</think>".length - 1); k > 0; k--) {
+				if ("</think>".startsWith(text.slice(-k))) {
+					keep = k;
+					break;
+				}
+			}
+			thinking += text.slice(0, text.length - keep);
+			this.held = text.slice(text.length - keep);
+			break;
+		}
+		return { content, thinking };
+	}
+
+	/** What was held back when the stream ended (an unfinished tag is text after all). */
+	flush(): { content: string; thinking: string } {
+		const rest = this.held;
+		this.held = "";
+		return this.state === "thinking" ? { content: "", thinking: rest } : { content: rest, thinking: "" };
+	}
+}
+
 /** `/v1/models` → model ids. */
 export function modelIds(json: Record<string, unknown>): string[] {
 	return Array.isArray(json.data) ? (json.data as { id?: unknown }[]).map((m) => (typeof m.id === "string" ? m.id : "")).filter(Boolean) : [];

@@ -1,4 +1,4 @@
-import { ToolCallAccumulator, embeddingVectors, fromOpenAIChoice, modelIds, openAIOptions, sse, toOpenAIMessages, type Provider } from "./openai";
+import { ThinkSplitter, ToolCallAccumulator, embeddingVectors, fromOpenAIChoice, modelIds, openAIOptions, sse, toOpenAIMessages, type Provider } from "./openai";
 import { INVALID_ARGUMENTS, type ChatMessage, type OllamaToolSpec, type ToolCall } from "./types";
 
 export interface ModelInfo {
@@ -384,18 +384,26 @@ export class OllamaClient {
 		let promptTokens: number | undefined;
 		let completionTokens: number | undefined;
 		let timing: { promptEvalDuration?: number; evalDuration?: number } = {};
+		const inline = new ThinkSplitter();
+		const take = (part: { content: string; thinking: string }) => {
+			if (part.content) {
+				message.content += part.content;
+				req.onDelta?.({ content: part.content });
+			}
+			if (part.thinking) {
+				thinking += part.thinking;
+				req.onDelta?.({ thinking: part.thinking });
+			}
+		};
 		for await (const chunk of sse(response.body, req.signal)) {
 			if (chunk.error) throw new OllamaError(typeof chunk.error === "string" ? chunk.error : JSON.stringify(chunk.error));
-			const choice = (Array.isArray(chunk.choices) ? chunk.choices[0] : undefined) as { delta?: { content?: unknown; reasoning_content?: unknown; tool_calls?: unknown }; finish_reason?: unknown } | undefined;
+			const choice = (Array.isArray(chunk.choices) ? chunk.choices[0] : undefined) as { delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown; tool_calls?: unknown }; finish_reason?: unknown } | undefined;
 			const d = choice?.delta ?? {};
-			if (typeof d.content === "string" && d.content) {
-				message.content += d.content;
-				req.onDelta?.({ content: d.content });
-			}
-			if (typeof d.reasoning_content === "string" && d.reasoning_content) {
-				thinking += d.reasoning_content;
-				req.onDelta?.({ thinking: d.reasoning_content });
-			}
+			// Reasoning inline in the text (<think>…</think>) is taken out of it.
+			if (typeof d.content === "string" && d.content) take(inline.feed(d.content));
+			// Reasoning in its own field: `reasoning_content` (llama.cpp, DeepSeek) or `reasoning` (vLLM, others).
+			const reasoned = typeof d.reasoning_content === "string" && d.reasoning_content ? d.reasoning_content : typeof d.reasoning === "string" ? d.reasoning : "";
+			if (reasoned) take({ content: "", thinking: reasoned });
 			calls.add(d.tool_calls);
 			if (typeof choice?.finish_reason === "string") doneReason = choice.finish_reason;
 			const usage = chunk.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
@@ -410,6 +418,7 @@ export class OllamaClient {
 				completionTokens ??= t.predicted_n;
 			}
 		}
+		take(inline.flush());
 		if (thinking) message.thinking = thinking;
 		const toolCalls = calls.calls();
 		if (toolCalls.length) message.tool_calls = toolCalls;

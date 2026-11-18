@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { OllamaClient } from "../src/ollama";
-import { ToolCallAccumulator, embeddingVectors, fromOpenAIChoice, modelIds, openAIOptions, sse, toOpenAIMessages } from "../src/openai";
+import { ThinkSplitter, ToolCallAccumulator, embeddingVectors, fromOpenAIChoice, modelIds, openAIOptions, sse, toOpenAIMessages } from "../src/openai";
 
 function stream(chunks: string[]): ReadableStream<Uint8Array> {
 	const enc = new TextEncoder();
@@ -116,6 +116,31 @@ describe("OllamaClient with an OpenAI-compatible server", () => {
 		const other = client(() => new Response(JSON.stringify({ error: { message: "model not loaded" } }), { status: 400 }));
 		await expect(other.c.chat({ model: "gpt", messages: [{ role: "user", content: "x" }], think: false })).rejects.toThrow("model not loaded");
 		expect(other.calls).toHaveLength(1);
+	});
+
+	it("takes reasoning out of the reply, whether a server sends it inline or in a field of either name", async () => {
+		const inlineBody = ['data: {"choices":[{"delta":{"content":"<thi"}}]}\n', 'data: {"choices":[{"delta":{"content":"nk>weighing it up</th"}}]}\n', 'data: {"choices":[{"delta":{"content":"ink>\\n\\nThe answer is 24V."}}]}\n', "data: [DONE]\n"];
+		const a = client(() => new Response(stream(inlineBody)));
+		const shown: string[] = [];
+		const res = await a.c.chat({ model: "q", messages: [{ role: "user", content: "x" }], onDelta: (d) => d.content && shown.push(d.content) });
+		expect(res.message.content).toBe("The answer is 24V.");
+		expect(res.message.thinking).toBe("weighing it up");
+		expect(shown.join("")).toBe("The answer is 24V.");
+		const fieldBody = ['data: {"choices":[{"delta":{"reasoning":"hmm"}}]}\n', 'data: {"choices":[{"delta":{"content":"Yes."}}]}\n', "data: [DONE]\n"];
+		const b = await client(() => new Response(stream(fieldBody))).c.chat({ model: "q", messages: [{ role: "user", content: "x" }] });
+		expect(b.message).toMatchObject({ content: "Yes.", thinking: "hmm" });
+	});
+
+	it("leaves a reply alone that merely mentions the tag, or never closes it", () => {
+		const one = new ThinkSplitter();
+		expect(one.feed("Use <think> tags sparingly.")).toEqual({ content: "Use <think> tags sparingly.", thinking: "" });
+		const two = new ThinkSplitter();
+		const parts = [two.feed("<"), two.feed("b>bold</b>"), two.flush()];
+		expect(parts.map((p) => p.content).join("")).toBe("<b>bold</b>");
+		const open = new ThinkSplitter();
+		const got = [open.feed("<think>still going"), open.flush()];
+		expect(got.map((p) => p.thinking).join("")).toBe("still going");
+		expect(got.map((p) => p.content).join("")).toBe("");
 	});
 
 	it("reads llama.cpp's reading and writing times, in Ollama's units", async () => {
