@@ -742,11 +742,16 @@ against a scripted stand-in for Ollama: ask in the chat → the diff dialog (not
 approve → the note is changed; reject → unchanged; undo → restored; the change history; the
 setup checklist; the sample notes; the settings page; and
 *Report a problem* (the report has the versions, has no note text, chat text or vault path, and
-no request is made). It has its own `package.json`, so the plugin's lockfile and release build do
-not carry the test runner. It runs in GitHub Actions under a virtual display
+no request is made). A second spec (`streaming.e2e.ts`) uses a stand-in that streams slowly, like a
+model: a reply drawn block by block ends as exactly one render of the finished text by Obsidian's
+own renderer, a message sent meanwhile waits in the queue, Stop hands the queue back, the list
+stays where the reader scrolled, a pasted picture is saved as an attachment, read and sent, and the
+markdown rendered while streaming is measured against redrawing everything every 120 ms. It has its
+own `package.json`, so the plugin's lockfile and release build do not carry the test runner. It runs in GitHub Actions under a virtual display
 (`.github/workflows/e2e-obsidian.yml`) on every push that touches the plugin; the workflow fails
-unless the report says all nine specs passed. Locally it opens an Obsidian window, which is why it
-is not part of `npm test`.
+unless the report says the nine specs of the first file passed and none failed. Locally it opens an
+Obsidian window, which is why it is not part of `npm test`. The window is drawn in software
+(`--disable-gpu`), so the tests also run on a desktop whose graphics card is busy running a model.
 
 The benchmark (`scripts/e2e-large.ts`) runs 24 scenarios on a generated 339-note vault
 (`scripts/make-vault.mjs`, with `scripts/large-facts.json` recording the facts the checks look
