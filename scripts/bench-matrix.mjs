@@ -3,6 +3,7 @@
 //   npm run bench-matrix                      # the default matrix below
 //   npm run bench-matrix -- base,temp03       # only the named configs
 //   RUNS=2 npm run bench-matrix               # each config twice (variance)
+//   LABEL=hybrid RUNS=3 npm run bench-matrix -- base   # name an experiment; summarise with scripts/bench-summary.mjs
 //
 // Each run writes bench/<version>-<tag>[-<n>].json; the table reads those files back, so a
 // matrix can be re-rendered later with the file names as arguments:
@@ -30,6 +31,8 @@ if (args[0] === "--table") {
 }
 const names = args[0] ? args[0].split(",") : Object.keys(MATRIX);
 const runs = Number(process.env.RUNS ?? 1);
+// LABEL names what is being tried ("hybrid"), so its result files sit beside the plain ones: bench/<version>-<label>[-<config>][-<n>].json
+const label = process.env.LABEL ?? "";
 const version = JSON.parse(readFileSync("manifest.json", "utf8")).version;
 
 execFileSync("npx", ["esbuild", "scripts/e2e-large.ts", "--bundle", "--platform=node", "--format=cjs", "--outfile=.e2e/e2e-large.cjs", "--log-level=warning"], { stdio: "inherit", shell: true });
@@ -44,7 +47,7 @@ for (const name of names) {
 		process.exit(1);
 	}
 	for (let n = 1; n <= runs; n++) {
-		const tag = runs > 1 ? `${name}-${n}` : name;
+		const tag = `${label}${label && name === "base" ? "" : (label ? "-" : "") + name}${runs > 1 ? `-${n}` : ""}`.replace(/^-|-(?=-)/g, "");
 		console.log(`\n##### ${tag} ${JSON.stringify(env)}\n`);
 		const t0 = Date.now();
 		const r = spawnSync("node", [".e2e/e2e-large.cjs"], { stdio: "inherit", env: { ...process.env, ...env, TAG: tag } });
