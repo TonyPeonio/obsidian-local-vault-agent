@@ -31,6 +31,7 @@ import {
 	replaceLine,
 	replaceNote,
 	replaceSection,
+	sectionMatches,
 	searchNotes,
 	searchPassages,
 	vaultOverview,
@@ -504,6 +505,58 @@ describe("search_passages", () => {
 		expect(out).toMatch(/semantic index is not available/);
 		expect(out).toContain("Ideas/Sensors.md");
 		expect(await searchPassages.execute({ query: "zzzz" }, ctx)).toMatch(/No passages matched/);
+	});
+});
+
+describe("a write to a heading that a note has more than once", () => {
+	const lectures = [
+		"# Lectures",
+		"## 2026-09-03",
+		"![[Recording A.m4a]]",
+		"### Summary",
+		"- first summary",
+		"## 2026-09-10",
+		"![[Recording B.m4a]]",
+		"### Summary",
+		"- second summary",
+	].join("\n\n");
+	const setup = () => {
+		const vault = freshVault();
+		vault.seed("School/Lectures.md", lectures);
+		return { vault, ...makeCtx(vault) };
+	};
+
+	it("is refused by replace_section, with the sections it could have meant", async () => {
+		const { vault, ctx } = setup();
+		await expect(replaceSection.execute({ path: "School/Lectures.md", heading: "Summary", new_text: "- rewritten" }, ctx)).rejects.toThrow(
+			'"Summary" is the heading of 2 sections in School/Lectures.md: "Lectures › 2026-09-03 › Summary", "Lectures › 2026-09-10 › Summary". Say which one by its path, for example heading: "Lectures › 2026-09-10 › Summary". Nothing was written.',
+		);
+		expect(await vault.read("School/Lectures.md")).toBe(lectures);
+		// Named by its path, it is written, and only that one.
+		await replaceSection.execute({ path: "School/Lectures.md", heading: "2026-09-10 › Summary", new_text: "- rewritten" }, ctx);
+		const after = await vault.read("School/Lectures.md");
+		expect(after).toContain("- first summary");
+		expect(after).toContain("- rewritten");
+		expect(after).not.toContain("- second summary");
+	});
+
+	it("is settled in edit_notes by the line: the one section that has it, or a refusal", () => {
+		// "Summary" names two sections; only the second has this line.
+		const one = replaceLine(lectures, "second summary", "- edited", "Summary");
+		expect(one.ok && one.content.includes("- first summary") && one.content.includes("- edited")).toBe(true);
+		// Both have a bullet: nothing is edited.
+		const both = replaceLine(lectures, "summary", "- edited", "Summary");
+		expect(both.ok).toBe(false);
+		expect(!both.ok && both.error).toMatch(/"Summary" is the heading of 2 sections: .*Nothing was written\./);
+		// A unique heading behaves as before.
+		expect(replaceLine(lectures, "Recording B", "", "2026-09-10").ok).toBe(true);
+	});
+
+	it("lists every section a heading names, with its path, and reading still takes the first", () => {
+		expect(sectionMatches(lectures, "Summary").map((m) => m.crumb)).toEqual(["Lectures › 2026-09-03 › Summary", "Lectures › 2026-09-10 › Summary"]);
+		expect(sectionMatches(lectures, "2026-09-10 › Summary")).toHaveLength(1);
+		expect(sectionMatches(lectures, "nope")).toEqual([]);
+		expect(extractSection(lectures, "Summary")?.text).toContain("- first summary");
 	});
 });
 

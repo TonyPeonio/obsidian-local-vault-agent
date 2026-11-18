@@ -1,0 +1,141 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T03:02:39.578Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "awk-2",
+  "only": "long-note,table-row,same-name,properties",
+  "preSearch": true,
+  "commit": "98956b7",
+  "ollama": "0.40.15",
+  "embed": "nomic-embed-text",
+  "notes": 339,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 153,
+    "calls": 15,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 14,
+    "modelSeconds": 146,
+    "promptSeconds": 134,
+    "passed": 26,
+    "checks": 27,
+    "failures": 17
+  },
+  "failed": [
+    "long-note: used ≤ 6 tool calls"
+  ],
+  "scenarios": [
+    {
+      "id": "long-note",
+      "ms": 73829,
+      "calls": 7,
+      "prompt": 20898,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 7,
+      "promptMs": 60237,
+      "evalMs": 7813,
+      "pass": 6,
+      "fail": 1,
+      "seconds": 73.83,
+      "completionTokens": 656,
+      "readChars": 64388,
+      "loadMs": 115,
+      "failed": [
+        "used ≤ 6 tool calls"
+      ],
+      "tools": [
+        "search_passages",
+        "read_note",
+        "find_in_note",
+        "read_section",
+        "grep_vault",
+        "grep_vault",
+        "grep_vault"
+      ],
+      "answer": "Based on my search, I found the answer in the **Robot club log 2026** note:\n\n**Decision about the belts:**\n- Replace the GT2 belts with GT3 on both axes (because the GT2 ones skipped teeth twice during the open day)\n\n**Meeting:**\n- The decision was made in the meeting dated **2026-04-21** (based on the line number 400 being within that section)\n\n**Who orders them:**\n- **Marcus** orders them\n\nThe exact passage from the note is:\n> **Decision:** replace the GT2 belts with GT3 on both axes; the GT2 ones skipped teeth twice during the open day. Marcus orders them.\n\nSources: [[Clubs/Robot club log 2026]]\n\nPassages: [[Clubs/Robot club log 2026#^cg65ik1|Robot club log 2026 › 2026-08-18]]"
+    },
+    {
+      "id": "table-row",
+      "ms": 28016,
+      "calls": 2,
+      "prompt": 12776,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 2,
+      "promptMs": 26376,
+      "evalMs": 1332,
+      "pass": 7,
+      "fail": 0,
+      "seconds": 28.02,
+      "completionTokens": 117,
+      "readChars": 4417,
+      "loadMs": 54,
+      "failed": [],
+      "tools": [
+        "search_passages",
+        "read_note"
+      ],
+      "answer": "Based on the [[Projects/Motor comparison]] note, the motor used on the gantry Y axis is **M-122** (NEMA 17 frame), with:\n\n- **Rated current:** 1.50 A\n- **Holding torque:** 20 N·cm"
+    },
+    {
+      "id": "same-name",
+      "ms": 19721,
+      "calls": 2,
+      "prompt": 11291,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 2,
+      "promptMs": 18728,
+      "evalMs": 857,
+      "pass": 6,
+      "fail": 0,
+      "seconds": 19.72,
+      "completionTokens": 78,
+      "readChars": 1500,
+      "loadMs": 18,
+      "failed": [],
+      "tools": [
+        "search_passages",
+        "read_note"
+      ],
+      "answer": "In the [[Projects/Weather Station/Notes]] note, I wrote down:\n\n**Calibration factor 0.87** applied in firmware (for the anemometer that reads high above 40 km/h).\n\nPassages: [[Projects/Weather Station/Notes#^c920j0j|Notes › Notes]]"
+    },
+    {
+      "id": "properties",
+      "ms": 31546,
+      "calls": 4,
+      "prompt": 12348,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 3,
+      "promptMs": 28785,
+      "evalMs": 2059,
+      "pass": 7,
+      "fail": 0,
+      "seconds": 31.55,
+      "completionTokens": 175,
+      "readChars": 4571,
+      "loadMs": 165,
+      "failed": [],
+      "tools": [
+        "search_passages",
+        "grep_vault",
+        "read_note",
+        "read_note"
+      ],
+      "answer": "Two project notes have `status: paused`:\n\n| Note | Owner |\n|------|-------|\n| [[Projects/Desk Clock]] | Jordan |\n| [[Projects/Greenhouse Monitor]] | Lena |"
+    }
+  ]
+}

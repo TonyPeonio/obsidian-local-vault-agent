@@ -449,23 +449,33 @@ export const searchPassages: ToolDefinition = {
 	},
 };
 
+export interface SectionMatch {
+	text: string;
+	startLine: number;
+	endLine: number;
+	/** The heading with the headings above it, as written in the note ("2026-09-10 › Summary"). */
+	crumb: string;
+}
+
 /**
- * The body of one heading in `content`: from the heading line to the next heading of the same or
- * a higher level. `heading` is the heading's text, or a path of headings ("2026-09-10 › Summary",
- * also written with ">" or "#") for a note that repeats a heading under each date or topic. A
- * heading that matches exactly wins over one that only starts with the text, wherever it is.
+ * Every section of `content` that `heading` names equally well, in document order. `heading` is
+ * the heading's text, or a path of headings ("2026-09-10 › Summary", also written with ">" or
+ * "#") for a note that repeats a heading under each date or topic. A heading that matches exactly
+ * wins over one that only starts with the text, wherever it is. More than one result means the
+ * request is ambiguous: reading takes the first, writing must not guess.
  */
-export function extractSection(content: string, heading: string): { text: string; startLine: number; endLine: number } | null {
+export function sectionMatches(content: string, heading: string): SectionMatch[] {
 	const lines = content.split("\n");
 	const parts = heading
 		.replace(/^#+\s*/, "")
 		.split(/\s+[›>]\s+|\s*#\s*/)
 		.map((p) => p.trim().toLowerCase())
 		.filter(Boolean);
-	if (parts.length === 0) return null;
+	if (parts.length === 0) return [];
 	const whole = heading.replace(/^#+\s*/, "").trim().toLowerCase();
-	const heads: { line: number; level: number; text: string; above: string[] }[] = [];
-	const stack: { level: number; text: string }[] = [];
+	type Head = { line: number; level: number; text: string; above: string[]; crumb: string };
+	const heads: Head[] = [];
+	const stack: { level: number; text: string; raw: string }[] = [];
 	let inFence = false;
 	for (let i = 0; i < lines.length; i++) {
 		if (/^\s*(```|~~~)/.test(lines[i])) inFence = !inFence;
@@ -474,28 +484,45 @@ export function extractSection(content: string, heading: string): { text: string
 		if (!m) continue;
 		const level = m[1].length;
 		while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
-		const text = m[2].trim().toLowerCase();
-		heads.push({ line: i, level, text, above: stack.map((s) => s.text) });
-		stack.push({ level, text });
+		const rawText = m[2].trim();
+		const text = rawText.toLowerCase();
+		heads.push({ line: i, level, text, above: stack.map((x) => x.text), crumb: [...stack.map((x) => x.raw), rawText].join(" › ") });
+		stack.push({ level, text, raw: rawText });
 	}
 	/** The headings above `h` contain `path` in order (levels in between may be skipped). */
 	const under = (h: { above: string[] }, path: string[]): boolean => {
 		let at = 0;
-		for (const a of h.above) if (at < path.length && (a === path[at] || a.startsWith(path[at]))) at++;
+		for (const x of h.above) if (at < path.length && (x === path[at] || x.startsWith(path[at]))) at++;
 		return at === path.length;
 	};
 	const last = parts[parts.length - 1];
 	const parents = parts.slice(0, -1);
-	const found =
+	const tiers: ((h: Head) => boolean)[] = [
 		// A heading whose own text is the whole argument (it may itself contain ">" or "#").
-		heads.find((h) => h.text === whole) ??
-		(parents.length ? (heads.find((h) => h.text === last && under(h, parents)) ?? heads.find((h) => h.text.startsWith(last) && under(h, parents))) : undefined) ??
-		heads.find((h) => h.text === last && parents.length === 0) ??
-		heads.find((h) => h.text.startsWith(whole));
-	if (!found) return null;
-	const next = heads.find((h) => h.line > found.line && h.level <= found.level);
-	const end = next ? next.line : lines.length;
-	return { text: lines.slice(found.line, end).join("\n").trimEnd(), startLine: found.line + 1, endLine: end };
+		(h) => h.text === whole,
+		(h) => parents.length > 0 && h.text === last && under(h, parents),
+		(h) => parents.length > 0 && h.text.startsWith(last) && under(h, parents),
+		(h) => parents.length === 0 && h.text === last,
+		(h) => h.text.startsWith(whole),
+	];
+	const found = tiers.map((t) => heads.filter(t)).find((hs) => hs.length > 0) ?? [];
+	return found.map((f) => {
+		const next = heads.find((h) => h.line > f.line && h.level <= f.level);
+		const end = next ? next.line : lines.length;
+		return { text: lines.slice(f.line, end).join("\n").trimEnd(), startLine: f.line + 1, endLine: end, crumb: f.crumb };
+	});
+}
+
+/** The body of one heading in `content` (see `sectionMatches`; the first when several match). */
+export function extractSection(content: string, heading: string): { text: string; startLine: number; endLine: number } | null {
+	const first = sectionMatches(content, heading)[0];
+	return first ? { text: first.text, startLine: first.startLine, endLine: first.endLine } : null;
+}
+
+/** What a write is told when its heading names several sections: which they are, and how to say one. */
+export function ambiguousHeading(heading: string, matches: SectionMatch[], path?: string): string {
+	const shown = matches.slice(0, 8).map((m) => `"${m.crumb}"`).join(", ");
+	return `"${heading}" is the heading of ${matches.length} sections${path ? ` in ${path}` : ""}: ${shown}${matches.length > 8 ? ", …" : ""}. Say which one by its path, for example heading: "${matches[1].crumb}". Nothing was written.`;
 }
 
 export const grepVault: ToolDefinition = {
@@ -1489,13 +1516,17 @@ export function replaceLine(content: string, needle: string, newText: string, he
 	const lines = content.split("\n");
 	let from = 0;
 	let to = lines.length;
+	const lower = needle.toLowerCase();
 	if (heading) {
-		const section = extractSection(content, heading);
-		if (!section) return { ok: false, error: `no heading matching "${heading}".` };
+		const named = sectionMatches(content, heading);
+		if (named.length === 0) return { ok: false, error: `no heading matching "${heading}".` };
+		// A heading that names several sections is settled by the line: exactly one of them has it, or the edit is refused.
+		const withLine = named.length > 1 ? named.filter((m) => lines.slice(m.startLine - 1, m.endLine).some((l) => l.toLowerCase().includes(lower))) : named;
+		if (withLine.length > 1) return { ok: false, error: ambiguousHeading(heading, withLine) };
+		const section = withLine[0] ?? named[0];
 		from = section.startLine - 1;
 		to = section.endLine;
 	}
-	const lower = needle.toLowerCase();
 	const hits: number[] = [];
 	for (let i = from; i < to; i++) if (lines[i].toLowerCase().includes(lower)) hits.push(i);
 	if (hits.length === 0) return { ok: false, error: `no line contains "${needle}"${heading ? ` under "${heading}"` : ""}.` };
@@ -1569,6 +1600,8 @@ export const replaceSection: ToolDefinition = {
 		const heading = str(args, "heading");
 		const body = str(args, "new_text", false);
 		const before = await ctx.vault.read(path);
+		const named = sectionMatches(before, heading);
+		if (named.length > 1) throw new ToolError(ambiguousHeading(heading, named, path));
 		const after = replaceSectionBody(before, heading, body);
 		if (after === null) {
 			const available = ctx.vault.getMetadata(path).headings;
