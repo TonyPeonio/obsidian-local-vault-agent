@@ -107,6 +107,13 @@ async function main() {
 	vault.seed(SUGGESTIONS_NOTE, renderGardenChat(await gardenVault(vault, { dailyFolder: "Daily", exclude: (p) => p.startsWith("Templates/") })));
 	const original = new Map<string, string>();
 	for (const n of vault.listNotes()) original.set(n.path, await vault.read(n.path));
+	// Notes a scenario plants for itself later on are the harness's own, not changes left by the agent.
+	const planted = new Set<string>();
+	const seedNote = vault.seed.bind(vault);
+	vault.seed = (path: string, content: string, mtime?: number) => {
+		planted.add(path);
+		seedNote(path, content, mtime);
+	};
 	const client = new OllamaClient(() => OLLAMA_URL);
 	// CHAT_URL=http://127.0.0.1:8091/v1 sends the chat to an OpenAI-compatible server (llama.cpp's
 	// llama-server, LM Studio, vLLM) while embeddings stay with Ollama: the plugin's other provider,
@@ -946,7 +953,7 @@ async function main() {
 			if (vault.exists(path) && (await vault.read(path)) === content) same++;
 			else diff.push(path);
 		}
-		const extra = vault.listNotes().filter((n) => !original.has(n.path)).map((n) => n.path);
+		const extra = vault.listNotes().filter((n) => !original.has(n.path) && !planted.has(n.path)).map((n) => n.path);
 		const ok = diff.length === 0 && extra.length === 0;
 		console.log(`  ${ok ? "PASS" : "FAIL"}  vault restored exactly (${reverted} reverts; ${same}/${original.size} identical${diff.length ? `; differs: ${diff.slice(0, 5).join(", ")}` : ""}${extra.length ? `; extra: ${extra.join(", ")}` : ""})`);
 		if (!ok) failures++;
