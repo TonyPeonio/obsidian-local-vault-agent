@@ -115,43 +115,65 @@ export function splitSentences(text: string): string[] {
 }
 
 /** The line under a table's heading row: `|---|:--:|`, with or without the outer bars. */
-const TABLE_RULE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$|^\s*\|\s*:?-+:?\s*\|\s*$/;
+const TABLE_RULE = /^(?:\s*>)*\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$|^(?:\s*>)*\s*\|\s*:?-+:?\s*\|\s*$/;
 
-/** Where the table in these lines begins: the index of its heading row, or -1. */
-export function tableStart(lines: string[]): number {
-	for (let i = 1; i < lines.length; i++) if (TABLE_RULE.test(lines[i]) && lines[i - 1].includes("|")) return i - 1;
+/** Where a table in these lines begins, looking from line `from` on: the index of its heading row, or -1. A table inside a callout or a quote (`> | a | b |`) is one too. */
+export function tableStart(lines: string[], from = 0): number {
+	for (let i = Math.max(1, from + 1); i < lines.length; i++) if (TABLE_RULE.test(lines[i]) && lines[i - 1].includes("|")) return i - 1;
 	return -1;
 }
 
 /**
- * A paragraph that holds a table too long for one chunk, cut between its rows, each piece under
- * the table's heading row again. A table has no sentences, so `splitLong` cut it every `max`
- * characters: in the middle of a row, and every piece after the first was rows of values with no
- * column names. Null when the paragraph has no table.
+ * A paragraph that holds a table and is too long for one chunk, cut between its lines, each piece
+ * of a table under that table's heading row again. A table has no sentences, so `splitLong` cut it
+ * every `max` characters: in the middle of a row, and every piece after the first was rows of
+ * values with no column names. A heading row, its rule and the first row stay together; a second
+ * table in the same paragraph is cut under its own heading row; text before or between the tables
+ * is cut between its lines. Null when the paragraph has no table.
  */
 function splitTable(para: string, max: number): string[] | null {
 	const lines = para.split("\n");
-	const at = tableStart(lines);
-	if (at < 0) return null;
-	const head = `${lines[at]}\n${lines[at + 1]}`;
+	if (tableStart(lines) < 0) return null;
 	const out: string[] = [];
-	// Whatever stands before the table in the same paragraph stays with its first rows.
-	let current = lines.slice(0, at + 2).join("\n");
+	let current: string[] = [];
+	let size = 0;
+	/** The heading row and rule of the table the line is in, and how many of its rows the piece has. */
+	let head: string[] | null = null;
 	let rows = 0;
-	let inTable = true;
-	for (const line of lines.slice(at + 2)) {
-		if (inTable && !line.includes("|")) inTable = false;
-		if (rows > 0 && current.length + 1 + line.length > max) {
-			out.push(current);
-			current = inTable ? `${head}\n${line}` : line;
-			rows = 1;
-		} else {
-			current += `\n${line}`;
-			rows++;
+	const push = () => {
+		if (current.length) out.push(current.join("\n"));
+		current = [];
+		size = 0;
+		rows = 0;
+	};
+	const add = (...more: string[]) => {
+		for (const line of more) {
+			current.push(line);
+			size += line.length + 1;
 		}
+	};
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (i + 1 < lines.length && line.includes("|") && TABLE_RULE.test(lines[i + 1])) {
+			head = [line, lines[i + 1]];
+			const first = lines[i + 2]?.includes("|") ? lines[i + 2].length + 1 : 0;
+			if (current.length && size + line.length + lines[i + 1].length + 2 + first > max) push();
+			add(...head);
+			rows = 0;
+			i++;
+			continue;
+		}
+		if (head && !line.includes("|")) head = null;
+		// The first row stays under its heading row whatever its length.
+		if (current.length && size + line.length + 1 > max && !(head && rows === 0)) {
+			push();
+			if (head) add(...head);
+		}
+		add(line);
+		if (head) rows++;
 	}
-	out.push(current);
-	// A single row longer than a chunk is cut as any long text is.
+	push();
+	// A single line longer than a chunk (a very long row, a long sentence before the table) is cut as any long text is.
 	return out.flatMap((piece) => (piece.length > max ? splitLong(piece, max) : [piece]));
 }
 

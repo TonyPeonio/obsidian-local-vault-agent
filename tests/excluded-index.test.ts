@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { Agent, newConversation, type AgentConfig } from "../src/agent";
 import { SemanticIndex, type IndexData } from "../src/index";
 import { isExcluded } from "../src/settings";
-import { searchNotes, searchPassages } from "../src/tools";
+import { ALL_TOOLS, searchNotes, searchPassages } from "../src/tools";
 import type { ToolContext } from "../src/types";
 import { FakeOllama, FakeVault } from "./fakes";
 
@@ -123,6 +124,34 @@ describe("a folder excluded while its notes are in the index", () => {
 		expect((await index.searchPassages(QUESTION, 20)).filter((p) => p.path.startsWith("Private/"))).toEqual([]);
 		await index.syncAll();
 		expect((await index.searchPassages(QUESTION, 20)).some((p) => p.path === "Private/Diary.md")).toBe(true);
+	});
+
+	it("leaves the system prompt of a conversation that is already running: its notes' names and gists are not sent again", async () => {
+		const { excluded, ctx } = setup();
+		const config: AgentConfig = { model: "fake", numCtx: 8192, temperature: 0, think: undefined, keepAlive: "1m", maxIterations: 4, maxToolResultChars: 4000, autoApprove: false, autoContinue: false, extraSystemPrompt: "", preSearch: false };
+		const ollama = new FakeOllama([{ content: "Tomatoes go in after the last frost." }, { content: "At nine." }]);
+		const agent = new Agent({
+			client: ollama.asClient(),
+			vault: ctx.vault,
+			tools: ALL_TOOLS,
+			search: async () => [],
+			approve: async () => "reject",
+			getConfig: () => config,
+			gist: (path) => (path.startsWith("Private/") ? "what the quokka fund holds" : "a note"),
+			// What the plugin passes: the excluded folders as they are now (src/main.ts).
+			scope: () => excluded.join("\n"),
+		});
+		const conversation = newConversation();
+		await agent.run(conversation, "When do the tomatoes go in?", {});
+		const sent = () => JSON.stringify(ollama.requests[ollama.requests.length - 1].messages);
+		// The outline of the first turn names the notes and gives their gists (the test would prove nothing otherwise).
+		expect(sent()).toMatch(/Private/);
+		expect(sent()).toMatch(/Diary/);
+		expect(sent()).toContain("quokka fund");
+		excluded.push("Private");
+		await agent.run(conversation, "And when does the ferry leave?", {});
+		expect(sent()).not.toMatch(/Private|Diary|Letter|quokka/);
+		expect(sent()).toMatch(/Trip/);
 	});
 
 	it("is not seen either when the setting was changed without telling the index", async () => {

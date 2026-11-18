@@ -157,8 +157,17 @@ const CHANGE_VERBS =
 const PRODUCE_VERBS = "collect|gather|compile|copy|export|extract|pull|summari[sz]e|list|group|sort|translate|put together";
 /** Verbs that make something: a change when the sentence names a place, or a note as the thing made ("make me a note with…", "write a note about…"). */
 const MAKE_VERBS = "make|write|draft|start|build|generate|compose|prepare";
-/** Words before the verb that leave it an instruction. The first group asks outright ("can you…", "please…"); the second only strings sentences together. */
-const ASKING = "please|kindly|can you|could you|would you|will you|can we|could we|let's|lets|let us|help me to|help me|go ahead and|i want you to|i'd like you to|i would like you to|i need you to|you should|you can|i want to|i'd like to|i would like to|i need to|make sure to|be sure to|remember to|don't forget to";
+/**
+ * Words before the verb that leave it an instruction. `DIRECT` asks the agent outright ("can you…",
+ * "please…"). `WE_PLAN` and `OWN_PLAN` are as often about the user's life as about the vault ("Could
+ * we move the launch to May?", "I need to fix my bike. What did I write about brake pads?"): they
+ * ask for a change only when the clause names something in the vault (`VAULT_WORD`). `STRINGING`
+ * only strings sentences together.
+ */
+const DIRECT = "please|pls|plz|kindly|can you|can u|could you|could u|would you|will you|let's|lets|let us|help me to|help me|go ahead and|i want you to|i'd like you to|i would like you to|i need you to|you should|you can|make sure to|be sure to|remember to|don't forget to";
+const WE_PLAN = "can we|could we";
+const OWN_PLAN = "i want to|i'd like to|i would like to|i need to";
+const ASKING = `${DIRECT}|${WE_PLAN}|${OWN_PLAN}`;
 const STRINGING = "and|then|also|now|just|next|first|finally|afterwards|after that|if not|if so|otherwise|ok|okay|yes|so";
 /** A noun that only looks like one of the verbs: "Update on the robot?", "Format of the daily note?", "Change log". */
 const NOUN_USE = "(?!\\s+(?:on|of|for|between|about|since|logs?|history|status|requests?|rate|times?|dates?|order|names?|count|size|types?|number)\\b)";
@@ -171,8 +180,53 @@ const CHANGE_CLAUSE = new RegExp(
 	"gim",
 );
 /** "Do it", "can you do that for the others": the change was named earlier in the conversation. */
-const DO_IT = new RegExp(`(?:^|[.!?;:\\n,]\\s*)(?:(?:${ASKING}|${STRINGING}),?\\s+)*do\\s+(?:it|that|this|so|the same)\\b`, "im");
-const ASKING_LEAD = new RegExp(`\\b(?:${ASKING})\\b`, "i");
+const DO_IT = new RegExp(
+	`(?:^|[.!?;:\\n,]\\s*)(?:(?:${ASKING}|${STRINGING}),?\\s+)*do\\s+(?:it|that|this|so|the same)\\b` +
+		// Not "Do this year's notes mention the fair?" or "Do that many notes mention belts?": there the word after "do" begins what is asked about.
+		`(?!['’]|\\s+(?!(?:for|to|with|in|on|again|too|now|please|pls|as|and|then|but|if|when|instead|here|there|also|first|next|later|today|tomorrow|thing)\\b)[\\p{L}\\p{N}])`,
+	"imu",
+);
+const DIRECT_LEAD = new RegExp(`\\b(?:${DIRECT})\\b`, "i");
+const WE_LEAD = new RegExp(`\\b(?:${WE_PLAN})\\b`, "i");
+const OWN_LEAD = new RegExp(`\\b(?:${OWN_PLAN})\\b`, "i");
+/** Something in the vault, named in a clause: what makes "I want to add a section on wiring" a request and "I want to move to Berlin" none. */
+const VAULT_WORD = /\b(?:notes?|files?|pages?|docs?|documents?|sections?|headings?|folders?|tags?|links?|backlinks?|tasks?|to-?dos?|checkbox(?:es)?|daily|inbox|archive|vault|frontmatter|propert(?:y|ies)|templates?|canvas|bullets?|lists?|tables?|typos?|titles?)\b|\[\[note\]\]|#[\p{L}\p{N}]|\S\/\S|\.md\b/iu;
+const PRONOUN_OBJECT = /^(?:it|this|that|these|those|them)\b/i;
+/** A clause that only says when or how something is done: "what happens when I rename a note, then move it", "how to rename a note and move it". */
+const SUBORDINATE = /\b(?:how|when|if|whether|why|after|before|once|while)\s+(?:i|we|one|to)\b|\bhow\s+(?:do|does|can|could|should|would)\s+(?:i|we|one)\b/i;
+/** How the part before a colon begins when the sentence asks about what follows it: "What is the next step after this one: Remove the old belts." */
+const QUESTION_BEFORE_COLON = /^\W*(?:what|what's|whats|when|where|who|why|how|which|is|are|does|do|did|should|was|were)\b/i;
+/** What a note or a person is reported to say, to the end of the sentence: "The page says: delete all backups." is about the page. */
+const REPORTED = /\b(?:says?|said|saying|reads?|states?|stated|wrote|writes?|written|mentions?|mentioned|recommends?|recommended|suggests?|suggested|claims?|claimed|advises?|advised)\s*(?:that\s*)?[:,]\s*[^.!?\n]*/gi;
+const LIST_ITEM = /^(?:[-*+]|\d+[.)])\s/;
+/** What stands for a quoted block in `typedWords` (read as quoted text by `asksForChange`). */
+const QUOTED_BLOCK = ' "quoted block" ';
+const ENDS_AS_QUESTION = /\?["”')\]]*$/;
+
+/**
+ * The user's own words without the blocks they only quote: the text between triple quotes (the
+ * "Ask about the selected text" command puts the selection there), fenced code and quoted lines.
+ * Such a block is a note's text, not a request: a selection that says "delete the old notes" must
+ * not make the turn one in which a change was asked for. Triple quotes are taken from the first to
+ * the last, so a `"""` inside the selection cannot end the block early.
+ */
+function typedWords(message: string): string {
+	return ownWords(message)
+		.replace(/"""[\s\S]*"""/g, QUOTED_BLOCK)
+		.replace(/(```|~~~)[\s\S]*?(?:\1|$)/g, QUOTED_BLOCK)
+		.replace(/^[ \t]*>.*$/gm, QUOTED_BLOCK);
+}
+
+/** Whether the list item that begins at `at` stands under a line that asks a question ("Which of these did I already do?"). */
+function listUnderQuestion(text: string, at: number): boolean {
+	const lines = text.slice(0, at).split("\n");
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i].trim();
+		if (!line || LIST_ITEM.test(line)) continue;
+		return ENDS_AS_QUESTION.test(line);
+	}
+	return false;
+}
 const PRODUCE_VERB = new RegExp(`^(?:${PRODUCE_VERBS})$`, "i");
 const MAKE_VERB = new RegExp(`^(?:${MAKE_VERBS})$`, "i");
 /** What follows a verb when it has an object: "tag these", "fix the links", "move Projects/Old", "tidy up". Not "update schedule and budget". */
@@ -194,12 +248,20 @@ const THING_MADE = /\b(?:a|an|another|one)\s+(?:[\p{L}\p{N}'-]+\s+){0,2}(?:note|
  * message or of a sentence, after "can you" or "please", after a comma or "and"), not the same
  * word inside a question: "How do I rename a note?" and "Should I move these?" ask for nothing to
  * be changed. Quoted text and the names of linked notes are not read as requests, and neither is
- * anything the composer attached (`ownWords`).
+ * anything the composer attached (`ownWords`) or the user quoted as a block (`typedWords`).
+ *
+ * Taking a question for a request is the costly mistake (it switches `UNASKED_WRITE_CAUTION` off),
+ * so in a sentence that ends in a question mark a verb of change counts only when the sentence is
+ * addressed to the agent ("can you find the old notes and delete them?") or opens the message
+ * ("Delete the empty notes?"): "How can I rename a note, and move it to another folder?", "Does the
+ * note say to remove the old belts, and replace them with GT3?" and "What did we decide? Move the
+ * launch to May or keep April?" ask for nothing to be changed.
  */
 export function asksForChange(message: string): boolean {
-	const text = ownWords(message)
+	const text = typedWords(message)
 		.replace(/\[\[[^\]\n]*\]\]/g, " [[note]] ")
-		.replace(/"[^"\n]*"|“[^”\n]*”|`[^`\n]*`/g, ' "quoted" ');
+		.replace(/"[^"\n]*"|“[^”\n]*”|`[^`\n]*`/g, ' "quoted" ')
+		.replace(REPORTED, ' says "quoted"');
 	if (DO_IT.test(text)) return true;
 	CHANGE_CLAUSE.lastIndex = 0;
 	let m: RegExpExecArray | null;
@@ -211,17 +273,32 @@ export function asksForChange(message: string): boolean {
 		const tail = text.slice(m.index + boundary.length + lead.length);
 		const end = tail.search(/[.!?;](?:\s|$)|\n/);
 		const rest = end < 0 ? tail : tail.slice(0, end);
-		const asked = ASKING_LEAD.test(lead);
 		const hasObject = OBJECT_START.test(next);
+		const question = end >= 0 && tail[end] === "?";
+		// The sentence the verb stands in, up to the verb.
+		const at = m.index + boundary.length;
+		const upTo = text.slice(0, at);
+		const sentenceStart = Math.max(upTo.lastIndexOf(". "), upTo.lastIndexOf("! "), upTo.lastIndexOf("? "), upTo.lastIndexOf(";"), upTo.lastIndexOf("\n")) + 1;
+		const before = text.slice(sentenceStart, at + lead.length);
+		// The clause the verb governs: to the next comma or dash.
+		const clause = rest.split(/,|\s[–—-]\s/)[0];
 		let instruction: boolean;
-		if (asked) instruction = true;
+		if (DIRECT_LEAD.test(lead)) instruction = true;
+		else if (OWN_LEAD.test(lead)) instruction = VAULT_WORD.test(clause);
+		else if (WE_LEAD.test(lead)) instruction = PRONOUN_OBJECT.test(next) || VAULT_WORD.test(clause);
 		// "Mark said…" opens a sentence as a name.
 		else if (/^mark$/i.test(verb)) instruction = hasObject && !/^\p{Lu}/u.test(next);
+		// In a question the verb is what is asked about, unless the question is put to the agent or is the whole message's opening.
+		else if (question) instruction = hasObject && (upTo.trim() === "" || DIRECT_LEAD.test(before));
+		// Items of a list under a question are what is asked about ("Which of these did I already do?").
+		else if (LIST_ITEM.test(lead) && listUnderQuestion(text, at)) instruction = false;
 		// A sentence that opens with the verb and is not a question is an instruction ("Fix typos in my daily note.").
-		else if ((boundary === "" || /^[.!?;:\n]/.test(boundary)) && !(end >= 0 && tail[end] === "?")) instruction = true;
-		// After a comma or "and", or in a sentence that ends in a question mark, the word is as often a noun
-		// ("the wiring, update schedule and budget?", "Correct answer for question 3?"): it needs an object.
-		else instruction = hasObject;
+		else if (boundary === "" || /^[.!?;\n]/.test(boundary)) instruction = true;
+		// After a colon too, unless what stands before the colon asks about it.
+		else if (boundary.startsWith(":")) instruction = !QUESTION_BEFORE_COLON.test(before);
+		// After a comma or "and" the word is as often a noun ("the wiring, update schedule and budget"): it needs
+		// an object, and a clause that says when or how ("when I rename a note, then move it") is no instruction.
+		else instruction = hasObject && !SUBORDINATE.test(before);
 		if (!instruction) continue;
 		const makes = MAKE_VERB.test(verb);
 		if (!makes && !PRODUCE_VERB.test(verb)) return true;
@@ -240,9 +317,12 @@ export function asksForChange(message: string): boolean {
  * change ("go on", a prompt sent by a command) is not judged: no warning.
  */
 export function asksOnlyAQuestion(message: string): boolean {
-	const text = ownWords(message).trim();
-	if (text.length < 3 || text.startsWith("/")) return false;
-	const asks = ASKS_TO_BE_TOLD.test(text) || /\?["”')\]]*\s*$/m.test(text);
+	if (ownWords(message).trim().startsWith("/")) return false;
+	// What the user quoted as a block (a selection, code, a quoted line) neither asks nor requests.
+	const text = typedWords(message).trim();
+	if (text.length < 3) return false;
+	// The question may stand after a quoted block ("About this selected text: … explain this"), not only at the start.
+	const asks = text.split(QUOTED_BLOCK).some((part) => ASKS_TO_BE_TOLD.test(part)) || /\?["”')\]]*\s*$/m.test(text);
 	return asks && !asksForChange(message);
 }
 
@@ -570,6 +650,13 @@ export interface AgentDeps {
 	readConventions?: () => Promise<string | null>;
 	/** Cached one-line gist of a note, for the outline. */
 	gist?: (path: string) => string | undefined;
+	/**
+	 * Which part of the vault the agent may see, as text that changes when that changes (the
+	 * excluded folders). A conversation's system prompt is written again when it does: the outline
+	 * written before a folder was excluded names that folder's notes and gives their gists, and
+	 * kept as it was it would be sent again with every later message.
+	 */
+	scope?: () => string;
 	/** Text of an attachment (PDF, text file) for read_file. */
 	readAttachmentText?: ToolContext["readAttachmentText"];
 	/** Today's daily note, per the user's daily-notes settings (re-read on every run). */
@@ -713,7 +800,7 @@ export class Agent {
 	 * notes have come or gone.
 	 */
 	private frozenSystem(conversation: Conversation, cfg: AgentConfig, tools: ToolDefinition[], conventions: string | null, written?: string): { system: string; drift: string } {
-		const key = JSON.stringify([cfg.numCtx, cfg.answerLanguage ?? "", cfg.extraSystemPrompt, conventions ?? "", this.deps.gist !== undefined, tools.map((t) => t.name)]);
+		const key = JSON.stringify([cfg.numCtx, cfg.answerLanguage ?? "", cfg.extraSystemPrompt, conventions ?? "", this.deps.gist !== undefined, tools.map((t) => t.name), this.deps.scope?.() ?? ""]);
 		const paths = this.deps.vault.listNotes().map((n) => n.path);
 		const kept = conversation.frozen;
 		if (kept && kept.key === key && conversation.messages.length > 0) {

@@ -341,7 +341,20 @@ const PASSAGE_CUT = "\n[… section truncated; read_section for the rest]";
 export function clipPassage(text: string, cap: number): string {
 	if (text.length <= cap) return text;
 	const line = text.lastIndexOf("\n", cap);
-	return text.slice(0, line >= cap / 2 ? line : cap).trimEnd() + PASSAGE_CUT;
+	let cut = line >= cap / 2 ? line : cap;
+	if (cut === cap) {
+		// The cut would fall inside a line. When that line is a table row, the passage ends on the row
+		// before it however short that leaves it; when it is the very first row (a table wider than
+		// what fits), on a whole cell.
+		const lineEnd = text.indexOf("\n", cap);
+		const cutLine = text.slice(line + 1, lineEnd < 0 ? text.length : lineEnd);
+		if (cutLine.includes("|")) {
+			const bar = text.lastIndexOf("|", cap - 1);
+			if (line > 0) cut = line;
+			else if (bar > 0) cut = bar + 1;
+		}
+	}
+	return text.slice(0, cut).trimEnd() + PASSAGE_CUT;
 }
 
 /** A table with fewer rows than this is read without help. */
@@ -354,6 +367,8 @@ function tableCells(row: string): string[] {
 	const kept = "\u0000";
 	return row
 		.trim()
+		// The marks of a callout or a quote the table stands in.
+		.replace(/^(?:>\s*)+/, "")
 		.replace(/\\\|/g, kept)
 		.replace(/^\|/, "")
 		.replace(/\|$/, "")
@@ -369,16 +384,35 @@ function tableCells(row: string): string[] {
  * slip between, and a value's column has to be counted out. The words that tell rows apart are
  * the question's words that the heading row does not have and at most three rows do. Nothing is
  * added for a short table, when no row or too many rows have such a word, or for a row whose
- * cells do not match the heading. Only the first table of the passage is looked at.
+ * cells do not match the heading. Every table of the passage is looked at on its own, and when
+ * the passage holds more than one, the rows are stated under the heading row of their table: a
+ * row of the first table must not be read as the answer from the second.
  */
 export function tableRowsFor(text: string, query: string): string {
 	const lines = text.split("\n");
-	const at = tableStart(lines);
-	if (at < 0) return "";
+	const tables: { at: number; stated: string[] }[] = [];
+	for (let at = tableStart(lines); at >= 0; at = tableStart(lines, at + 2)) tables.push({ at, stated: statedRows(lines, at, query) });
+	const withRows = tables.filter((t) => t.stated.length > 0);
+	if (withRows.length === 0) return "";
+	if (tables.length === 1) {
+		const stated = withRows[0].stated;
+		return `\n[The row${stated.length === 1 ? "" : "s"} of this table with the question's words, each value after its column heading:\n${stated.join("\n")}]`;
+	}
+	return withRows
+		.map((t) => `\n[The row${t.stated.length === 1 ? "" : "s"} of the table headed "${tableCells(lines[t.at]).join(" | ")}" with the question's words, each value after its column heading:\n${t.stated.join("\n")}]`)
+		.join("");
+}
+
+/** The rows of the table whose heading row is line `at` that the question's words single out, each written out (see `tableRowsFor`). */
+function statedRows(lines: string[], at: number, query: string): string[] {
 	const names = tableCells(lines[at]);
 	const rows: string[] = [];
-	for (let i = at + 2; i < lines.length && lines[i].includes("|"); i++) rows.push(lines[i]);
-	if (rows.length < TABLE_AID_MIN_ROWS || names.length < 2) return "";
+	for (let i = at + 2; i < lines.length && lines[i].includes("|"); i++) {
+		// The heading row of a table that follows without an empty line is not a row of this one.
+		if (i + 1 < lines.length && tableStart([lines[i], lines[i + 1]]) === 0) break;
+		rows.push(lines[i]);
+	}
+	if (rows.length < TABLE_AID_MIN_ROWS || names.length < 2) return [];
 	const inHeading = new Set(tokenize(lines[at]));
 	const terms = queryTerms(query).filter((t) => !inHeading.has(t));
 	const words = rows.map((r) => new Set(tokenize(r)));
@@ -386,19 +420,18 @@ export function tableRowsFor(text: string, query: string): string {
 		const n = words.reduce((sum, w) => sum + (w.has(t) ? 1 : 0), 0);
 		return n > 0 && n <= TABLE_AID_MAX_ROWS;
 	});
-	if (telling.length === 0) return "";
+	if (telling.length === 0) return [];
 	const score = words.map((w) => telling.reduce((sum, t) => sum + (w.has(t) ? 1 : 0), 0));
 	const best = Math.max(...score);
 	const picked = rows.filter((_, i) => score[i] === best);
-	if (picked.length > TABLE_AID_MAX_ROWS) return "";
+	if (picked.length > TABLE_AID_MAX_ROWS) return [];
 	const stated: string[] = [];
 	for (const row of picked) {
 		const values = tableCells(row);
 		if (values.length !== names.length) continue;
 		stated.push(`- ${names.map((name, k) => `${name || `column ${k + 1}`}: ${values[k] || "(empty)"}`).join("; ")}`);
 	}
-	if (stated.length === 0) return "";
-	return `\n[The row${stated.length === 1 ? "" : "s"} of this table with the question's words, each value after its column heading:\n${stated.join("\n")}]`;
+	return stated;
 }
 
 async function requestApproval(ctx: ToolContext, req: ApprovalRequest): Promise<void> {

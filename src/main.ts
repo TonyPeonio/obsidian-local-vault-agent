@@ -236,6 +236,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			configDir: this.app.vault.configDir,
 			undo: this.undo,
 			gist: (path) => (this.settings.gists ? this.gists.get(path) : undefined),
+			scope: () => this.settings.excludedFolders.join("\n"),
 			readAttachmentText: (path) => this.readAttachmentText(path),
 			extraTools: () => this.extraTools(),
 			lectures: () => this.lectureCompanion() ?? undefined,
