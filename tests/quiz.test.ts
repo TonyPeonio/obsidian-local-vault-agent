@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { QuizEngine, QuizSession, extractJson, isNonAnswer, noteDate, parseGrade, parseQuestions, parseQuizRequest, parseSince, questionMarkdown, renderReview, resultMarkdown, reviewNotePath, selectQuizNotes } from "../src/quiz";
 import type { LectureInfo, NoteInfo } from "../src/types";
+import { BusyGate } from "../src/busy";
+import type { ChatRequest, OllamaClient } from "../src/ollama";
 import { FakeOllama } from "./fakes";
 
 // Wednesday 2026-11-18, noon local time.
@@ -148,5 +150,33 @@ describe("QuizEngine", () => {
 		expect(await engine.grade(qs[0], "0.05", LECTURE)).toEqual({ verdict: "correct", feedback: "Exactly." });
 		expect(await engine.grade(qs[0], "skip", LECTURE)).toEqual({ verdict: "wrong", feedback: "No answer given." });
 		expect(ollama.requests).toHaveLength(2);
+	});
+
+	it("hands the stop signal to both model calls, so Stop ends question writing and grading", async () => {
+		/** A server that answers only when it is stopped: with the error a cancelled request gives. */
+		const signals: (AbortSignal | undefined)[] = [];
+		const client = {
+			chat: (req: ChatRequest) =>
+				new Promise<never>((_resolve, reject) => {
+					signals.push(req.signal);
+					req.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+				}),
+		} as unknown as OllamaClient;
+		const engine = new QuizEngine(client, () => ({ model: "m", numCtx: 8192, keepAlive: "1m" }));
+		const gate = new BusyGate();
+
+		const writing = gate.acquire("quiz")!;
+		const questions = engine.questions("ML", [{ path: "L.md", content: LECTURE }], 5, writing.signal);
+		expect(gate.stop()).toBe(true);
+		await expect(questions).rejects.toMatchObject({ name: "AbortError" });
+		writing.release();
+
+		const grading = gate.acquire("quiz")!;
+		const q = { question: "Default contamination?", answer: "0.05", source: "L.md", quote: "The contamination parameter defaults to 0.05" };
+		const grade = engine.grade(q, "0.5", LECTURE, grading.signal);
+		grading.stop();
+		await expect(grade).rejects.toMatchObject({ name: "AbortError" });
+		// Each call got the signal of the lease it ran under, and was not retried after the stop.
+		expect(signals).toEqual([writing.signal, grading.signal]);
 	});
 });
