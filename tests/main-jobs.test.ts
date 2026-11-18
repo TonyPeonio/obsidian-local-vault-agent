@@ -24,6 +24,8 @@ function plugin(run: (signal?: AbortSignal) => Promise<Change[]>) {
 		saveSettings: async () => void p.saves++,
 		notifyError: (message: string) => void p.errors.push(message),
 		notifyPending: () => undefined,
+		// The daily notes folder is not excluded here; tests/excluded-daily.test.ts covers the case that it is.
+		dailyFolderExcluded: () => false,
 		runDailyJob: run,
 		runDigestJob: run,
 		settleJob: proto.settleJob,

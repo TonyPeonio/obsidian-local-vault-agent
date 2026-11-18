@@ -69,8 +69,13 @@ export function dueJobs(now: Date, s: ScheduleSettings, lastRuns: Partial<Record
 	return out;
 }
 
-/** How a scheduled run ended: it produced its changes (possibly none), the user stopped it, or it threw. */
-export type JobOutcome = "done" | "stopped" | "failed";
+/**
+ * How a scheduled run ended: it produced its changes (possibly none), the user stopped it, it
+ * threw, or it was not started because what it works on is out of bounds (the daily notes folder
+ * is excluded). Only a failure is tried again; a skipped run is recorded like a finished one, or it
+ * would be due again at every check.
+ */
+export type JobOutcome = "done" | "stopped" | "failed" | "skipped";
 
 /** A job that failed and is waiting to be tried again (kept in memory: a restart tries again at once). */
 export interface JobRetry {

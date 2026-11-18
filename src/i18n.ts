@@ -251,6 +251,7 @@ const en = {
 	"job.failed": "{job} failed: {error}",
 	"job.failedRetry": "{job} failed ({error}). It will be tried again in {minutes} minutes.",
 	"job.failedGaveUp": "{job} failed {n} times in a row ({error}). It will run again at its next scheduled time; you can also run it from the command palette.",
+	"job.excludedDaily": "{job} did not run: the daily notes folder is excluded (Settings → Local Vault Agent → Excluded folders). It will not be tried again before its next scheduled time.",
 	"job.statusBar": "Scheduled job running",
 	"job.statusBar.label": "{job} is running: click to stop it",
 
@@ -316,6 +317,7 @@ const en = {
 	"notice.openNote": "Open a markdown note first.",
 	"notice.selectText": "Select some text in a note first.",
 	"notice.excludedNote": "This note is in an excluded folder (Settings → Local Vault Agent → Excluded folders), so nothing was done with it.",
+	"notice.excludedDaily": "The daily notes folder is excluded (Settings → Local Vault Agent → Excluded folders), so nothing was done with the daily notes.",
 	"notice.nothingUndo": "Nothing to undo.",
 	"notice.wait": "Wait for the current reply to finish, or stop it, first.",
 	"notice.image.noVision": "Pictures need a vision model. Set one under Settings → Local Vault Agent → Vision model (qwen3.5 can see, or use qwen2.5vl:7b).",

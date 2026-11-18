@@ -589,6 +589,12 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		return true;
 	}
 
+	/** Whether a folder given as the daily notes folder is an excluded folder or inside one. The vault root ("") never is. */
+	private dailyFolderExcluded(folder: string): boolean {
+		const f = folder.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+		return f !== "" && !commandAllowedOn(`${f}/`, this.settings.excludedFolders);
+	}
+
 	/** Puts the selected text into the message box as a quotation to ask about (command "Ask about the selected text"). */
 	async askAboutSelection(selection: string, path: string | undefined): Promise<void> {
 		if (selection && path !== undefined && this.stopsOnExcluded(path)) return;
@@ -748,6 +754,13 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		modal.open();
 		const opts = await modal.result;
 		if (!opts) return;
+		// The rule of every command (`stopsOnExcluded`): aimed at an excluded folder it does nothing,
+		// so the folder's name is not sent to the model, and a notice says why. Asked of the folder
+		// the dialog was confirmed with, which the user may have changed there.
+		if (this.dailyFolderExcluded(opts.folder)) {
+			new Notice(t("notice.excludedDaily"), 8000);
+			return;
+		}
 		s.dailyInboxHeading = opts.heading;
 		s.dailyTopicsFolder = opts.destination;
 		s.dailyMoveItems = opts.move;
@@ -1225,6 +1238,13 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			if (manual) new Notice("A scheduled job is already running.");
 			return;
 		}
+		// The rule of every command: aimed at an excluded folder the job does nothing (no model call,
+		// the folder is not named to the model) and says so. Nothing was tried, so nothing failed: a
+		// scheduled run counts as this time's run and is not retried through the night; a run by hand
+		// leaves the schedule as it was.
+		// Asked here of the folder as the plugin last read it, before anything is announced, and again
+		// inside the job, which reads the Daily Notes plugin's folder afresh (`runDailyJob`).
+		if (job === "daily" && this.dailyFolderExcluded(this.dailyFolder)) return this.skipExcludedDaily(manual);
 		// The model does one thing at a time: never a job on top of a chat turn, nor the other way round.
 		const lease = this.busy.acquire("job", JOB_NAMES[job]);
 		if (!lease) {
@@ -1239,6 +1259,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			const changes = job === "daily" ? await this.runDailyJob(lease.signal) : await this.runDigestJob(lease.signal);
 			// A run that was stopped is half a run: nothing of it is queued.
 			if (lease.stopped) outcome = "stopped";
+			else if (changes === null) outcome = "skipped";
 			else {
 				outcome = "done";
 				const added = this.pending.add(job, changes);
@@ -1254,7 +1275,23 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			lease.release();
 			this.jobRunning = false;
 		}
+		if (outcome === "skipped") return this.skipExcludedDaily(manual);
 		await this.settleJob(job, manual, outcome, error);
+	}
+
+	/**
+	 * The nightly job found the daily notes folder excluded and did nothing. Run by hand: a notice,
+	 * and the schedule is left as it was. Scheduled: a notice that stays until it is clicked (such
+	 * runs happen when nobody is looking), and the run is recorded, so it is not due again at the
+	 * next check a minute later nor retried like a failure.
+	 */
+	private async skipExcludedDaily(manual: boolean): Promise<void> {
+		if (manual) {
+			new Notice(t("notice.excludedDaily"), 8000);
+			return;
+		}
+		new Notice(t("job.excludedDaily", { job: JOB_NAMES.daily }), 0);
+		await this.settleJob("daily", false, "skipped", "");
 	}
 
 	/** Stops the scheduled job that is running, if one is. Returns whether there was one. */
@@ -1308,8 +1345,11 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		else if (plan.retry?.failures === 1) this.notifyError(t("job.failedRetry", { job: name, error, minutes: Math.round((plan.retry.retryAt - Date.now()) / 60_000) }));
 	}
 
+	/** The nightly job's changes, or null when the daily notes folder is excluded: then nothing was sent to the model. */
 	private async runDailyJob(signal?: AbortSignal) {
 		await this.loadDailyNoteSettings();
+		// The Daily Notes plugin's folder may have changed since `runJob` looked.
+		if (this.dailyFolderExcluded(this.dailyFolder)) return null;
 		const since = localDate(new Date(Date.now() - 2 * 86_400_000));
 		const overlay = new OverlayVault(this.vault, dailyNotesBefore(this.dailyFolder, since));
 		const agent = new Agent({
