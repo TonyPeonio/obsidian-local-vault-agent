@@ -152,12 +152,6 @@ function hashText(text: string): string {
 	return (h >>> 0).toString(36);
 }
 
-function truncate(text: string, max: number, offset = 0): { text: string; truncated: boolean; total: number } {
-	const total = text.length;
-	const slice = text.slice(offset, offset + max);
-	return { text: slice, truncated: offset + max < total, total };
-}
-
 /*
  * The agent replaces the end of any result longer than maxResultChars + 500 with a generic
  * notice, which cuts off whatever a tool put last: a "call again with offset=N" marker, a
@@ -203,6 +197,55 @@ function nameList(items: string[], maxItems: number, maxChars: number): string {
 	}
 	return kept.join(", ") + (kept.length < items.length ? `, … (+${items.length - kept.length} more)` : "");
 }
+
+/** How many of the leading `rows` fit in `budget` characters when joined with a separator of `sep` characters. */
+function fitCount(rows: string[], budget: number, sep = 1): number {
+	let used = 0;
+	for (let i = 0; i < rows.length; i++) {
+		used += rows[i].length + (i ? sep : 0);
+		if (used > budget) return i;
+	}
+	return rows.length;
+}
+
+/**
+ * A list result: `head`, the rows that fit in `max` characters, and how many of `total` are
+ * not shown. `rows` holds the first `limit` entries; the rest were already left out by the limit.
+ */
+function listWithin(head: string, rows: string[], total: number, max: number): string {
+	const worst = `\n…and ${total} more. Narrow the filter or raise the limit.`;
+	const keep = Math.max(1, fitCount(rows, max - head.length - worst.length));
+	const more = total > keep ? `\n…and ${total - keep} more. Narrow the filter${keep < rows.length ? "" : " or raise the limit"}.` : "";
+	return `${head}${rows.slice(0, keep).join("\n")}${more}`;
+}
+
+/** Rows grouped under the note they belong to: "path\n  row\n  row". */
+interface RowBlock {
+	path: string;
+	rows: string[];
+}
+
+/** As many whole rows of `blocks` as fit in `budget` characters; a path line is never shown without a row. */
+function fitBlocks(blocks: RowBlock[], budget: number): { text: string; rows: number; chars: number } {
+	const out: string[] = [];
+	let chars = 0;
+	let rows = 0;
+	outer: for (const b of blocks) {
+		for (let i = 0; i < b.rows.length; i++) {
+			const add = (i === 0 ? b.path.length + 1 : 0) + b.rows[i].length + 1;
+			if (chars + add > budget) break outer;
+			if (i === 0) out.push(b.path);
+			out.push(b.rows[i]);
+			chars += add;
+			rows++;
+		}
+	}
+	return { text: out.join("\n"), rows, chars };
+}
+
+/** A passage is not shown shorter than this unless it is shorter itself; lower-ranked ones are left out instead. */
+const MIN_PASSAGE_CHARS = 600;
+const PASSAGE_CUT = "\n[… section truncated; read_section for the rest]";
 
 async function requestApproval(ctx: ToolContext, req: ApprovalRequest): Promise<void> {
 	const decision = await ctx.approve(req);
@@ -273,14 +316,9 @@ export const searchPassages: ToolDefinition = {
 			const hits = await ctx.search(query, limit);
 			if (hits.length === 0) return `No passages matched "${query}". Try other words, or list_notes.`;
 			const rows = hits.map((h, i) => `--- [${i + 1}] ${h.path}${h.heading ? ` › ${h.heading}` : ""}\n${h.snippet}`);
-			return `The semantic index is not available, so these are keyword matches with short snippets (use read_note or read_section for the text):\n${rows.join("\n")}`;
+			const head = "The semantic index is not available, so these are keyword matches with short snippets (use read_note or read_section for the text):\n";
+			return head + rows.slice(0, Math.max(1, fitCount(rows, ctx.maxResultChars - head.length))).join("\n");
 		}
-		const maxEach = Math.max(600, Math.floor(ctx.maxResultChars / passages.length));
-		const rows = passages.map((p, i) => {
-			const text = p.text.length > maxEach ? p.text.slice(0, maxEach) + "\n[… section truncated; read_section for the rest]" : p.text;
-			const where = p.crumb ?? p.heading;
-			return `--- [${i + 1}] ${p.path}${where ? ` › ${where}` : ""} (score ${p.score.toFixed(2)})\n${text}`;
-		});
 		// When nothing is close in meaning and no passage has the question's words, say so: six
 		// plausible-looking passages otherwise read as "the answer is in here somewhere".
 		const best = Math.max(...passages.map((p) => p.score));
@@ -288,7 +326,36 @@ export const searchPassages: ToolDefinition = {
 		const note = weak
 			? `\nNone of these is a close match (best score ${best.toFixed(2)}): the vault may have nothing on this. If no passage answers the question, say the notes do not cover it rather than guessing; try grep_vault with an exact word if there is one.`
 			: "";
-		return `${passages.length} passage${passages.length === 1 ? "" : "s"}, best first. Each is one section of a note; cite the note path as a wikilink.${note}\n${rows.join("\n")}`;
+		const intro = (n: number, left: number) =>
+			`${n} passage${n === 1 ? "" : "s"}, best first${left ? ` (${left} lower-ranked left out to fit; ask again with a narrower query for those)` : ""}. Each is one section of a note; cite the note path as a wikilink.${note}`;
+		const heads = passages.map((p, i) => {
+			const where = p.crumb ?? p.heading;
+			return `\n--- [${i + 1}] ${p.path}${where ? ` › ${where}` : ""} (score ${p.score.toFixed(2)})\n`;
+		});
+		// The passages share what the result can hold. Ranked best first, so when they cannot all
+		// have a useful length it is the last ones that are left out, and the first line says so.
+		const room = ctx.maxResultChars - intro(passages.length, passages.length).length;
+		let shown = 0;
+		let fixed = 0;
+		let least = 0;
+		for (let i = 0; i < passages.length; i++) {
+			const need = heads[i].length + PASSAGE_CUT.length;
+			const text = Math.min(passages[i].text.length, MIN_PASSAGE_CHARS);
+			if (shown > 0 && fixed + need + least + text > room) break;
+			fixed += need;
+			least += text;
+			shown++;
+		}
+		// Short passages are shown whole; the long ones split what the short ones leave.
+		const caps = new Array<number>(shown).fill(0);
+		let left = room - fixed;
+		const byLength = caps.map((_, i) => i).sort((a, b) => passages[a].text.length - passages[b].text.length);
+		byLength.forEach((i, k) => {
+			caps[i] = Math.min(passages[i].text.length, Math.max(200, Math.floor(left / (shown - k))));
+			left -= caps[i];
+		});
+		const rows = caps.map((cap, i) => heads[i] + (passages[i].text.length > cap ? passages[i].text.slice(0, cap) + PASSAGE_CUT : passages[i].text));
+		return intro(shown, passages.length - shown) + rows.join("");
 	},
 };
 
@@ -379,13 +446,14 @@ export const grepVault: ToolDefinition = {
 		const texts = await Promise.all(notes.map((n) => ctx.vault.read(n.path)));
 
 		const scan = (test: (line: string) => boolean) => {
-			const blocks: string[] = [];
-			let shown = 0;
+			/** One matching line with its context lines, for the first `limit` matches. */
+			const hits: { path: string; rows: string[] }[] = [];
 			let total = 0;
+			/** Notes with at least one matching line, shown or not. */
 			let notesHit = 0;
 			notes.forEach((n, k) => {
 				const lines = texts[k].split("\n");
-				const rows: string[] = [];
+				let inNote = 0;
 				let heading = "";
 				let inFence = false;
 				for (let i = 0; i < lines.length; i++) {
@@ -394,17 +462,15 @@ export const grepVault: ToolDefinition = {
 					if (h) heading = `${h[1]} ${h[2].trim()}`;
 					if (!test(lines[i])) continue;
 					total++;
-					if (shown >= limit) continue;
-					shown++;
-					rows.push(`${n.path}:${i + 1}${heading && !h ? ` [${heading}]` : ""}: ${lines[i]}`);
+					inNote++;
+					if (hits.length >= limit) continue;
+					const rows = [`${n.path}:${i + 1}${heading && !h ? ` [${heading}]` : ""}: ${lines[i]}`];
 					for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) rows.push(`${n.path}:${j + 1}- ${lines[j]}`);
+					hits.push({ path: n.path, rows });
 				}
-				if (rows.length) {
-					notesHit++;
-					blocks.push(rows.join("\n"));
-				}
+				if (inNote) notesHit++;
 			});
-			return { blocks, shown, total, notesHit };
+			return { hits, total, notesHit };
 		};
 		const literal = (p: string) => {
 			const lower = p.toLowerCase();
@@ -449,15 +515,32 @@ export const grepVault: ToolDefinition = {
 			}
 		}
 		if (result.total === 0) return `${note}No note contains "${rawPattern}"${folder ? ` under ${folder}/` : ""}.`;
-		const { blocks, shown, total, notesHit } = result;
-		const more = total > shown ? `\n…${total - shown} more matching lines not shown; narrow with folder or raise the limit.` : "";
+		const { hits, total, notesHit } = result;
+		const head = `${note}${total} matching line${total === 1 ? "" : "s"} in ${notesHit} note${notesHit === 1 ? "" : "s"}:\n`;
 		// Many matches with context usually means "which of these sections also has X": that is
 		// one list_sections call, not a reading tour.
 		const hint =
 			total >= 8 && context > 0
 				? `\nTo know which of these sections also contain (or lack) another text, call list_sections({containing: [${JSON.stringify(rawPattern)}, "<other text>"]}) once instead of reading them.`
 				: "";
-		return `${note}${total} matching line${total === 1 ? "" : "s"} in ${notesHit} note${notesHit === 1 ? "" : "s"}:\n${blocks.join("\n--\n")}${more}${hint}`;
+		const more = (n: number, full: boolean) => (n > 0 ? `\n…${n} more matching lines not shown; narrow with folder or ${full ? "a more specific pattern" : "raise the limit"}.` : "");
+		// Whole matches (a line with its context) while they fit, so the count of what is not
+		// shown and the hint are never cut off by a result that is too long.
+		const budget = ctx.maxResultChars - head.length - hint.length - more(total, true).length;
+		const out: string[] = [];
+		let used = 0;
+		for (const hit of hits) {
+			const sep = out.length === 0 ? "" : hit.path === hits[out.length - 1].path ? "\n" : "\n--\n";
+			let text = hit.rows.join("\n");
+			if (used + sep.length + text.length > budget) {
+				if (out.length > 0) break;
+				// Not even one match with its context fits: the match and the context lines that do.
+				text = hit.rows.slice(0, Math.max(1, fitCount(hit.rows, budget))).join("\n");
+			}
+			out.push(sep + text);
+			used += sep.length + text.length;
+		}
+		return `${head}${out.join("")}${more(total - out.length, out.length < hits.length)}${hint}`;
 	},
 };
 
@@ -539,7 +622,7 @@ export const listSections: ToolDefinition = {
 		if (folder) notes = notes.filter((n) => n.path.toLowerCase().startsWith(folder + "/"));
 		notes.sort((a, b) => a.path.localeCompare(b.path));
 		const lowers = needles.map((n) => n.toLowerCase());
-		const blocks: string[] = [];
+		const blocks: RowBlock[] = [];
 		let shown = 0;
 		let total = 0;
 		/** Sections that matched the heading/level filter before the `containing` test. */
@@ -549,7 +632,7 @@ export const listSections: ToolDefinition = {
 		/** `path › heading` of those sections, listed again at the end so they can be copied as edit targets. */
 		const marked: string[] = [];
 		/** Notes whose rows have only some of the texts (grouped mode). */
-		const someBlocks: string[] = [];
+		const someBlocks: RowBlock[] = [];
 		for (const n of notes) {
 			const lines = (await ctx.vault.read(n.path)).split("\n");
 			// A section runs to the next heading of the same or a higher level, so nested
@@ -594,6 +677,9 @@ export const listSections: ToolDefinition = {
 				candidates++;
 				if (onlyMatching && !flags.some(Boolean)) continue;
 				total++;
+				// Counted before the limit, so the two group counts add up to the total whatever is listed.
+				const hasAll = needles.length > 1 && flags.every(Boolean);
+				if (hasAll) withAll++;
 				if (shown >= limit) continue;
 				shown++;
 				let row = `  ${"#".repeat(s.lvl)} ${s.heading}`;
@@ -606,17 +692,15 @@ export const listSections: ToolDefinition = {
 				// Only yes/no per text: quoting the matching line here made the model paste the whole
 				// row into edit_notes' line_contains. The needle itself is what line_contains needs.
 				if (needles.length) row += `${wantHeading ? " |" : ":"} ${needles.map((t, i) => `${t} ${flags[i] ? "yes" : "no"}`).join(", ")}`;
-				const hasAll = needles.length > 1 && flags.every(Boolean);
 				if (hasAll) {
 					row += " → all";
-					withAll++;
 					if (marked.length < 80) marked.push(`${n.path} › ${s.heading}`);
 				}
 				if (grouped && !hasAll) someRows.push(row);
 				else rows.push(row);
 			}
-			if (rows.length) blocks.push(`${n.path}\n${rows.join("\n")}`);
-			if (someRows.length) someBlocks.push(`${n.path}\n${someRows.join("\n")}`);
+			if (rows.length) blocks.push({ path: n.path, rows });
+			if (someRows.length) someBlocks.push({ path: n.path, rows: someRows });
 		}
 		if (total === 0) {
 			const where = folder ? ` under ${folder}/` : "";
@@ -628,23 +712,43 @@ export const listSections: ToolDefinition = {
 			const what = wantHeading ? `No section headed "${wantHeading}"` : "No section";
 			return `${what}${onlyMatching ? " contains any of " + texts : wantHeading ? "" : "s found"}${where}.`;
 		}
-		const more = total > shown ? `\n…${total - shown} more sections not shown; narrow with folder/path or raise the limit.` : "";
 		const legend = wantHeading ? "(non-empty lines, characters, first line)" : needles.length > 1 ? '(flags per text, in order; "→ all" marks a section that has every text)' : "(flags per text, in order)";
-		// The flags are the answer: a model that re-reads every section to "check" spends the
-		// whole turn reading, so say what to do with the marked ones.
-		const verdict =
-			needles.length > 1
-				? `\n${withAll} section${withAll === 1 ? "" : "s"} marked "→ all" ${withAll === 1 ? "has" : "have"} every text. These flags are exact: act on the marked sections directly (for example edit_notes with path, heading and line_contains set to the text you searched for), without reading them first, and leave the unmarked sections alone.${
-						marked.length ? `\nMarked sections (path › heading):\n${marked.join("\n")}${withAll > marked.length ? `\n…and ${withAll - marked.length} more` : ""}` : ""
-					}`
-				: "";
-		if (needles.length > 1 && !wantHeading) {
-			// Two groups, so "25 sections" can never be read as "25 sections with both".
-			const every = `Sections with EVERY text (${withAll}):\n${blocks.length ? blocks.join("\n") : "(none)"}`;
-			const partial = `Sections with only SOME of the texts (${total - withAll}) — leave these alone when the rule is "has both":\n${someBlocks.length ? someBlocks.join("\n") : "(none)"}`;
-			return `${total} section${total === 1 ? "" : "s"} ${legend}:\n${every}\n${partial}${more}${verdict}`;
-		}
-		return `${total} section${total === 1 ? "" : "s"} ${legend}:\n${blocks.join("\n")}${more}${verdict}`;
+		/** The result with at most `rowChars` characters of section rows and `markedChars` of the marked list. */
+		const render = (rowChars: number, markedChars: number): { text: string; rowsUsed: number } => {
+			const keep = fitCount(marked, markedChars);
+			// The flags are the answer: a model that re-reads every section to "check" spends the
+			// whole turn reading, so say what to do with the marked ones.
+			const verdict =
+				needles.length > 1
+					? `\n${withAll} section${withAll === 1 ? "" : "s"} marked "→ all" ${withAll === 1 ? "has" : "have"} every text. These flags are exact: act on the marked sections directly (for example edit_notes with path, heading and line_contains set to the text you searched for), without reading them first, and leave the unmarked sections alone.${
+							keep ? `\nMarked sections (path › heading):\n${marked.slice(0, keep).join("\n")}${withAll > keep ? `\n…and ${withAll - keep} more` : ""}` : ""
+						}`
+					: "";
+			const first = fitBlocks(blocks, rowChars);
+			const second = fitBlocks(someBlocks, rowChars - first.chars);
+			const listed = first.rows + second.rows;
+			const more = total > listed ? `\n…${total - listed} more sections not shown; narrow with folder/path${total > shown ? " or raise the limit" : ""}.` : "";
+			const group = (fit: { text: string; rows: number }, n: number) => (fit.rows ? fit.text : n ? "(not listed, to fit)" : "(none)");
+			const part = (fit: { rows: number }, n: number) => (fit.rows > 0 && fit.rows < n ? `, the first ${fit.rows} listed` : "");
+			let body: string;
+			if (needles.length > 1 && !wantHeading) {
+				// Two groups, so "25 sections" can never be read as "25 sections with both".
+				const every = `Sections with EVERY text (${withAll}${part(first, withAll)}):\n${group(first, withAll)}`;
+				const partial = `Sections with only SOME of the texts (${total - withAll}${part(second, total - withAll)}) — leave these alone when the rule is "has both":\n${group(second, total - withAll)}`;
+				body = `${every}\n${partial}`;
+			} else body = first.text;
+			return { text: `${total} section${total === 1 ? "" : "s"} ${legend}:\n${body}${more}${verdict}`, rowsUsed: first.chars };
+		};
+		const whole = render(Infinity, Infinity).text;
+		if (whole.length <= ctx.maxResultChars) return whole;
+		// Too much for one result. What is said last (how many are not shown, the verdict) must
+		// survive, so the rows are cut instead: the sections with every text first, then the
+		// copyable list of them, and the "only some" group gets what is left.
+		const free = ctx.maxResultChars - render(0, 0).text.length - 80;
+		const markedChars = marked.reduce((n, m) => n + m.length + 1, 0);
+		const forRows = free - Math.min(markedChars, Math.floor(free / 4));
+		const forMarked = Math.min(markedChars, free - Math.min(forRows, render(forRows, 0).rowsUsed));
+		return render(free - forMarked, forMarked).text;
 	},
 };
 
@@ -800,8 +904,7 @@ export const listNotes: ToolDefinition = {
 		const total = notes.length;
 		const rows = notes.slice(0, limit).map((n) => `${n.path}  (${formatSize(n.size)}, modified ${isoDate(n.mtime)})`);
 		if (rows.length === 0) return "No notes matched those filters.";
-		const more = total > limit ? `\n…and ${total - limit} more. Narrow the filter or raise the limit.` : "";
-		return `${total} note${total === 1 ? "" : "s"}:\n${rows.join("\n")}${more}`;
+		return listWithin(`${total} note${total === 1 ? "" : "s"}:\n`, rows, total, ctx.maxResultChars);
 	},
 };
 
@@ -846,12 +949,17 @@ export const getActiveNote: ToolDefinition = {
 		const path = ctx.vault.getActiveNotePath();
 		if (!path) return "No note is currently open in the editor.";
 		const content = await ctx.vault.read(path);
-		const page = truncate(content, ctx.maxResultChars);
+		const limit = ctx.maxResultChars;
 		const selection = ctx.vault.getSelection();
-		let out = `# ${path}\n---\n${page.text}`;
-		if (page.truncated) out += `\n\n[TRUNCATED. Use read_note with offset=${ctx.maxResultChars} to read more.]`;
-		if (selection && selection.trim()) out += `\n\n--- SELECTED TEXT ---\n${selection}`;
-		return out;
+		let selected = "";
+		if (selection && selection.trim()) {
+			// The selection is what the user is pointing at, so it is budgeted before the note: up to half the result.
+			const max = Math.floor(limit / 2);
+			selected = `\n\n--- SELECTED TEXT ---\n${selection.length > max ? `${selection.slice(0, max)}\n[… selection cut at ${max} of ${selection.length} characters]` : selection}`;
+		}
+		const head = `# ${path}\n---\n`;
+		const page = pageWithin(content, 0, limit, head.length + selected.length, (next) => `\n\n[TRUNCATED at character ${next} of ${content.length}. Use read_note with offset=${next} to read more.]`);
+		return `${head}${page.text}${page.marker}${selected}`;
 	},
 };
 
@@ -1231,8 +1339,10 @@ export const findInNote: ToolDefinition = {
 			}
 			return rows.join("\n");
 		});
-		const more = hits.length > limit ? `\n…and ${hits.length - limit} more matches.` : "";
-		return `${note}${hits.length} match${hits.length === 1 ? "" : "es"} in ${path} (${lines.length} lines). The matching line is marked with ">".\n${blocks.join("\n---\n")}${more}`;
+		const head = `${note}${hits.length} match${hits.length === 1 ? "" : "es"} in ${path} (${lines.length} lines). The matching line is marked with ">".\n`;
+		const keep = Math.max(1, fitCount(blocks, ctx.maxResultChars - head.length - `\n…and ${hits.length} more matches.`.length, 5));
+		const more = hits.length > keep ? `\n…and ${hits.length - keep} more matches.` : "";
+		return `${head}${blocks.slice(0, keep).join("\n---\n")}${more}`;
 	},
 };
 
@@ -1269,8 +1379,7 @@ export const listFiles: ToolDefinition = {
 		const total = files.length;
 		if (total === 0) return "No attachments matched those filters.";
 		const rows = files.slice(0, limit).map((f) => `${f.path}  (${formatSize(f.size)}, modified ${isoDate(f.mtime)})`);
-		const more = total > limit ? `\n…and ${total - limit} more. Narrow the filter or raise the limit.` : "";
-		return `${total} file${total === 1 ? "" : "s"}:\n${rows.join("\n")}${more}`;
+		return listWithin(`${total} file${total === 1 ? "" : "s"}:\n`, rows, total, ctx.maxResultChars);
 	},
 };
 

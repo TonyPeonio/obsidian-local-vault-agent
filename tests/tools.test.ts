@@ -35,7 +35,8 @@ import {
 import type { ApprovalDecision, ApprovalRequest, ToolContext } from "../src/types";
 import { FakeVault } from "./fakes";
 
-function makeCtx(vault: FakeVault, decision: ApprovalDecision = "approve") {
+/** `maxResultChars` defaults to the plugin's own default: every tool keeps its whole result within it. */
+function makeCtx(vault: FakeVault, decision: ApprovalDecision = "approve", maxResultChars = 12000) {
 	const approvals: ApprovalRequest[] = [];
 	const ctx: ToolContext = {
 		vault,
@@ -44,7 +45,7 @@ function makeCtx(vault: FakeVault, decision: ApprovalDecision = "approve") {
 			approvals.push(req);
 			return decision;
 		},
-		maxResultChars: 200,
+		maxResultChars,
 	};
 	return { ctx, approvals };
 }
@@ -99,7 +100,7 @@ describe("read_note", () => {
 	it("pages long notes with offset", async () => {
 		const vault = freshVault();
 		vault.seed("Long.md", "A".repeat(500));
-		const { ctx } = makeCtx(vault);
+		const { ctx } = makeCtx(vault, "approve", 200);
 		const first = await readNote.execute({ path: "Long.md" }, ctx);
 		// The page is what is left of the budget after the header and the marker, never less than a quarter of it.
 		expect(first).toContain("[TRUNCATED at character 100 of 500. Call read_note again with offset=100 to continue.]");
@@ -536,7 +537,7 @@ describe("outline-decorated paths", () => {
 describe("read_note dedupe", () => {
 	it("short-circuits a repeat read of an unchanged note within a turn", async () => {
 		const vault = freshVault();
-		const { ctx } = makeCtx(vault);
+		const { ctx } = makeCtx(vault, "approve", 200);
 		ctx.readLog = new Map();
 		const first = await readNote.execute({ path: "Ideas/Sensors" }, ctx);
 		expect(first).toContain("Hall sensors are cheap.");
