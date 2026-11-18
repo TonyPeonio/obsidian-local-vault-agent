@@ -1010,7 +1010,7 @@ export const listNotes: ToolDefinition = {
 				notes.sort((a, b) => b.mtime - a.mtime);
 		}
 		const total = notes.length;
-		const rows = notes.slice(0, limit).map((n) => `${n.path}  (${formatSize(n.size)}, modified ${isoDate(n.mtime)})`);
+		const rows = notes.slice(0, limit).map((n) => `${n.path}  (${formatSize(n.size)}, modified ${localDate(n.mtime)})`);
 		if (rows.length === 0) return "No notes matched those filters.";
 		return listWithin(`${total} note${total === 1 ? "" : "s"}:\n`, rows, total, ctx.maxResultChars);
 	},
@@ -1493,7 +1493,7 @@ export const listFiles: ToolDefinition = {
 		files.sort((a, b) => b.mtime - a.mtime);
 		const total = files.length;
 		if (total === 0) return "No attachments matched those filters.";
-		const rows = files.slice(0, limit).map((f) => `${f.path}  (${formatSize(f.size)}, modified ${isoDate(f.mtime)})`);
+		const rows = files.slice(0, limit).map((f) => `${f.path}  (${formatSize(f.size)}, modified ${localDate(f.mtime)})`);
 		return listWithin(`${total} file${total === 1 ? "" : "s"}:\n`, rows, total, ctx.maxResultChars);
 	},
 };
@@ -1646,8 +1646,15 @@ export const readFile: ToolDefinition = {
 	},
 };
 
-function isoDate(ms: number): string {
-	return new Date(ms).toISOString().slice(0, 10);
+/**
+ * A moment as the user's calendar has it: YYYY-MM-DD in local time. The UTC date is tomorrow's
+ * every evening west of Greenwich, and it disagrees with modified_after / modified_before
+ * (read as local midnight) and with daily note names.
+ */
+export function localDate(when: number | Date): string {
+	const d = typeof when === "number" ? new Date(when) : when;
+	const two = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 }
 
 export const ALL_TOOLS: ToolDefinition[] = [

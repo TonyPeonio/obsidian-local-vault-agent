@@ -14,6 +14,7 @@ import {
 	listFiles,
 	listNotes,
 	listSections,
+	localDate,
 	looksLikeRegex,
 	missingFolderHint,
 	missingNoteHint,
@@ -603,6 +604,22 @@ describe("list_notes date filters", () => {
 		expect(await listNotes.execute({ modified_after: "2026-01-10", modified_before: "2026-01-11" }, ctx)).toContain("Old.md");
 		expect(parseDate("")).toBeNull();
 		expect(parseDate("garbage")).toBeNull();
+	});
+	it("prints the date a note was modified on the user's calendar, the one the filters use", async () => {
+		const vault = new FakeVault();
+		// Late evening and just after midnight, local time: in UTC one of the two falls on another day in every zone but UTC itself.
+		vault.seed("Evening.md", "x", new Date(2026, 10, 5, 23, 30).getTime());
+		vault.seed("Small hours.md", "y", new Date(2026, 10, 5, 0, 30).getTime());
+		vault.seedFile("Recording.webm", 1000, new Date(2026, 10, 5, 23, 30).getTime());
+		const { ctx } = makeCtx(vault);
+		const out = await listNotes.execute({ modified_after: "2026-11-05", modified_before: "2026-11-06" }, ctx);
+		expect(out).toBe("2 notes:\nEvening.md  (1 B, modified 2026-11-05)\nSmall hours.md  (1 B, modified 2026-11-05)");
+		expect(await listNotes.execute({ modified_after: "2026-11-06" }, ctx)).toBe("No notes matched those filters.");
+		expect(await listFiles.execute({}, ctx)).toBe("1 file:\nRecording.webm  (1 kB, modified 2026-11-05)");
+		expect(localDate(new Date(2026, 0, 1, 0, 0, 1))).toBe("2026-01-01");
+		expect(localDate(new Date(2026, 11, 31, 23, 59, 59).getTime())).toBe("2026-12-31");
+		// The date printed is one that modified_after reads back as the same day.
+		expect(localDate(parseDate("2026-03-08")!)).toBe("2026-03-08");
 	});
 });
 

@@ -3,7 +3,7 @@ import { OllamaError } from "./ollama";
 import { answerLanguageLine } from "./i18n";
 import { blockIdEdits, linkedTargets, planCitations, plainText, quotable, withPassages, type CitationMode } from "./citations";
 import { buildOutline, outlineBudget } from "./outline";
-import { ToolError, toOllamaTools } from "./tools";
+import { ToolError, localDate, toOllamaTools } from "./tools";
 import type { UndoStack } from "./undo";
 import type {
 	AgentCallbacks,
@@ -299,7 +299,7 @@ export interface AgentDeps {
 export function turnContext(vault: VaultAccess, now: Date, daily: { path: string; exists: boolean } | null = null): string {
 	const active = vault.getActiveNotePath();
 	return [
-		`Today is ${now.toISOString().slice(0, 10)}.`,
+		`Today is ${localDate(now)}.`,
 		active ? `The user currently has this note open: ${active}` : "No note is currently open in the editor.",
 		daily ? `Today's daily note is ${daily.path}${daily.exists ? "" : " (it does not exist yet; create it if the user wants something added to today)"}.` : "",
 	]
