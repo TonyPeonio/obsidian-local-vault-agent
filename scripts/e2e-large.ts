@@ -11,6 +11,7 @@ import { execSync } from "child_process";
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { basename, join, relative, resolve } from "path";
+import { FailedChecks, failuresOfRun } from "./bench-failed";
 import { whiteboardPng } from "./whiteboard-png";
 import { Agent, buildSystemPrompt, looksLikePermissionQuestion, newConversation, type AgentConfig } from "../src/agent";
 import { DEFAULT_SETTINGS, SAMPLING } from "../src/settings";
@@ -74,23 +75,17 @@ function loadVault(dir: string): FakeVault {
 }
 
 /** Labels of failed checks per scenario, read off the log lines as they are printed, so every check site is covered. */
-const failedBy = new Map<string, string[]>();
+const failedChecks = new FailedChecks();
 const answersBy = new Map<string, string>();
 const toolsBy = new Map<string, string[]>();
 const outTokensBy = new Map<string, number>();
 const loadMsBy = new Map<string, number>();
 /** Characters the model had to read per scenario (see `meterReading`). */
 const readCharsBy = new Map<string, number>();
-/** The scenario whose log lines are being printed. */
-let current = "";
 {
 	const log = console.log.bind(console);
 	console.log = (...args: unknown[]) => {
-		const line = typeof args[0] === "string" ? args[0] : "";
-		const head = /^\n?=== \[([^\]]+)\]/.exec(line);
-		if (head) current = head[1];
-		const failed = /^ {2}FAIL {2}(.*)$/.exec(line);
-		if (failed) failedBy.set(current, [...(failedBy.get(current) ?? []), failed[1]]);
+		failedChecks.line(typeof args[0] === "string" ? args[0] : "");
 		log(...args);
 	};
 }
@@ -328,6 +323,8 @@ async function main() {
 	async function scenario(id: string, title: string, prompt: string, checks: (answer: string, tools: string[]) => [string, boolean][], opts: ScenarioOptions = {}) {
 		if (ONLY && !ONLY.split(",").includes(id)) {
 			rows.push({ id, ms: 0, calls: 0, prompt: 0, errors: 0, misses: 0, repeats: 0, steps: 0, promptMs: 0, evalMs: 0, pass: 0, fail: 0, skipped: true });
+			// The checks the script makes after this scenario are still printed; they are not results of the one that ran before it.
+			failedChecks.skipped();
 			return;
 		}
 		console.log(`\n=== [${id}] ${title}\n> ${prompt.slice(0, 160)}`);
@@ -1027,7 +1024,9 @@ async function main() {
 		if (!ok) failures++;
 	}
 
-	// Scenarios ONLY skipped left dummy rows for their post-checks; drop them from the report.
+	// Scenarios ONLY skipped left dummy rows for their post-checks; drop them from the report, and
+	// what those checks counted from the failures (the run's last line and its exit code).
+	failures = failuresOfRun(failures, rows);
 	const ranRows = rows.filter((r) => !r.skipped);
 	rows.length = 0;
 	rows.push(...ranRows);
@@ -1077,14 +1076,14 @@ async function main() {
 			checks,
 			failures,
 		},
-		failed: rows.flatMap((r) => (failedBy.get(r.id) ?? []).map((label) => `${r.id}: ${label}`)),
+		failed: failedChecks.list(rows.map((r) => r.id)),
 		scenarios: rows.map((r) => ({
 			...r,
 			seconds: Math.round(r.ms / 10) / 100,
 			completionTokens: outTokensBy.get(r.id),
 			readChars: readCharsBy.get(r.id),
 			loadMs: loadMsBy.get(r.id),
-			failed: failedBy.get(r.id) ?? [],
+			failed: failedChecks.of(r.id),
 			tools: toolsBy.get(r.id),
 			answer: answersBy.get(r.id),
 		})),
@@ -1116,7 +1115,7 @@ function meterReading(client: OllamaClient): void {
 		let same = 0;
 		const n = Math.min(sent.length, kept.length);
 		while (same < n && sent.charCodeAt(same) === kept.charCodeAt(same)) same++;
-		readCharsBy.set(current, (readCharsBy.get(current) ?? 0) + sent.length - same);
+		readCharsBy.set(failedChecks.current, (readCharsBy.get(failedChecks.current) ?? 0) + sent.length - same);
 		const res = await chat(req);
 		kept = `${sent},${wire(res.message)}`;
 		return res;
