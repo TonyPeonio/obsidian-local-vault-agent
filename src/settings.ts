@@ -33,6 +33,8 @@ export interface LocalVaultAgentSettings {
 	/** When the model stops to ask "shall I proceed?", answer yes for the user (a few times per turn). */
 	autoContinue: boolean;
 	keepAlive: string;
+	/** Load the model and have it read the system prompt when the chat box is first focused, before a message is sent. */
+	warmUp: boolean;
 	/** Folder prefixes (one per line in the UI) that are never searched or indexed. */
 	excludedFolders: string[];
 	extraSystemPrompt: string;
@@ -104,6 +106,7 @@ export const DEFAULT_SETTINGS: LocalVaultAgentSettings = {
 	autoApproveEdits: false,
 	autoContinue: true,
 	keepAlive: "10m",
+	warmUp: true,
 	excludedFolders: ["templates", "Templates"],
 	extraSystemPrompt: "",
 	conventionsNote: "AGENT.md",

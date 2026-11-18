@@ -129,6 +129,8 @@ export class AgentView extends ItemView {
 		});
 		this.inputEl.addEventListener("input", () => this.autoGrow());
 		this.inputEl.addEventListener("focus", () => this.updateMic());
+		// About to write a message: have the model loaded and its prompt read by the time it is sent.
+		this.inputEl.addEventListener("focus", () => this.plugin.warmModel());
 		// Voice input goes through Lecture Companion's whisper server; without it there is no button.
 		this.micBtn = composer.createEl("button", { cls: "clickable-icon lva-mic", attr: { "aria-label": t("view.mic") } });
 		setIcon(this.micBtn, "mic");

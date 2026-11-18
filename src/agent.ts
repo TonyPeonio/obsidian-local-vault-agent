@@ -388,12 +388,62 @@ export class Agent {
 	/** Characters per token of what was last sent, from the model's own token count; the conversation budget follows it. */
 	private charsPerToken = DEFAULT_CHARS_PER_TOKEN;
 
+	/** The system message of a turn: the same for every request while the vault's outline and the settings stay as they are. */
+	private systemMessage(cfg: AgentConfig, tools: ToolDefinition[], conventions: string | null): ChatMessage {
+		let content = buildSystemPrompt(this.deps.vault, cfg, conventions, this.deps.gist);
+		// Lecture Companion's records answer "what was said, and when" better than searching transcripts.
+		if (tools.some((t) => t.name === "lecture_transcript")) content += `\n\n${LECTURE_TOOLS_HINT}`;
+		return { role: "system", content };
+	}
+
+	/** The warm-up in progress, if any: a turn waits for it rather than reading the same prompt beside it. */
+	private warming: Promise<void> | null = null;
+
+	/**
+	 * Has the model loaded and the system prompt and tool list read before the first message is
+	 * sent: one request for a single token whose prompt is exactly how every request of a turn
+	 * begins, so Ollama keeps it and the real request starts from there. On a machine without a
+	 * discrete GPU that reading is most of a minute; done while the user is still typing, it is
+	 * not a wait. Errors are the caller's to ignore: a failed warm-up costs nothing.
+	 */
+	warm(signal?: AbortSignal): Promise<void> {
+		if (this.warming) return this.warming;
+		const cfg = this.deps.getConfig();
+		const tools = [...this.deps.tools, ...(this.deps.extraTools?.() ?? [])];
+		const task = (async () => {
+			let conventions: string | null = null;
+			try {
+				conventions = (await this.deps.readConventions?.()) ?? null;
+			} catch {
+				conventions = null;
+			}
+			await this.deps.client.chat({
+				model: cfg.model,
+				messages: [this.systemMessage(cfg, tools, conventions), { role: "user", content: "." }],
+				tools: toOllamaTools(tools),
+				think: cfg.think,
+				options: { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}), num_predict: 1 },
+				keep_alive: cfg.keepAlive,
+				signal,
+			});
+		})();
+		this.warming = task;
+		const clear = () => {
+			if (this.warming === task) this.warming = null;
+		};
+		void task.then(clear, clear);
+		return task;
+	}
+
 	async run(
 		conversation: Conversation,
 		userText: string,
 		callbacks: AgentCallbacks,
 		signal?: AbortSignal,
 	): Promise<void> {
+		// A warm-up still reading the prompt: let it finish, then start from what it read.
+		if (this.warming) await this.warming.catch(() => undefined);
+		if (signal?.aborted) return;
 		const cfg = this.deps.getConfig();
 		const { client, vault } = this.deps;
 		const tools = [...this.deps.tools, ...(this.deps.extraTools?.() ?? [])];
@@ -473,11 +523,7 @@ export class Agent {
 		// a write (the outline would show the new note) invalidated that cache on every step.
 		// It also holds nothing that varies per message (see turnContext), so the next turn starts
 		// from the same cached prefix unless the vault's outline changed in between.
-		const system: ChatMessage = { role: "system", content: buildSystemPrompt(vault, cfg, conventions, this.deps.gist) };
-		// Lecture Companion's records answer "what was said, and when" better than searching transcripts.
-		if (toolByName.has("lecture_transcript")) system.content += `
-
-${LECTURE_TOOLS_HINT}`;
+		const system = this.systemMessage(cfg, tools, conventions);
 		const options = { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}) };
 		const wireTools = toOllamaTools(tools);
 		/** What every request of this turn carries whatever the conversation holds. */

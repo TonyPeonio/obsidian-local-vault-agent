@@ -366,6 +366,14 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 							}),
 						),
 					),
+					this.row("set.warmUp", (st) =>
+						st.addToggle((tg) =>
+							tg.setValue(s.warmUp).onChange(async (v) => {
+								s.warmUp = v;
+								await save();
+							}),
+						),
+					),
 					this.row("set.maxIter", (st) =>
 						st.addSlider((sl) =>
 							sl.setLimits(3, 150, 1).setValue(s.maxIterations).onChange(async (v) => {

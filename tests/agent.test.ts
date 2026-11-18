@@ -600,6 +600,39 @@ describe("trimHistory", () => {
 	});
 });
 
+describe("warm-up", () => {
+	it("asks for one token with exactly the prompt a turn begins with", async () => {
+		const { agent, ollama } = setup([{ content: "" }, { content: "hello" }]);
+		await agent.warm();
+		await agent.run(newConversation(), "hi", {});
+		const [warm, first] = ollama.requests;
+		expect(warm.options?.num_predict).toBe(1);
+		// Same system prompt, same tool list: what the warm-up read is what the turn starts from.
+		expect(warm.messages[0]).toEqual(first.messages[0]);
+		expect(warm.tools).toEqual(first.tools);
+		expect(first.options?.num_predict).toBeUndefined();
+		expect(warm.options?.num_ctx).toBe(first.options?.num_ctx);
+	});
+
+	it("is waited for by a turn that starts meanwhile, and a failed one is ignored", async () => {
+		const { agent, ollama } = setup([{ content: "" }, { content: "one" }, { error: new OllamaError("not running") }, { content: "two" }]);
+		const order: string[] = [];
+		const warming = agent.warm().then(() => order.push("warm done"));
+		// A second call while one is running is the same warm-up, not another request.
+		void agent.warm();
+		const conv = newConversation();
+		await agent.run(conv, "hi", { onAssistantStart: () => order.push("turn started") });
+		await warming;
+		expect(order).toEqual(["warm done", "turn started"]);
+		expect(ollama.requests).toHaveLength(2);
+		// The model is not there: the warm-up fails quietly and the turn still runs (and reports its own errors).
+		const failed = agent.warm();
+		await agent.run(conv, "again", {});
+		await expect(failed).rejects.toThrow("not running");
+		expect(conv.messages.at(-1)?.content).toBe("two");
+	});
+});
+
 describe("turnBudget", () => {
 	it("is the window less the reply, less what every request carries, at the measured characters per token", () => {
 		expect(turnBudget(32768, 31000)).toBe(Math.floor((32768 - 2048) * 3.2 * 0.97) - 31000);

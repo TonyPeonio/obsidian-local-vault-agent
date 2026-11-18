@@ -29,6 +29,9 @@ import type { ApprovalRequest, ChangeRecord, ChatMessage, NoteInfo, SearchHit } 
 import { RevertError, UndoStack, describeChange, planRevert } from "./undo";
 import { AgentView, VIEW_TYPE } from "./view";
 
+/** How often focusing the chat box may warm the model up again (under the default time Ollama keeps a model loaded). */
+const WARM_EVERY_MS = 4 * 60_000;
+
 export default class LocalVaultAgentPlugin extends Plugin {
 	settings: LocalVaultAgentSettings = { ...DEFAULT_SETTINGS };
 	client!: OllamaClient;
@@ -1309,6 +1312,23 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			citations: s.citations,
 			answerLanguage: s.answerLanguage,
 		};
+	}
+
+	private lastWarm = 0;
+
+	/**
+	 * Called when the user focuses the chat box. At most once per `WARM_EVERY_MS`, never while a
+	 * turn or a scheduled job runs, and quietly: if Ollama is not there, the first message says so.
+	 */
+	warmModel(): void {
+		if (!this.settings.warmUp || this.agentBusy || this.jobRunning) return;
+		const now = Date.now();
+		if (now - this.lastWarm < WARM_EVERY_MS) return;
+		this.lastWarm = now;
+		void this.agent.warm().catch(() => {
+			// Not reachable, or the model is missing: try again at the next focus.
+			this.lastWarm = 0;
+		});
 	}
 
 	async hybridSearch(query: string, limit: number): Promise<SearchHit[]> {

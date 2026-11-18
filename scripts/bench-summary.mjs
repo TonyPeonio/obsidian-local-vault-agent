@@ -42,15 +42,27 @@ for (const file of files) {
 	groups.get(key).push({ file, ...r });
 }
 
-console.log("| Configuration | Runs | Checks passed | Seconds | Model s | Model calls | Tool calls | Tokens written | Errors | Repeats |");
-console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+// What the same run would cost on a laptop without a discrete GPU, from this run's own counts:
+// the tokens the model had to read (the time Ollama spent reading prompts on this machine, at
+// this machine's reading speed) and the tokens it wrote, at the README's laptop figures
+// (Ryzen 7940HS / Radeon 780M, qwen3.5:9b: reads about 170 tokens/s, writes about 6.5).
+// READ_TOKENS_PER_MS is this desktop's reading speed (RTX 5070: 12,977 tokens in 2,955 ms).
+const READ_TOKENS_PER_MS = Number(process.env.READ_TOKENS_PER_MS ?? 4.39);
+const laptopSeconds = (r) => {
+	const promptMs = r.scenarios.reduce((n, s) => n + (s.promptMs ?? 0), 0);
+	const written = r.scenarios.reduce((n, s) => n + (s.completionTokens ?? 0), 0);
+	return written ? (promptMs * READ_TOKENS_PER_MS) / 170 + written / 6.5 : undefined;
+};
+
+console.log("| Configuration | Runs | Checks passed | Seconds | Model s | Model calls | Tool calls | Tokens written | Laptop estimate, min | Errors | Repeats |");
+console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
 for (const [key, runs] of groups) {
 	const t = (f) => runs.map((r) => f(r.totals));
 	const checks = runs[0].totals.checks;
 	const sameChecks = runs.every((r) => r.totals.checks === checks);
 	const out = runs.map((r) => r.scenarios.reduce((n, s) => n + (s.completionTokens ?? 0), 0));
 	console.log(
-		`| ${key} | ${runs.length} | ${spread(t((x) => x.passed), 1)} of ${sameChecks ? checks : "varying"} | ${spread(t((x) => x.seconds))} | ${spread(t((x) => x.modelSeconds ?? 0))} | ${spread(t((x) => x.steps ?? 0))} | ${spread(t((x) => x.calls))} | ${out.some(Boolean) ? spread(out) : ""} | ${spread(t((x) => x.errors), 1)} | ${spread(t((x) => x.repeats), 1)} |`,
+		`| ${key} | ${runs.length} | ${spread(t((x) => x.passed), 1)} of ${sameChecks ? checks : "varying"} | ${spread(t((x) => x.seconds))} | ${spread(t((x) => x.modelSeconds ?? 0))} | ${spread(t((x) => x.steps ?? 0))} | ${spread(t((x) => x.calls))} | ${out.some(Boolean) ? spread(out) : ""} | ${runs.every((r) => laptopSeconds(r)) ? spread(runs.map((r) => laptopSeconds(r) / 60), 1) : ""} | ${spread(t((x) => x.errors), 1)} | ${spread(t((x) => x.repeats), 1)} |`,
 	);
 }
 
