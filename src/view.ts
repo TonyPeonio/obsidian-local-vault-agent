@@ -913,27 +913,30 @@ export class AgentView extends ItemView {
 		const quiz = this.quiz;
 		const q = quiz?.current();
 		if (!quiz || !q) return;
-		this.addUser(text);
 		if (QUIZ_END.test(text.trim())) {
+			this.addUser(text);
 			await this.finishQuiz(text, "");
 			return;
 		}
 		const lease = this.plugin.busy.acquire("quiz");
 		if (!lease) {
-			// The answer is already shown; it is not lost, only not graded yet.
+			// Not graded and not shown yet: back into the message box, to send again.
 			this.noticeBusy();
 			this.inputEl.value = text;
 			return;
 		}
 		this.lease = lease;
 		this.quizBusy = true;
+		let graded = false;
 		try {
+			this.addUser(text);
 			this.setSendState(true);
 			this.updateStatus("Grading…");
 			const source = this.quizSources.get(q.source) ?? "";
 			const grade = isNonAnswer(text) ? { verdict: "wrong" as const, feedback: "Skipped." } : await this.plugin.quiz.grade(q, text, source.slice(0, 6000), lease.signal);
 			// Stopped while grading: nothing is recorded, the question stays the current one.
 			if (lease.stopped) return;
+			graded = true;
 			const result = quiz.record(text, grade.verdict, grade.feedback);
 			const md = resultMarkdown(result);
 			if (quiz.done()) {
@@ -949,7 +952,7 @@ export class AgentView extends ItemView {
 			lease.release();
 			this.lease = null;
 			this.quizBusy = false;
-			if (lease.stopped) {
+			if (lease.stopped && !graded) {
 				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.quiz.stoppedGrading") });
 				this.scrollToBottom();
 			}
