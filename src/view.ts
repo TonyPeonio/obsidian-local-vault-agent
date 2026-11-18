@@ -1035,7 +1035,9 @@ function describeResult(call: ToolCall, result: string): string {
 	switch (call.function.name) {
 		case "search_notes": {
 			if (result.startsWith("No notes")) return "no results";
-			const n = (result.match(/"path":/g) ?? []).length;
+			// "3 notes, best first…"; chats saved by earlier versions hold a JSON list instead.
+			const m = /^(\d+) note/.exec(result);
+			const n = m ? Number(m[1]) : (result.match(/"path":/g) ?? []).length;
 			return `${n} result${n === 1 ? "" : "s"}`;
 		}
 		case "search_passages": {

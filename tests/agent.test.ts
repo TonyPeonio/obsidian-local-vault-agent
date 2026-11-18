@@ -507,9 +507,14 @@ describe("buildSystemPrompt", () => {
 
 	it("puts the date, open note and daily note in the turn context", () => {
 		const vault = new FakeVault({ "A.md": "a" });
-		expect(turnContext(vault, new Date("2026-11-05T00:00:00Z"))).toBe("Today is 2026-11-05. No note is currently open in the editor.");
+		expect(turnContext(vault, new Date(2026, 10, 5, 12))).toBe("Today is 2026-11-05. No note is currently open in the editor.");
+		// The user's own date, not UTC's: late evening west of Greenwich is already tomorrow in UTC,
+		// and just after midnight east of it is still yesterday there.
+		expect(turnContext(vault, new Date(2026, 10, 5, 23, 30))).toMatch(/^Today is 2026-11-05\./);
+		expect(turnContext(vault, new Date(2026, 10, 5, 0, 30))).toMatch(/^Today is 2026-11-05\./);
+		expect(turnContext(vault, new Date(2026, 11, 31, 23, 59, 59))).toMatch(/^Today is 2026-12-31\./);
 		vault.activePath = "A.md";
-		const ctx = turnContext(vault, new Date("2026-11-05T00:00:00Z"), { path: "Daily/2026-11-05.md", exists: false });
+		const ctx = turnContext(vault, new Date(2026, 10, 5, 12), { path: "Daily/2026-11-05.md", exists: false });
 		expect(ctx).toContain("The user currently has this note open: A.md");
 		expect(ctx).toContain("Today's daily note is Daily/2026-11-05.md (it does not exist yet");
 	});

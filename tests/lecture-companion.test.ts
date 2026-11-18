@@ -103,6 +103,30 @@ describe("lecture_transcript", () => {
 		expect(none).toContain('No paragraph mentions "gradient boosting"');
 		await expect(lectureTranscript.execute({ path: "nowhere" }, ctx(vault, source()))).rejects.toThrow(/No lecture found/);
 	});
+
+	it("keeps a long transcript, its 'continues' line and the citing instruction within the result budget", async () => {
+		const vault = new FakeVault({ "Courses/CSCI 470/2026-10-02.md": "x" });
+		// Many short paragraphs: the separators between them are what used to push the result over.
+		const long = Array.from({ length: 600 }, (_, i) => ({ start: i * 7, text: `short one ${i}` }));
+		const src: LectureSource = { ...source(), transcript: async () => long };
+		const out = await lectureTranscript.execute({ path: "Courses/CSCI 470/2026-10-02.md" }, ctx(vault, src));
+		expect(out.length).toBeLessThanOrEqual(4000);
+		const shown = (out.match(/^\[\d+:\d\d\] short one \d+$/gm) ?? []).length;
+		expect(shown).toBeGreaterThan(100);
+		expect(out).toContain(`\n\n[… transcript continues; ${600 - shown} more paragraphs. Pass query to find a passage.]\n---\nQuote the paragraph you use with its [m:ss] time and cite [[Courses/CSCI 470/2026-10-02]].`);
+	});
+});
+
+describe("list_lectures within the result budget", () => {
+	it("says how many lectures are not shown when the rows do not fit", async () => {
+		const many: LectureInfo[] = Array.from({ length: 150 }, (_, i) => ({ path: `Courses/CSCI 470/Lecture ${String(i).padStart(3, "0")}.md`, course: "CSCI 470", date: `2026-${String(1 + (i % 12)).padStart(2, "0")}-${String(1 + (i % 28)).padStart(2, "0")}`, kind: "lecture", sentence: "A one-sentence summary of what the lecture covered." }));
+		const src: LectureSource = { ...source(), lectures: () => many };
+		const out = await listLectures.execute({}, ctx(new FakeVault(), src));
+		expect(out.length).toBeLessThanOrEqual(4000);
+		const rows = (out.match(/ · CSCI 470 · lecture · /g) ?? []).length;
+		expect(rows).toBeGreaterThan(20);
+		expect(out.endsWith(`\n… ${150 - rows} more; narrow with course or since/until.`)).toBe(true);
+	});
 });
 
 describe("agent with Lecture Companion", () => {

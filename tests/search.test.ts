@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { frontmatterText, fuseRankings, keywordSearch, makeSnippet, queryTerms, tokenize } from "../src/search";
+import { frontmatterText, fuseRankings, keywordSearch, makeSnippet, queryTerms, snippetNear, tokenize } from "../src/search";
 import { FakeVault } from "./fakes";
 
 const vault = new FakeVault({
@@ -75,6 +75,26 @@ describe("makeSnippet", () => {
 		expect(s.startsWith("…")).toBe(true);
 		expect(s.endsWith("…")).toBe(true);
 		expect(s.length).toBeLessThanOrEqual(102);
+	});
+});
+
+describe("snippetNear", () => {
+	const filler = (n: number) => "Nothing of note here. ".repeat(n);
+	it("goes to where most of the query's words are together, not to the first one", () => {
+		const text = `The gantry is mentioned once early on. ${filler(30)}Later the gantry homing sequence trips the limit switch. ${filler(30)}`;
+		const s = snippetNear(text, ["gantry", "homing", "switch"], 200);
+		expect(s).toContain("gantry homing sequence trips the limit switch");
+		expect(s.startsWith("…")).toBe(true);
+		expect(s.length).toBeLessThanOrEqual(202);
+		// makeSnippet, for comparison, stops at the first word it finds.
+		expect(makeSnippet(text, ["gantry", "homing", "switch"], 200)).not.toContain("homing");
+	});
+	it("prefers the earliest of equally good places, and starts at the beginning when no word occurs", () => {
+		const text = `first needle here. ${filler(40)}second needle there. ${filler(40)}`;
+		expect(snippetNear(text, ["needle"], 100).startsWith("first needle here.")).toBe(true);
+		expect(snippetNear(text, ["zebra"], 100)).toBe(text.slice(0, 100).trim() + "…");
+		expect(snippetNear("short text", ["zebra"])).toBe("short text");
+		expect(snippetNear("line one\n\nline   two", [])).toBe("line one line two");
 	});
 });
 

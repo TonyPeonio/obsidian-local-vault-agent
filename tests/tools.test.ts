@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { keywordSearch } from "../src/search";
 import {
 	appendToNote,
+	clipLine,
 	createNote,
 	deleteFile,
 	editNote,
@@ -13,7 +14,9 @@ import {
 	listFiles,
 	listNotes,
 	listSections,
+	localDate,
 	looksLikeRegex,
+	missingFolderHint,
 	missingNoteHint,
 	moveNote,
 	tidyAlternation,
@@ -35,7 +38,8 @@ import {
 import type { ApprovalDecision, ApprovalRequest, ToolContext } from "../src/types";
 import { FakeVault } from "./fakes";
 
-function makeCtx(vault: FakeVault, decision: ApprovalDecision = "approve") {
+/** `maxResultChars` defaults to the plugin's own default: every tool keeps its whole result within it. */
+function makeCtx(vault: FakeVault, decision: ApprovalDecision = "approve", maxResultChars = 12000) {
 	const approvals: ApprovalRequest[] = [];
 	const ctx: ToolContext = {
 		vault,
@@ -44,7 +48,7 @@ function makeCtx(vault: FakeVault, decision: ApprovalDecision = "approve") {
 			approvals.push(req);
 			return decision;
 		},
-		maxResultChars: 200,
+		maxResultChars,
 	};
 	return { ctx, approvals };
 }
@@ -72,11 +76,31 @@ describe("normalizeNotePath", () => {
 });
 
 describe("search_notes", () => {
-	it("returns JSON hits", async () => {
+	it("returns the hits as plain text, best first, in the layout of search_passages", async () => {
 		const { ctx } = makeCtx(freshVault());
 		const out = await searchNotes.execute({ query: "hall sensors" }, ctx);
-		const hits = JSON.parse(out);
-		expect(hits[0].path).toBe("Ideas/Sensors.md");
+		expect(out).toBe(
+			"2 notes, best first. Each snippet is a short excerpt, not the note's text.\n--- [1] Ideas/Sensors.md\n#hardware Hall sensors are cheap.\n--- [2] Projects/Chess Robot.md\n--- tags: [project] --- # Chess Robot The gantry moves pieces. See [[Sensors]]. ## Status Working.",
+		);
+	});
+	it("labels a hit with its heading path when the search has one", async () => {
+		const { ctx } = makeCtx(freshVault());
+		ctx.search = async () => [
+			{ path: "School/Lectures.md", score: 0.9, heading: "2026-09-10 › Summary", snippet: "…seven multiplications instead of eight…" },
+			{ path: "Ideas/Sensors.md", score: 0.5, snippet: 'A "quoted" snippet stays as it is.' },
+		];
+		expect(await searchNotes.execute({ query: "strassen" }, ctx)).toBe(
+			'2 notes, best first. Each snippet is a short excerpt, not the note\'s text.\n--- [1] School/Lectures.md › 2026-09-10 › Summary\n…seven multiplications instead of eight…\n--- [2] Ideas/Sensors.md\nA "quoted" snippet stays as it is.',
+		);
+	});
+	it("fits the hits to the result budget and counts the ones it shows", async () => {
+		const { ctx } = makeCtx(freshVault(), "approve", 1000);
+		ctx.search = async (_q, limit) => Array.from({ length: limit }, (_, i) => ({ path: `Notes/Note ${i}.md`, score: 1 - i / 100, snippet: "s".repeat(240) }));
+		const out = await searchNotes.execute({ query: "q", limit: 25 }, ctx);
+		expect(out.length).toBeLessThanOrEqual(1000);
+		expect(out).toMatch(/^3 notes, best first\./);
+		expect(out).toContain("--- [3] Notes/Note 2.md\n");
+		expect(out).not.toContain("--- [4]");
 	});
 	it("explains when nothing matches", async () => {
 		const { ctx } = makeCtx(freshVault());
@@ -99,12 +123,55 @@ describe("read_note", () => {
 	it("pages long notes with offset", async () => {
 		const vault = freshVault();
 		vault.seed("Long.md", "A".repeat(500));
-		const { ctx } = makeCtx(vault);
+		const { ctx } = makeCtx(vault, "approve", 200);
 		const first = await readNote.execute({ path: "Long.md" }, ctx);
-		expect(first).toContain("TRUNCATED at character 200");
+		// The page is what is left of the budget after the header and the marker, never less than a quarter of it.
+		expect(first).toContain("[TRUNCATED at character 100 of 500. Call read_note again with offset=100 to continue.]");
 		const second = await readNote.execute({ path: "Long.md", offset: 400 }, ctx);
 		expect(second).toContain("continuing from character 400");
 		expect(second).not.toContain("TRUNCATED");
+	});
+	it("pages a long note with many links so that every character is seen exactly once", async () => {
+		// Numbered words, so a skipped or repeated span cannot go unnoticed.
+		const text = Array.from({ length: 9000 }, (_, i) => `w${i}`).join(" ") + " 😀 end";
+		const links = Array.from({ length: 40 }, (_, i) => `[[Some Fairly Long Note Name Number ${i}]]`).join(" ");
+		for (const limit of [1000, 2000, 12000]) {
+			const vault = new FakeVault({ "Hub/Long Hub.md": `#hub ${links}\n\n${text}` });
+			for (let i = 0; i < 40; i++) vault.seed(`Linkers/A Note That Links To The Hub ${i}.md`, "See [[Long Hub]].");
+			const { ctx } = makeCtx(vault);
+			ctx.maxResultChars = limit;
+			const content = await vault.read("Hub/Long Hub.md");
+			let seen = "";
+			let offset = 0;
+			for (let calls = 0; calls < 200; calls++) {
+				const out = await readNote.execute({ path: "Hub/Long Hub.md", offset }, ctx);
+				// Within the budget, so the agent (which cuts above maxResultChars + 500) leaves the marker alone.
+				expect(out.length).toBeLessThanOrEqual(limit);
+				expect(out).toMatch(/^# Hub\/Long Hub\.md\ntags: .*\nlinks to: .*\nlinked from: .*\nlength: \d+ characters\n---\n/);
+				let body = out.slice(out.indexOf("\n---\n") + 5);
+				if (offset > 0) {
+					expect(body.startsWith(`[…continuing from character ${offset}]\n`)).toBe(true);
+					body = body.slice(body.indexOf("\n") + 1);
+				}
+				const marker = /\n\n\[TRUNCATED at character (\d+) of (\d+)\. Call read_note again with offset=(\d+) to continue\.\]$/.exec(body);
+				if (!marker) {
+					seen += body;
+					break;
+				}
+				expect(marker[1]).toBe(marker[3]);
+				expect(Number(marker[2])).toBe(content.length);
+				seen += body.slice(0, marker.index);
+				expect(Number(marker[3])).toBe(seen.length);
+				offset = Number(marker[3]);
+			}
+			expect(seen).toBe(content);
+		}
+	});
+	it("says how many links were left out of a long header", async () => {
+		const vault = new FakeVault({ "Hub.md": Array.from({ length: 45 }, (_, i) => `[[N${i}]]`).join(" ") });
+		const { ctx } = makeCtx(vault);
+		ctx.maxResultChars = 12000;
+		expect(await readNote.execute({ path: "Hub.md" }, ctx)).toContain("N29, … (+15 more)\n");
 	});
 	it("fails helpfully for a missing note", async () => {
 		const { ctx } = makeCtx(freshVault());
@@ -136,6 +203,44 @@ describe("missing-note hints", () => {
 		const vault = freshVault();
 		expect(missingNoteHint(vault, "Journal/Chess.md")).toMatch(/no folder "Journal\/".*Similar names: Projects\/Chess Robot.md.*Folders with notes: Ideas\/, Projects\//);
 		expect(missingNoteHint(vault, "Zzz")).toMatch(/No note is named "Zzz" in the vault root/);
+	});
+});
+
+describe("a folder argument that does not exist", () => {
+	function vault() {
+		const v = freshVault();
+		v.seed("Daily/2026-11-01.md", "## Capture\n\n- gantry idea\n");
+		v.seed("School/CSCI 406/Lectures.md", "## 2026-09-03\n\ngantry\n");
+		v.seedFile("Attachments/scan.pdf", 1000);
+		return v;
+	}
+	it("is named as missing with the closest folders, by every tool that takes one", async () => {
+		const { ctx } = makeCtx(vault());
+		// A typo, a nested folder asked for by its own name, and a name that only partly matches.
+		await expect(grepVault.execute({ pattern: "gantry", folder: "Dialy" }, ctx)).rejects.toThrow('There is no folder "Dialy/". Closest folders: Daily/. Nothing was searched.');
+		await expect(grepVault.execute({ pattern: "gantry", folder: "CSCI 406/" }, ctx)).rejects.toThrow('There is no folder "CSCI 406/". Closest folders: School/CSCI 406/. Nothing was searched.');
+		await expect(listSections.execute({ heading: "Capture", folder: "Daily Notes" }, ctx)).rejects.toThrow('There is no folder "Daily Notes/". Closest folders: Daily/. Nothing was searched.');
+		await expect(listNotes.execute({ folder: "Project" }, ctx)).rejects.toThrow('There is no folder "Project/". Closest folders: Projects/.');
+		await expect(listFiles.execute({ folder: "Attachment" }, ctx)).rejects.toThrow('There is no folder "Attachment/". Closest folders: Attachments/.');
+		// Nothing like it: the top-level folders.
+		await expect(listNotes.execute({ folder: "Zzz/Qqq" }, ctx)).rejects.toThrow('There is no folder "Zzz/Qqq/". Top-level folders: Attachments/, Daily/, Ideas/, Projects/, School/, Templates/.');
+	});
+	it("is told apart from a folder that exists and has nothing matching", async () => {
+		const { ctx } = makeCtx(vault());
+		expect(await grepVault.execute({ pattern: "zebra", folder: "daily" }, ctx)).toBe('No note contains "zebra" under daily/.');
+		expect(await listSections.execute({ heading: "Nope", folder: "Daily" }, ctx)).toBe('No section headed "nope" under daily/.');
+		expect(await listNotes.execute({ folder: "Daily", name_contains: "zebra" }, ctx)).toBe("No notes matched those filters.");
+		// A parent folder with notes only in its subfolders, and a folder with attachments but no notes, both exist.
+		expect(await listNotes.execute({ folder: "School", name_contains: "zebra" }, ctx)).toBe("No notes matched those filters.");
+		expect(await listNotes.execute({ folder: "Attachments" }, ctx)).toBe("No notes matched those filters.");
+		expect(await grepVault.execute({ pattern: "gantry", folder: "Attachments" }, ctx)).toBe('No note contains "gantry" under attachments/.');
+		expect(await listFiles.execute({ folder: "Daily" }, ctx)).toBe("No attachments matched those filters.");
+		expect(missingFolderHint(vault(), "School/CSCI 406")).toBeNull();
+		expect(missingFolderHint(vault(), "/school/")).toBeNull();
+	});
+	it("list_sections takes a note given as the folder, as grep_vault does", async () => {
+		const { ctx } = makeCtx(vault());
+		expect(await listSections.execute({ heading: "2026", folder: "Lectures" }, ctx)).toMatch(/^1 section .*:\nSchool\/CSCI 406\/Lectures\.md\n {2}## 2026-09-03 \(1 line, 6 chars\): gantry$/);
 	});
 });
 
@@ -430,6 +535,23 @@ describe("read_section / extractSection", () => {
 		expect(miss).toMatch(/No heading matching "Zebra"/);
 		expect(miss).toContain("## Status");
 	});
+	it("names the read_note offset that continues a section too long for one result", async () => {
+		const body = Array.from({ length: 600 }, (_, i) => `s${i}`).join(" ");
+		const content = `# T\n\nintro line\n\n## Big\n\n${body}\n\n## After\n\ntail`;
+		const vault = new FakeVault({ "Deep/Long.md": content });
+		const { ctx } = makeCtx(vault);
+		ctx.maxResultChars = 1000;
+		const out = await readSection.execute({ path: "Deep/Long", heading: "Big" }, ctx);
+		expect(out.length).toBeLessThanOrEqual(1000);
+		const marker = /\n\n\[TRUNCATED at (\d+) of (\d+) characters of this section\. Call read_note with offset=(\d+) to continue\.\]$/.exec(out);
+		expect(marker).not.toBeNull();
+		const shown = out.slice(out.indexOf("\n---\n") + 5, marker!.index);
+		expect(shown.length).toBe(Number(marker![1]));
+		// The offset is where this page stopped, in the note's own characters.
+		expect(content.slice(0, Number(marker![3])).endsWith(shown)).toBe(true);
+		const rest = await readNote.execute({ path: "Deep/Long", offset: Number(marker![3]) }, ctx);
+		expect(rest).toContain(`[…continuing from character ${marker![3]}]\n${content.slice(Number(marker![3]), Number(marker![3]) + 40)}`);
+	});
 });
 
 describe("move_note", () => {
@@ -476,7 +598,7 @@ describe("outline-decorated paths", () => {
 describe("read_note dedupe", () => {
 	it("short-circuits a repeat read of an unchanged note within a turn", async () => {
 		const vault = freshVault();
-		const { ctx } = makeCtx(vault);
+		const { ctx } = makeCtx(vault, "approve", 200);
 		ctx.readLog = new Map();
 		const first = await readNote.execute({ path: "Ideas/Sensors" }, ctx);
 		expect(first).toContain("Hall sensors are cheap.");
@@ -503,6 +625,22 @@ describe("list_notes date filters", () => {
 		expect(parseDate("")).toBeNull();
 		expect(parseDate("garbage")).toBeNull();
 	});
+	it("prints the date a note was modified on the user's calendar, the one the filters use", async () => {
+		const vault = new FakeVault();
+		// Late evening and just after midnight, local time: in UTC one of the two falls on another day in every zone but UTC itself.
+		vault.seed("Evening.md", "x", new Date(2026, 10, 5, 23, 30).getTime());
+		vault.seed("Small hours.md", "y", new Date(2026, 10, 5, 0, 30).getTime());
+		vault.seedFile("Recording.webm", 1000, new Date(2026, 10, 5, 23, 30).getTime());
+		const { ctx } = makeCtx(vault);
+		const out = await listNotes.execute({ modified_after: "2026-11-05", modified_before: "2026-11-06" }, ctx);
+		expect(out).toBe("2 notes:\nEvening.md  (1 B, modified 2026-11-05)\nSmall hours.md  (1 B, modified 2026-11-05)");
+		expect(await listNotes.execute({ modified_after: "2026-11-06" }, ctx)).toBe("No notes matched those filters.");
+		expect(await listFiles.execute({}, ctx)).toBe("1 file:\nRecording.webm  (1 kB, modified 2026-11-05)");
+		expect(localDate(new Date(2026, 0, 1, 0, 0, 1))).toBe("2026-01-01");
+		expect(localDate(new Date(2026, 11, 31, 23, 59, 59).getTime())).toBe("2026-12-31");
+		// The date printed is one that modified_after reads back as the same day.
+		expect(localDate(parseDate("2026-03-08")!)).toBe("2026-03-08");
+	});
 });
 
 describe("read_file", () => {
@@ -517,6 +655,32 @@ describe("read_file", () => {
 		expect(out).toContain("Isolation forests");
 		await expect(readFile.execute({ path: "Ideas/Sensors" }, ctx)).rejects.toThrow(/use read_note/);
 		await expect(readFile.execute({ path: "nope.pdf" }, ctx)).rejects.toThrow(/No file found/);
+	});
+	it("pages a long attachment within the budget, the scanned-pages note included", async () => {
+		const vault = freshVault();
+		vault.seedFile("Attachments/A Rather Long Folder Name/slides for the whole semester.pdf", 1000);
+		const { ctx } = makeCtx(vault);
+		ctx.maxResultChars = 1500;
+		ctx.describeImage = async () => "";
+		const text = "--- Page 1 ---\n\n--- Page 2 ---\n" + Array.from({ length: 2000 }, (_, i) => `t${i}`).join(" ");
+		ctx.readAttachmentText = async () => text;
+		let seen = "";
+		let offset = 0;
+		for (let calls = 0; calls < 50; calls++) {
+			const out = await readFile.execute({ path: "slides for the whole semester.pdf", offset }, ctx);
+			expect(out.length).toBeLessThanOrEqual(1500);
+			if (offset === 0) expect(out).toContain("[Page 1 has no text layer (scanned).");
+			const body = out.slice(out.indexOf("\n---\n") + 5).replace(/\n\n\[Page 1 has no text layer[^\]]*\]/, "");
+			const marker = /\n\n\[TRUNCATED at character (\d+) of \d+\. Call read_file again with offset=(\d+) to continue\.\]$/.exec(body);
+			if (!marker) {
+				seen += body;
+				break;
+			}
+			seen += body.slice(0, marker.index);
+			offset = Number(marker[2]);
+			expect(offset).toBe(seen.length);
+		}
+		expect(seen).toBe(text);
 	});
 });
 
@@ -559,6 +723,87 @@ describe("grep_vault", () => {
 		vault.seed("Daily/d2.md", "![[Recording 1.m4a]]\n");
 		expect(await grepVault.execute({ pattern: "!\\[\\[Recording" }, ctx)).toMatch(/searched as one.*\n1 matching line/s);
 		expect(tidyAlternation("a|b")).toBe("a|b");
+	});
+});
+
+describe("grep_vault long lines and notes_only", () => {
+	// A prose paragraph is one line: 3,000 characters with the word two thirds of the way in.
+	const paragraph = (i: number) => `${"Filler sentence about nothing in particular. ".repeat(44)}Then the gantry${i} appears in the middle. ${"More filler after the match, on and on. ".repeat(25)}`;
+	it("cuts a long line to a window around the match, marked with …", async () => {
+		const vault = new FakeVault({ "Prose/Essay.md": `## Body\n\n${paragraph(7)}\n\nshort line with gantry7\n` });
+		const { ctx } = makeCtx(vault);
+		const out = await grepVault.execute({ pattern: "GANTRY7", context: 1 }, ctx);
+		const rows = out.split("\n");
+		expect(rows[0]).toBe("2 matching lines in 1 note:");
+		expect(rows[1]).toMatch(/^Prose\/Essay\.md:3 \[## Body\]: ….*Then the gantry7 appears in the middle\. .*…$/);
+		expect(rows[1].length).toBeLessThan(300);
+		// Context lines and short matching lines are not cut.
+		expect(rows[2]).toBe("Prose/Essay.md:4- ");
+		expect(rows[3]).toBe("Prose/Essay.md:5 [## Body]: short line with gantry7");
+		// A regular expression is cut around where it matched, too.
+		const re = await grepVault.execute({ pattern: "gantry\\d appears", regex: true }, ctx);
+		expect(re).toMatch(/^1 matching line in 1 note:\nProse\/Essay\.md:3 \[## Body\]: ….*gantry7 appears.*…$/);
+	});
+	it("shows every match of a prose vault where whole paragraphs would not fit", async () => {
+		const vault = new FakeVault();
+		for (let i = 0; i < 30; i++) vault.seed(`Prose/Essay ${String(i).padStart(2, "0")}.md`, paragraph(i));
+		const { ctx } = makeCtx(vault);
+		const out = await grepVault.execute({ pattern: "gantry" }, ctx);
+		expect(out.length).toBeLessThanOrEqual(12000);
+		expect(out).toMatch(/^30 matching lines in 30 notes:/);
+		for (let i = 0; i < 30; i++) expect(out).toContain(`the gantry${i} appears`);
+		expect(out).not.toContain("more matching lines");
+	});
+	it("lists only the notes with their counts when notes_only is set", async () => {
+		const vault = new FakeVault({ "A/one.md": "gantry\nx\ngantry again\nGantry", "B/two.md": "nothing", "B/three.md": "a gantry", "A/four.md": "gantry\ngantry" });
+		const { ctx } = makeCtx(vault);
+		expect(await grepVault.execute({ pattern: "gantry", notes_only: true }, ctx)).toBe("6 matching lines in 3 notes (lines per note):\nA/one.md: 3\nA/four.md: 2\nB/three.md: 1");
+		expect(await grepVault.execute({ pattern: "gantry", notes_only: "true", folder: "B" }, ctx)).toBe("1 matching line in 1 note (lines per note):\nB/three.md: 1");
+		expect(await grepVault.execute({ pattern: "zebra", notes_only: true }, ctx)).toMatch(/^No note contains "zebra"/);
+		// The limit is about lines; it does not hide notes here.
+		expect(await grepVault.execute({ pattern: "gantry", notes_only: true, limit: 1 }, ctx)).toContain("B/three.md: 1");
+	});
+	it("fits a long list of notes and says how many are left", async () => {
+		const vault = new FakeVault();
+		for (let i = 0; i < 200; i++) vault.seed(`Some Folder/Some Note With A Long Name ${String(i).padStart(3, "0")}.md`, "needle");
+		const { ctx } = makeCtx(vault, "approve", 2000);
+		const out = await grepVault.execute({ pattern: "needle", notes_only: true }, ctx);
+		expect(out.length).toBeLessThanOrEqual(2000);
+		const rows = (out.match(/\.md: 1$/gm) ?? []).length;
+		expect(rows).toBeGreaterThan(20);
+		expect(out.endsWith(`\n…and ${200 - rows} more notes; narrow with folder.`)).toBe(true);
+		// The lines mode points at it when the lines do not fit.
+		expect(await grepVault.execute({ pattern: "needle", limit: 200 }, ctx)).toMatch(/more matching lines not shown; narrow with folder or a more specific pattern, or set notes_only: true for every note\.$/);
+	});
+	it("clipLine keeps short lines whole and the match inside the window", () => {
+		expect(clipLine("short", 240, 2)).toBe("short");
+		const nearlyFits = "x".repeat(270);
+		expect(clipLine(nearlyFits, 240, 100)).toBe(nearlyFits);
+		const line = `${"a ".repeat(500)}NEEDLE${" b".repeat(500)}`;
+		const cut = clipLine(line, 240, 1000);
+		expect(cut.startsWith("…")).toBe(true);
+		expect(cut.endsWith("…")).toBe(true);
+		expect(cut.length).toBeLessThanOrEqual(242);
+		expect(cut.indexOf("NEEDLE")).toBeGreaterThan(40);
+		// At the start nothing is cut in front; at the end nothing behind.
+		expect(clipLine(line, 240, 3)).toBe(line.slice(0, 240) + "…");
+		expect(clipLine(`${"a ".repeat(500)}NEEDLE`, 240, 1000)).toBe("…" + `${"a ".repeat(500)}NEEDLE`.slice(-240));
+	});
+});
+
+describe("find_in_note long lines", () => {
+	it("shows the part of a long paragraph around the match and the start of its neighbours", async () => {
+		const before = "Before. ".repeat(100);
+		const para = `${"Filler sentence. ".repeat(100)}The exact phrase to edit is here. ${"Trailing words. ".repeat(100)}`;
+		const vault = new FakeVault({ "Essay.md": `${before}\n${para}\nshort after` });
+		const { ctx } = makeCtx(vault);
+		const out = await findInNote.execute({ path: "Essay", pattern: "exact phrase" }, ctx);
+		const rows = out.split("\n");
+		expect(rows[0]).toBe('1 match in Essay.md (3 lines). The matching line is marked with ">".');
+		expect(rows[1]).toBe(`     1 | ${before.slice(0, 160)}…`);
+		expect(rows[2]).toMatch(/^> {4}2 \| ….*The exact phrase to edit is here\. .*…$/);
+		expect(rows[2].length).toBeLessThan(420);
+		expect(rows[3]).toBe("     3 | short after");
 	});
 });
 

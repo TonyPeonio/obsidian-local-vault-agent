@@ -145,9 +145,16 @@ export const listLectures: ToolDefinition = {
 		list = [...list].sort((a, b) => a.date.localeCompare(b.date) || a.course.localeCompare(b.course));
 		const header = `${list.length} lecture${list.length === 1 ? "" : "s"}${course ? ` in ${course}` : ""}. Courses: ${courses.join(", ") || "(none)"}.`;
 		if (list.length === 0) return `${header}\nNo lectures match.`;
-		const shown = list.slice(0, 200);
-		const lines = shown.map((l) => `${l.date} · ${l.course} · ${l.kind} · ${l.path}${l.sentence ? ` — ${l.sentence}` : ""}`);
-		if (list.length > shown.length) lines.push(`… ${list.length - shown.length} more; narrow with course or since/until.`);
+		// As many rows as the result can hold (the agent cuts a longer one, and the count of what is missing with it).
+		const lines: string[] = [];
+		let room = ctx.maxResultChars - header.length - `\n… ${list.length} more; narrow with course or since/until.`.length;
+		for (const l of list.slice(0, 200)) {
+			const line = `${l.date} · ${l.course} · ${l.kind} · ${l.path}${l.sentence ? ` — ${l.sentence}` : ""}`;
+			if (lines.length > 0 && line.length + 1 > room) break;
+			lines.push(line);
+			room -= line.length + 1;
+		}
+		if (list.length > lines.length) lines.push(`… ${list.length - lines.length} more; narrow with course or since/until.`);
 		return `${header}\n${lines.join("\n")}`;
 	},
 };
@@ -184,23 +191,29 @@ export const lectureTranscript: ToolDefinition = {
 			for (const b of best) for (const i of [b.index - 1, b.index, b.index + 1]) if (i >= 0 && i < paragraphs.length) set.add(i);
 			keep = Array.from(set).sort((a, b) => a - b);
 		} else keep = paragraphs.map((_, i) => i);
+		const head = `# ${path} (transcript${lecture ? `, ${lecture.course}, ${lecture.date}` : ""}, ${paragraphs.length} paragraphs${query ? `, best matches for "${query}"` : ""})`;
+		const tail = `\n---\nQuote the paragraph you use with its [m:ss] time and cite [[${path.replace(/\.md$/i, "")}]].`;
+		const continues = (n: number) => `[… transcript continues; ${n} more paragraphs. Pass query to find a passage.]`;
+		// Everything counted, separators too: a result over the budget is cut by the agent, and
+		// the "transcript continues" line and the citing instruction are at the end.
+		const budget = ctx.maxResultChars - head.length - 5 - tail.length - continues(paragraphs.length).length - 2;
 		const lines: string[] = [];
 		let chars = 0;
 		let last = -2;
 		for (const i of keep) {
 			const p = paragraphs[i];
 			const line = `[${formatTimestamp(p.start)}] ${p.text}`;
-			if (chars + line.length > ctx.maxResultChars) {
-				lines.push(`[… transcript continues; ${paragraphs.length - i} more paragraphs. Pass query to find a passage.]`);
+			const gap = last >= 0 && i !== last + 1 ? 3 : 0;
+			if (lines.length > 0 && chars + gap + line.length + 2 > budget) {
+				lines.push(continues(paragraphs.length - i));
 				break;
 			}
-			if (last >= 0 && i !== last + 1) lines.push("…");
+			if (gap) lines.push("…");
 			lines.push(line);
-			chars += line.length;
+			chars += gap + line.length + 2;
 			last = i;
 		}
-		const head = `# ${path} (transcript${lecture ? `, ${lecture.course}, ${lecture.date}` : ""}, ${paragraphs.length} paragraphs${query ? `, best matches for "${query}"` : ""})`;
-		return `${head}\n---\n${lines.join("\n\n")}\n---\nQuote the paragraph you use with its [m:ss] time and cite [[${path.replace(/\.md$/i, "")}]].`;
+		return `${head}\n---\n${lines.join("\n\n")}${tail}`;
 	},
 };
 
