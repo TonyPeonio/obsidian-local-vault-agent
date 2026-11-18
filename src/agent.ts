@@ -6,6 +6,7 @@ import { blockIdEdits, linkedTargets, planCitations, plainText, quotable, withPa
 import { buildOutline, outlineBudget } from "./outline";
 import { ToolError, localDate, pathHasWords, toOllamaTools } from "./tools";
 import { INVALID_ARGUMENTS } from "./types";
+import { ATTACHED_OPENING } from "./mentions";
 import { safeMarkdown } from "./safe-markdown";
 import type { UndoStack } from "./undo";
 import type {
@@ -132,6 +133,117 @@ function standaloneQuestion(text: string, firstTurn: boolean): boolean {
 	if (EDIT_REQUEST.test(t)) return false;
 	if (!firstTurn && POINTS_BACK.test(t)) return false;
 	return /\?\s*$/.test(t) || QUESTION_WORD.test(t);
+}
+
+/**
+ * What the user typed, without what the composer attached to it (the text of attached notes and
+ * of the notes they link to, what was read in attached pictures). Whether a turn asks for a
+ * change is decided from this alone: a note that says "create this note" must not be able to make
+ * the turn one in which a change was asked for.
+ */
+export function ownWords(message: string): string {
+	const at = message.indexOf(ATTACHED_OPENING);
+	return at < 0 ? message : message.slice(0, at);
+}
+
+/** How a message that asks to be told something begins. Wider than `QUESTION_WORD`: "list", "compare" and "read" ask for an answer too. */
+const ASKS_TO_BE_TOLD =
+	/^\W*(?:(?:hi|hey|hello|ok|okay|so|and|also|now|please)[,!.]?\s+)*(what|what's|whats|when|where|who|whom|whose|why|how|which|did|do|does|is|are|am|was|were|have|has|had|can|could|should|would|will|any|tell me|remind me|find|show|summari[sz]e|explain|describe|give me|list|compare|count|look up|look for|search|check|read|quote|recap)\b/i;
+
+/** Verbs that change the vault whatever follows: "fix the links", "tag these", "move them to Archive". */
+const CHANGE_VERBS =
+	"add|append|prepend|insert|put|create|save|record|log|capture|jot down|note down|move|relocate|rename|retitle|delete|remove|trash|erase|discard|clear out|strip|fix|repair|correct|clean|tidy|reformat|format|rewrite|reword|rephrase|edit|update|change|modify|revise|replace|swap|organi[sz]e|reorgani[sz]e|restructure|rearrange|reorder|merge|combine|consolidate|split|link|unlink|tag|untag|retag|label|mark|unmark|check off|tick off|tick|untick|uncheck|archive|convert|turn|transform|dedupe|deduplicate|fill in|fill out|set|apply|duplicate|paste|embed|distill|process";
+/** Verbs that produce something: a change only when the sentence says where in the vault it goes ("collect them into a new note"); otherwise the answer is the place ("list my open tasks"). */
+const PRODUCE_VERBS = "collect|gather|compile|copy|export|extract|pull|summari[sz]e|list|group|sort|translate|put together";
+/** Verbs that make something: a change when the sentence names a place, or a note as the thing made ("make me a note with…", "write a note about…"). */
+const MAKE_VERBS = "make|write|draft|start|build|generate|compose|prepare";
+/** Words before the verb that leave it an instruction. The first group asks outright ("can you…", "please…"); the second only strings sentences together. */
+const ASKING = "please|kindly|can you|could you|would you|will you|can we|could we|let's|lets|let us|help me to|help me|go ahead and|i want you to|i'd like you to|i would like you to|i need you to|you should|you can|i want to|i'd like to|i would like to|i need to|make sure to|be sure to|remember to|don't forget to";
+const STRINGING = "and|then|also|now|just|next|first|finally|afterwards|after that|if not|if so|otherwise|ok|okay|yes|so";
+/** A noun that only looks like one of the verbs: "Update on the robot?", "Format of the daily note?", "Change log". */
+const NOUN_USE = "(?!\\s+(?:on|of|for|between|about|since|logs?|history|status|requests?|rate|times?|dates?|order|names?|count|size|types?|number)\\b)";
+const CHANGE_CLAUSE = new RegExp(
+	// Where an instruction can begin: the message, a line, a sentence, a list item, or after a comma or a joining word.
+	`(^|[.!?;:\\n]\\s*|[,(]\\s*|\\s[–—-]\\s+|\\b(?:and|then|but|plus)\\s+)` +
+		`((?:(?:[-*+]|\\d+[.)])\\s+)?(?:(?:${ASKING}|${STRINGING}),?\\s+)*)` +
+		// "put together" before "put".
+		`(${PRODUCE_VERBS}|${MAKE_VERBS}|${CHANGE_VERBS})\\b${NOUN_USE}\\s+(\\S+)`,
+	"gim",
+);
+/** "Do it", "can you do that for the others": the change was named earlier in the conversation. */
+const DO_IT = new RegExp(`(?:^|[.!?;:\\n,]\\s*)(?:(?:${ASKING}|${STRINGING}),?\\s+)*do\\s+(?:it|that|this|so|the same)\\b`, "im");
+const ASKING_LEAD = new RegExp(`\\b(?:${ASKING})\\b`, "i");
+const PRODUCE_VERB = new RegExp(`^(?:${PRODUCE_VERBS})$`, "i");
+const MAKE_VERB = new RegExp(`^(?:${MAKE_VERBS})$`, "i");
+/** What follows a verb when it has an object: "tag these", "fix the links", "move Projects/Old", "tidy up". Not "update schedule and budget". */
+const OBJECT_START = /^(?:the|a|an|my|our|your|this|that|these|those|it|its|them|their|all|every|each|any|some|both|one|what|whatever|everything|anything|up|out|in|off|down|today's|["'“‘[#`(]|\d|\p{Lu})/u;
+const THING = "(?:note|file|page|document|doc|section|heading|folder|canvas)s?";
+/** A place in the vault for what is produced: "into a new note", "in a note called…", "as its own page", "into my daily note". Not "in a table" or "as a list": those are how the answer is laid out. */
+const PLACE = new RegExp(
+	`\\b(?:in|into|to|as|onto)\\s+(?:a|an|one|another|its own|their own)\\s+(?:[\\p{L}\\p{N}'-]+\\s+){0,2}${THING}\\b|\\b(?:into|onto|under)\\s+(?:my|the|this|that|today's|tomorrow's|yesterday's)\\s+(?:[\\p{L}\\p{N}'-]+\\s+){0,3}${THING}\\b|\\bnew\\s+(?:[\\p{L}\\p{N}'-]+\\s+)?${THING}\\b`,
+	"iu",
+);
+/** A note as the thing made: "a note", "another short note", "a new folder". */
+const THING_MADE = /\b(?:a|an|another|one)\s+(?:[\p{L}\p{N}'-]+\s+){0,2}(?:note|file|page|folder|section|canvas)\b/iu;
+
+/**
+ * Whether the user's own words ask for a change to the vault, wherever in the message the request
+ * stands: "Find every code block in my daily notes and collect them into a new note" asks for one
+ * as much as "Create a note" does, and so does "Which projects are done? Move them to the
+ * archive." A request is a verb of change where an instruction can begin (the start of the
+ * message or of a sentence, after "can you" or "please", after a comma or "and"), not the same
+ * word inside a question: "How do I rename a note?" and "Should I move these?" ask for nothing to
+ * be changed. Quoted text and the names of linked notes are not read as requests, and neither is
+ * anything the composer attached (`ownWords`).
+ */
+export function asksForChange(message: string): boolean {
+	const text = ownWords(message)
+		.replace(/\[\[[^\]\n]*\]\]/g, " [[note]] ")
+		.replace(/"[^"\n]*"|“[^”\n]*”|`[^`\n]*`/g, ' "quoted" ');
+	if (DO_IT.test(text)) return true;
+	CHANGE_CLAUSE.lastIndex = 0;
+	let m: RegExpExecArray | null;
+	while ((m = CHANGE_CLAUSE.exec(text)) !== null) {
+		const [, boundary, lead, verb, next] = m;
+		// The search goes on right after this verb: an instruction may follow in the same sentence.
+		CHANGE_CLAUSE.lastIndex = m.index + m[0].length - next.length;
+		// From the verb to the end of its sentence, and how the sentence ends.
+		const tail = text.slice(m.index + boundary.length + lead.length);
+		const end = tail.search(/[.!?;](?:\s|$)|\n/);
+		const rest = end < 0 ? tail : tail.slice(0, end);
+		const asked = ASKING_LEAD.test(lead);
+		const hasObject = OBJECT_START.test(next);
+		let instruction: boolean;
+		if (asked) instruction = true;
+		// "Mark said…" opens a sentence as a name.
+		else if (/^mark$/i.test(verb)) instruction = hasObject && !/^\p{Lu}/u.test(next);
+		// A sentence that opens with the verb and is not a question is an instruction ("Fix typos in my daily note.").
+		else if ((boundary === "" || /^[.!?;:\n]/.test(boundary)) && !(end >= 0 && tail[end] === "?")) instruction = true;
+		// After a comma or "and", or in a sentence that ends in a question mark, the word is as often a noun
+		// ("the wiring, update schedule and budget?", "Correct answer for question 3?"): it needs an object.
+		else instruction = hasObject;
+		if (!instruction) continue;
+		const makes = MAKE_VERB.test(verb);
+		if (!makes && !PRODUCE_VERB.test(verb)) return true;
+		// What is produced is a change only when the sentence puts it in the vault.
+		if (PLACE.test(rest) || (makes && THING_MADE.test(rest))) return true;
+	}
+	return false;
+}
+
+/**
+ * A message that asks to be told something and asks for no change: "What does the clipped page
+ * recommend?", "Find the notes about belt tension", "List the paused projects". In such a turn a
+ * change is the model's own idea or the idea of a note it read, and is shown with
+ * `UNASKED_WRITE_CAUTION` however changes are otherwise approved. Decided from the user's own
+ * words only, before any tool has run. A message that neither asks a question nor asks for a
+ * change ("go on", a prompt sent by a command) is not judged: no warning.
+ */
+export function asksOnlyAQuestion(message: string): boolean {
+	const text = ownWords(message).trim();
+	if (text.length < 3 || text.startsWith("/")) return false;
+	const asks = ASKS_TO_BE_TOLD.test(text) || /\?["”')\]]*\s*$/m.test(text);
+	return asks && !asksForChange(message);
 }
 
 const TASK_WORDS = "(?:tasks?|to-?dos?|action items?|checkboxes)";
@@ -724,7 +836,8 @@ export class Agent {
 		const frozen = this.frozenSystem(conversation, cfg, tools, conventions, written);
 		conversation.messages.push({ role: "user", content: userText, context: [turnContext(vault, now, daily), frozen.drift].filter(Boolean).join(" ") });
 
-		const askedAQuestion = looksLikeVaultQuestion(userText);
+		// Decided here, from the user's own words, before anything is read: nothing a tool returns can change it.
+		const askedAQuestion = asksOnlyAQuestion(userText);
 		let currentCall: ToolCall | null = null;
 		/** Paths the current mutating call wrote, so only reads of those are forgotten. */
 		const changedPaths = new Set<string>();

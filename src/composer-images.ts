@@ -1,4 +1,5 @@
 import { IMAGE_EXTENSIONS } from "./embeds";
+import { ATTACHED_OPENING } from "./mentions";
 
 /**
  * Images pasted or dropped into the message box. The file is saved where Obsidian puts attachments
@@ -62,11 +63,8 @@ export interface ReadImage {
 	error?: string;
 }
 
-/**
- * Starts the part of a message that the chat does not show (the same opening as attached notes, so
- * a restored chat hides it too).
- */
-const ATTACHED_OPENING = "\n\n(The user attached";
+// `ATTACHED_OPENING` starts the part of a message that the chat does not show (the same opening as
+// attached notes, so a restored chat hides it too).
 
 /**
  * The message with what was read in its images appended. `maxCharsEach` bounds one reading.

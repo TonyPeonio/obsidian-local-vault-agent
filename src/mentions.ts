@@ -15,6 +15,14 @@ export interface Mention {
 
 const LINK = /\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g;
 
+/**
+ * How everything the composer adds to a message begins (the attached notes here, the attached
+ * pictures in composer-images.ts). What the user typed ends where this first appears: after it
+ * comes the text of notes and pictures, which is material and never the user's request (see
+ * `ownWords` in agent.ts).
+ */
+export const ATTACHED_OPENING = "\n\n(The user attached";
+
 /** Wikilinks in the user's text that resolve to notes, deduplicated, in order of appearance. */
 export function findMentions(text: string, vault: VaultAccess): Mention[] {
 	const out: Mention[] = [];
@@ -50,7 +58,7 @@ export async function attachMentions(text: string, vault: VaultAccess, maxTotalC
 	// net is described in [[NNUE Training]]"): bring those passages along.
 	const linked = await linkedPassages(text, attached, vault, Math.min(budget, LINKED_BUDGET));
 	for (const p of linked) parts.push(`--- From ${p.path}${p.crumb ? ` › ${p.crumb}` : ""}, which the attached note links to ---\n${p.text}`);
-	const message = `${text}\n\n(The user attached the following note${attached.length === 1 ? "" : "s"} to this message. They are already read; do not read them again. If they do not fully answer the question, find the rest in the vault with search_passages or by following their wikilinks before saying it is not recorded.)\n\n${parts.join("\n\n")}`;
+	const message = `${text}${ATTACHED_OPENING} the following note${attached.length === 1 ? "" : "s"} to this message. They are already read; do not read them again. If they do not fully answer the question, find the rest in the vault with search_passages or by following their wikilinks before saying it is not recorded.)\n\n${parts.join("\n\n")}`;
 	return { message, attached };
 }
 
