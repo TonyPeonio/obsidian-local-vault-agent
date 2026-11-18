@@ -229,6 +229,11 @@ async function main() {
 
 	const sys = buildSystemPrompt(vault, cfg, await conventions(), GISTS ? (p) => gists.get(p) : undefined);
 	console.log(`System prompt: ${sys.length} chars (~${Math.round(sys.length / 3.2)} tokens of ${cfg.numCtx})`);
+	// An OpenAI-compatible server has the window its model was loaded with, whatever NUM_CTX says: the agent works within the smaller.
+	if (CHAT_URL) {
+		const reported = await chat.loadedContext(MODEL);
+		console.log(`Server context: ${reported === undefined ? `${CHAT_URL} does not say; the agent assumes ${cfg.numCtx}` : `${CHAT_URL} has ${MODEL} loaded with ${reported} tokens; the agent works within ${Math.min(reported, cfg.numCtx)}`}`);
+	}
 
 	interface Row {
 		id: string;

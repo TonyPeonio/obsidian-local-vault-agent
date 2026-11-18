@@ -7,12 +7,13 @@ import { GistCache, type GistData, type GistStatus } from "./gists";
 import { SemanticIndex, weakMatchThreshold, type IndexData, type IndexManifest, type IndexStatus, type StoredFile } from "./index";
 import { ObsidianVault, findEditorView } from "./obsidian-vault";
 import { OllamaClient, placementWarning, type ModelInfo } from "./ollama";
+import { effectiveContext } from "./openai";
 import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
 import { applyConceptLinks, conceptNames, isConceptNote, suggestConcepts } from "./concepts";
 import { ConceptModal, HistoryModal, QuizModal } from "./feature-modals";
 import { cosine } from "./index";
 import { LECTURE_TOOLS, lectureCompanionApi, type LectureCompanionApi, type LocalVaultAgentApi } from "./lecture-companion";
-import { QuizEngine } from "./quiz";
+import { QuizEngine, sourceBudget } from "./quiz";
 import { JOB_NAMES, OverlayVault, PendingQueue, afterRun, dailyNotesBefore, digestPath, digestPrompt, dueJobs, ensureSources, localDate, planPending, recentNotes, renderDigest, type JobId, type JobOutcome, type JobRetry } from "./scheduler";
 import { ImageReader, readImage, type VisionData } from "./vision";
 import { ReportModal, SetupModal } from "./help-modals";
@@ -193,7 +194,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			getVisionModel: () => this.settings.visionModel,
 			getChatModel: () => this.settings.model,
 			keepAlive: () => this.settings.keepAlive,
-			chatNumCtx: () => this.settings.numCtx,
+			chatNumCtx: () => this.numCtx(),
 			readBinary: async (path) => {
 				const file = this.app.vault.getFileByPath(normalizePath(path));
 				if (!file) throw new Error(`File not found: ${path}`);
@@ -205,7 +206,11 @@ export default class LocalVaultAgentPlugin extends Plugin {
 				await this.app.vault.adapter.write(visionPath, JSON.stringify(data));
 			},
 		});
-		this.quiz = new QuizEngine(this.client, () => ({ model: this.settings.model, numCtx: this.settings.numCtx, keepAlive: this.settings.keepAlive }));
+		this.quiz = new QuizEngine(this.client, async () => {
+			// Asked once per server and model (the client remembers), not with every question.
+			const serverCtx = await this.client.loadedContext(this.settings.model);
+			return { model: this.settings.model, numCtx: effectiveContext(this.settings.numCtx, serverCtx), keepAlive: this.settings.keepAlive, serverCtx };
+		});
 
 		this.agent = new Agent({
 			client: this.client,
@@ -1288,7 +1293,10 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		const notes = recentNotes(this.vault.listNotes(), now, 7).filter((n) => !n.path.startsWith(this.settings.digestFolder.replace(/\/+$/, "") + "/"));
 		if (notes.length === 0) return [];
 		const texts: { path: string; text: string }[] = [];
-		let budget = 40000;
+		// The window the server really has (an OpenAI-compatible one is asked once), not only the setting.
+		const serverCtx = await this.client.loadedContext(this.settings.model);
+		const numCtx = effectiveContext(this.settings.numCtx, serverCtx);
+		let budget = sourceBudget(serverCtx);
 		for (const n of notes.slice(0, 40)) {
 			if (budget <= 500) break;
 			const text = (await this.vault.read(n.path)).slice(0, Math.min(4000, budget));
@@ -1299,7 +1307,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 			model: this.settings.model,
 			messages: [{ role: "user", content: digestPrompt(weekOf, texts) }],
 			think: false,
-			options: { num_ctx: this.settings.numCtx, temperature: 0.4 },
+			options: { num_ctx: numCtx, temperature: 0.4 },
 			keep_alive: this.settings.keepAlive,
 			signal,
 		});
@@ -1416,11 +1424,21 @@ export default class LocalVaultAgentPlugin extends Plugin {
 		return () => this.statusListeners.delete(listener);
 	}
 
+	/**
+	 * The context size to work within: the setting, or the window an OpenAI-compatible server said
+	 * it has the chat model loaded with when that is smaller. Read from what the client last
+	 * learned (it asks once per server and model, and again when the model is warmed), so this
+	 * sends nothing.
+	 */
+	numCtx(): number {
+		return effectiveContext(this.settings.numCtx, this.client.knownContext(this.settings.model));
+	}
+
 	agentConfig(): AgentConfig {
 		const s = this.settings;
 		return {
 			model: s.model,
-			numCtx: s.numCtx,
+			numCtx: effectiveContext(s.numCtx, this.client.knownContext(s.model)),
 			temperature: s.temperature,
 			sampling: SAMPLING,
 			think: s.thinking === "auto" ? undefined : s.thinking === "on",
@@ -1465,10 +1483,17 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	 * turn or a scheduled job runs, and quietly: if Ollama is not there, the first message says so.
 	 */
 	warmModel(): void {
-		if (!this.settings.warmUp || this.agentBusy || this.jobRunning) return;
+		if (this.agentBusy || this.jobRunning) return;
 		const now = Date.now();
 		if (now - this.lastWarm < WARM_EVERY_MS) return;
 		this.lastWarm = now;
+		if (!this.settings.warmUp) {
+			// Not reading the prompt ahead, but still asking an OpenAI-compatible server how large a window
+			// it has the model loaded with now (one small request; nothing is sent to Ollama).
+			void this.client.loadedContext(this.settings.model, true);
+			return;
+		}
+		// The warm-up asks the server for its window itself, before it writes the prompt.
 		void this.agent.warm().catch(() => {
 			// Not reachable, or the model is missing: try again at the next focus.
 			this.lastWarm = 0;

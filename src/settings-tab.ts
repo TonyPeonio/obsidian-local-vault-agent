@@ -184,6 +184,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 								s.model = v;
 								await save();
 								void p.refreshVision();
+								void this.showServerContext();
 							});
 						});
 						st.addText((tx) =>
@@ -194,7 +195,7 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 							}),
 						);
 					}),
-					this.row("set.ctx", (st) =>
+					this.row("set.ctx", (st) => {
 						st.addText((tx) =>
 							tx.setValue(String(s.numCtx)).onChange(async (v) => {
 								const n = parseInt(v, 10);
@@ -203,8 +204,11 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 									await save();
 								}
 							}),
-						),
-					),
+						);
+						// An OpenAI-compatible server has the window the model was loaded with: say which.
+						this.ctxRow = st;
+						void this.showServerContext();
+					}),
 					this.row("set.temp", (st) =>
 						st.addSlider((sl) =>
 							sl.setLimits(0, 1, 0.05).setValue(s.temperature).onChange(async (v) => {
@@ -579,6 +583,26 @@ export class LocalVaultAgentSettingTab extends PluginSettingTab {
 				await this.plugin.saveSettings();
 			});
 		});
+	}
+
+	/** The context-window row as last rendered, so its description can follow the model picked above it. */
+	private ctxRow: Setting | null = null;
+
+	/**
+	 * Under the context-window setting, for an OpenAI-compatible server: the window the server says
+	 * it has the chat model loaded with (asked anew each time the row is drawn or the model changes),
+	 * and which of the two sizes the agent works within.
+	 */
+	private async showServerContext(): Promise<void> {
+		const st = this.ctxRow;
+		const p = this.plugin;
+		if (!st || p.settings.provider !== "openai") return;
+		const model = p.settings.model;
+		const n = await p.client.loadedContext(model, true);
+		// Answered late: another model or provider has been picked, or the row drawn again, meanwhile.
+		if (this.ctxRow !== st || p.settings.provider !== "openai" || p.settings.model !== model) return;
+		const setting = p.settings.numCtx;
+		st.setDesc(`${t("set.ctx.desc")} ${n === undefined ? t("set.ctx.server.unknown", { model, setting }) : t(n < setting ? "set.ctx.server.smaller" : "set.ctx.server.enough", { model, n, setting })}`);
 	}
 
 	/** A short generation at the configured context: connection, speed, memory split, advice. */

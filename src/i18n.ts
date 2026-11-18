@@ -32,7 +32,10 @@ const en = {
 	"set.model.desc": "Must support tool calling. Recommended: qwen3.5:9b (12 GB GPUs), qwen3.5:4b (8 GB), qwen3.5:35b-a3b (24 GB).",
 	"set.model.placeholder": "or type a model name",
 	"set.ctx.name": "Context window (num_ctx)",
-	"set.ctx.desc": "Tokens the model can see at once. 32768 is the default and the benchmark's setting; 16384 on an 8 GB card. Larger is not faster or more accurate: the conversation is capped at the 32k budget regardless, and the KV cache grows with the window. (Ollama only; other servers set this when loading the model.)",
+	"set.ctx.desc": "Tokens the model can see at once. 32768 is the default and the benchmark's setting; 16384 on an 8 GB card. Larger is not faster or more accurate: the conversation is capped at the 32k budget regardless, and the KV cache grows with the window. Ollama is told this size with every request; another server has the window its model was loaded with, and the agent works within the smaller of the two.",
+	"set.ctx.server.smaller": "This server has {model} loaded with {n} tokens, less than the setting, so the agent works within {n}.",
+	"set.ctx.server.enough": "This server has {model} loaded with {n} tokens; the agent works within the setting, {setting}.",
+	"set.ctx.server.unknown": "This server does not say how large a window it has {model} loaded with, so the agent assumes the setting, {setting}: load the model with at least that much.",
 	"set.temp.name": "Temperature",
 	"set.temp.desc": "0.6 is the default. Lower looks more precise but near-greedy decoding makes small models repeat themselves; Qwen's own guidance is 0.6–0.7.",
 	"set.think.name": "Thinking mode",
@@ -303,6 +306,10 @@ const en = {
 	"survey.notUseful": "Not useful for me",
 	"survey.dismiss": "Don't ask again",
 	"survey.thanks": "Thank you. The link opens GitHub; nothing was sent.",
+
+	// Errors a turn ends on
+	"error.contextTooSmall":
+		"The server has {model} loaded with a context window of {have} tokens. The plugin's instructions and tool list need at least {need} to leave room for a conversation, so nothing was sent: the server would have dropped the start of the prompt, which is the instructions. Load the model with more. LM Studio: the context length slider when loading the model. llama.cpp: start llama-server with -c {suggest} or more.",
 
 	// Notices (common)
 	"notice.openNote": "Open a markdown note first.",

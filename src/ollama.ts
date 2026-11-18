@@ -127,11 +127,16 @@ export class OllamaClient {
 	async serverContext(model: string): Promise<number | undefined> {
 		if (this.provider !== "openai") return undefined;
 		try {
-			const listed = modelContext(await this.openAIModels(), model);
-			if (listed !== undefined) return listed;
+			return await this.askContext(model);
 		} catch {
 			return undefined;
 		}
+	}
+
+	/** `serverContext`, except that a server which cannot be reached is an error, not "does not say". */
+	private async askContext(model: string): Promise<number | undefined> {
+		const listed = modelContext(await this.openAIModels(), model);
+		if (listed !== undefined) return listed;
 		// LM Studio keeps the loaded size in its own list, beside the OpenAI-style one.
 		const root = this.baseUrl.replace(/\/v1$/i, "");
 		if (root === this.baseUrl || !this.plainRequest) return undefined;
@@ -141,6 +146,61 @@ export class OllamaClient {
 		} catch {
 			return undefined;
 		}
+	}
+
+	/**
+	 * What each server said about each model's window, by server address and model (null: it does
+	 * not say). `replied` is set once the model has answered a chat request after that: a server
+	 * that loads a model on its first request (LM Studio) can only say the size from then on.
+	 */
+	private contexts = new Map<string, { size: number | null; replied: boolean }>();
+	private contextAsks = new Map<string, Promise<number | undefined>>();
+
+	private contextKey(model: string): string {
+		return `${this.baseUrl}\n${model.trim().toLowerCase()}`;
+	}
+
+	/** The window the server said it has `model` loaded with, as last learned; sends nothing. */
+	knownContext(model: string): number | undefined {
+		if (this.provider !== "openai") return undefined;
+		return this.contexts.get(this.contextKey(model))?.size ?? undefined;
+	}
+
+	/**
+	 * `serverContext`, asked once per server address and model and remembered, so that it is not
+	 * asked with every message; `again` asks anew (the model may have been loaded with another size
+	 * since: the agent does this when it warms the model). A server that could not be reached is
+	 * asked again the next time; one that answered without a size is not, until the model has
+	 * replied once (see `contexts`).
+	 */
+	async loadedContext(model: string, again = false): Promise<number | undefined> {
+		if (this.provider !== "openai") return undefined;
+		const key = this.contextKey(model);
+		const known = this.contexts.get(key);
+		if (known && !again) return known.size ?? undefined;
+		const running = this.contextAsks.get(key);
+		if (running) return running;
+		const ask = (async () => {
+			try {
+				const size = (await this.askContext(model)) ?? null;
+				this.contexts.set(key, { size, replied: this.contexts.get(key)?.replied ?? false });
+				return size ?? undefined;
+			} catch {
+				return this.contexts.get(key)?.size ?? undefined;
+			} finally {
+				this.contextAsks.delete(key);
+			}
+		})();
+		this.contextAsks.set(key, ask);
+		return ask;
+	}
+
+	/** After a reply from `model`: a server that had no size to give before it was loaded is asked once more, in the background. */
+	private afterReply(model: string): void {
+		const known = this.contexts.get(this.contextKey(model));
+		if (!known || known.replied) return;
+		known.replied = true;
+		if (known.size === null) void this.loadedContext(model, true);
 	}
 
 	async version(): Promise<string> {
@@ -215,17 +275,18 @@ export class OllamaClient {
 
 	async chat(req: ChatRequest): Promise<ChatResponse> {
 		if (this.provider === "openai") {
+			let reply: ChatResponse;
 			try {
-				return await this.chatOpenAI(req);
+				reply = await this.chatOpenAI(req);
 			} catch (err) {
 				// LM Studio accepts only response_format json_schema or text and answers 400 to json_object.
 				// The 400 comes before any token, so asking again without it repeats nothing; callers that
 				// want JSON also say so in the prompt.
-				if (req.format && err instanceof OllamaError && err.status === 400 && /response_format/i.test(err.message)) {
-					return this.chatOpenAI({ ...req, format: undefined });
-				}
-				throw err;
+				if (!(req.format && err instanceof OllamaError && err.status === 400 && /response_format/i.test(err.message))) throw err;
+				reply = await this.chatOpenAI({ ...req, format: undefined });
 			}
+			this.afterReply(req.model);
+			return reply;
 		}
 		const body: Record<string, unknown> = {
 			model: req.model,

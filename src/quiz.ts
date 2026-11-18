@@ -324,19 +324,37 @@ export function renderReview(existing: string | null, topic: string, date: strin
 
 export interface QuizModelConfig {
 	model: string;
+	/** The context size to work within: the setting, or the server's own window when that is smaller. */
 	numCtx: number;
 	keepAlive: string;
+	/** The window an OpenAI-compatible server said it has the model loaded with, when it says. */
+	serverCtx?: number;
+}
+
+/** Characters of note text a single prompt (quiz questions, the weekly digest) carries when nothing is known about the window. */
+const SOURCE_CHARS = 40000;
+
+/**
+ * Characters of note text one prompt may carry. `SOURCE_CHARS` as always, unless a server said how
+ * large a window it has the model loaded with (`serverCtx`) and that is too small for it: then
+ * what fits beside a reply, so the server does not cut the start of the prompt (the task itself).
+ */
+export function sourceBudget(serverCtx: number | undefined): number {
+	if (serverCtx === undefined || serverCtx <= 0) return SOURCE_CHARS;
+	return Math.min(SOURCE_CHARS, Math.max(3000, Math.floor((serverCtx - 2048) * 3.2 * 0.9)));
 }
 
 /** The two model calls of a quiz. */
 export class QuizEngine {
 	constructor(
 		private client: OllamaClient,
-		private config: () => QuizModelConfig,
+		private config: () => QuizModelConfig | Promise<QuizModelConfig>,
 	) {}
 
-	private async ask(prompt: string, signal?: AbortSignal): Promise<string> {
-		const cfg = this.config();
+	private async ask(prompt: string, signal?: AbortSignal, known?: QuizModelConfig): Promise<string> {
+		// Not awaited when it is at hand: the request then starts at once, under the signal it was given.
+		const now = known ?? this.config();
+		const cfg = now instanceof Promise ? await now : now;
 		let think: boolean | undefined = false;
 		for (;;) {
 			try {
@@ -362,9 +380,11 @@ export class QuizEngine {
 
 	/** Questions from the notes (contents keyed by path), at most `count`. */
 	async questions(topic: string, notes: { path: string; content: string }[], count = 5, signal?: AbortSignal): Promise<QuizQuestion[]> {
-		const perNote = Math.max(1500, Math.floor(40000 / Math.max(1, notes.length)));
+		const now = this.config();
+		const cfg = now instanceof Promise ? await now : now;
+		const perNote = Math.max(1500, Math.floor(sourceBudget(cfg.serverCtx) / Math.max(1, notes.length)));
 		const prompt = questionsPrompt(topic, notes.map((n) => ({ path: n.path, text: quizSourceText(n.content, perNote) })), count);
-		const parsed = parseQuestions(await this.ask(prompt, signal), notes);
+		const parsed = parseQuestions(await this.ask(prompt, signal, cfg), notes);
 		return parsed.slice(0, count);
 	}
 

@@ -209,6 +209,15 @@ export function modelContext(json: Record<string, unknown>, model: string): numb
 	return typeof n === "number" ? n : undefined;
 }
 
+/**
+ * The context size to budget a prompt for: the plugin's setting, or the size the server says it
+ * has the model loaded with when that is smaller. A server that does not say (`reported`
+ * undefined) leaves the setting as it is.
+ */
+export function effectiveContext(setting: number, reported: number | undefined): number {
+	return reported !== undefined && reported > 0 && reported < setting ? reported : setting;
+}
+
 /** `/v1/models` → model ids. */
 export function modelIds(json: Record<string, unknown>): string[] {
 	return Array.isArray(json.data) ? (json.data as { id?: unknown }[]).map((m) => (typeof m.id === "string" ? m.id : "")).filter(Boolean) : [];

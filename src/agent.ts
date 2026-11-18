@@ -1,6 +1,7 @@
 import type { OllamaClient } from "./ollama";
 import { OllamaError } from "./ollama";
-import { answerLanguageLine } from "./i18n";
+import { answerLanguageLine, t } from "./i18n";
+import { effectiveContext } from "./openai";
 import { blockIdEdits, linkedTargets, planCitations, plainText, quotable, withPassages, type CitationMode } from "./citations";
 import { buildOutline, outlineBudget } from "./outline";
 import { ToolError, localDate, toOllamaTools } from "./tools";
@@ -556,6 +557,23 @@ export function buildSystemPrompt(
 	return lines.join("\n");
 }
 
+/** `cfg` with the context size the requests are budgeted for: the setting, or the server's own window when that is smaller. */
+function inWindow(cfg: AgentConfig, reported: number | undefined): AgentConfig {
+	return withContext(cfg, effectiveContext(cfg.numCtx, reported));
+}
+
+/** `cfg` with another context size. */
+function withContext(cfg: AgentConfig, numCtx: number): AgentConfig {
+	if (numCtx === cfg.numCtx) return cfg;
+	// Property by property, not `{ ...cfg }`: the plugin's `autoApprove` is a getter read live at every write, and a spread would freeze it.
+	return Object.defineProperties({}, { ...Object.getOwnPropertyDescriptors(cfg), numCtx: { value: numCtx, enumerable: true, writable: true, configurable: true } }) as AgentConfig;
+}
+
+/** Whether the window the server reported, not the plugin's own setting, is what limits the prompt. */
+function serverLimits(cfg: AgentConfig, reported: number | undefined): boolean {
+	return reported !== undefined && reported > 0 && reported <= cfg.numCtx;
+}
+
 /**
  * The agent loop: send the conversation to the model with the tool list, execute whatever
  * tools it calls, feed the results back, and repeat until it answers in prose.
@@ -586,7 +604,7 @@ export class Agent {
 	 * shape it change, when the tools on offer change, or when more than `OUTLINE_DRIFT_LIMIT`
 	 * notes have come or gone.
 	 */
-	private frozenSystem(conversation: Conversation, cfg: AgentConfig, tools: ToolDefinition[], conventions: string | null): { system: string; drift: string } {
+	private frozenSystem(conversation: Conversation, cfg: AgentConfig, tools: ToolDefinition[], conventions: string | null, written?: string): { system: string; drift: string } {
 		const key = JSON.stringify([cfg.numCtx, cfg.answerLanguage ?? "", cfg.extraSystemPrompt, conventions ?? "", this.deps.gist !== undefined, tools.map((t) => t.name)]);
 		const paths = this.deps.vault.listNotes().map((n) => n.path);
 		const kept = conversation.frozen;
@@ -594,13 +612,16 @@ export class Agent {
 			const drift = outlineDrift(kept.notes, paths);
 			if (drift.changes <= OUTLINE_DRIFT_LIMIT) return { system: kept.system, drift: drift.text };
 		}
-		const system = this.systemMessage(cfg, tools, conventions).content;
+		const system = written ?? this.systemMessage(cfg, tools, conventions).content;
 		conversation.frozen = { key, system, notes: new Set(paths) };
 		return { system, drift: "" };
 	}
 
 	/** The warm-up in progress, if any: a turn waits for it rather than reading the same prompt beside it. */
 	private warming: Promise<void> | null = null;
+
+	/** Set when a run was refused because the server's window is too small: the next run asks the server again, since loading the model with more is what the message told the user to do. */
+	private askAgain = false;
 
 	/**
 	 * Has the model loaded and the system prompt and tool list read before the first message is
@@ -611,19 +632,27 @@ export class Agent {
 	 */
 	warm(signal?: AbortSignal): Promise<void> {
 		if (this.warming) return this.warming;
-		const cfg = this.deps.getConfig();
+		const set = this.deps.getConfig();
 		const tools = [...this.deps.tools, ...(this.deps.extraTools?.() ?? [])];
 		const task = (async () => {
+			// Warming is when the server is asked again how large a window it has the model loaded with.
+			const reported = await this.deps.client.loadedContext(set.model, true);
+			this.askAgain = false;
+			const cfg = inWindow(set, reported);
 			let conventions: string | null = null;
 			try {
 				conventions = (await this.deps.readConventions?.()) ?? null;
 			} catch {
 				conventions = null;
 			}
+			const system = this.systemMessage(cfg, tools, conventions);
+			const wireTools = toOllamaTools(tools);
+			// A window the prompt does not fit: the first message says so, and a prompt cut at the start warms nothing.
+			if (serverLimits(set, reported) && !fitsWindow(cfg.numCtx, system.content.length + JSON.stringify(wireTools).length, this.charsPerToken)) return;
 			await this.deps.client.chat({
 				model: cfg.model,
-				messages: [this.systemMessage(cfg, tools, conventions), { role: "user", content: "." }],
-				tools: toOllamaTools(tools),
+				messages: [system, { role: "user", content: "." }],
+				tools: wireTools,
 				think: cfg.think,
 				options: { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}), num_predict: 1 },
 				keep_alive: cfg.keepAlive,
@@ -647,27 +676,51 @@ export class Agent {
 		// A warm-up still reading the prompt: let it finish, then start from what it read.
 		if (this.warming) await this.warming.catch(() => undefined);
 		if (signal?.aborted) return;
-		const cfg = this.deps.getConfig();
+		const set = this.deps.getConfig();
 		const { client, vault } = this.deps;
+		// An OpenAI-compatible server is not told a context size as Ollama is: it has the one the model
+		// was loaded with, so that is the window to budget for when it is the smaller. Remembered by
+		// the client per server and model; asked anew only after a run that was refused for it.
+		const reported = await client.loadedContext(set.model, this.askAgain);
+		this.askAgain = false;
+		if (signal?.aborted) return;
+		const cfg = inWindow(set, reported);
 		const tools = [...this.deps.tools, ...(this.deps.extraTools?.() ?? [])];
 		const now = this.deps.now ? this.deps.now() : new Date();
 		const toolByName = new Map(tools.map((t) => [t.name, t]));
+		const wireTools = toOllamaTools(tools);
+		const toolChars = JSON.stringify(wireTools).length;
 
-		compactHistory(conversation.messages, cfg.numCtx);
-		const turn = conversation.messages.length;
 		let conventions: string | null = null;
 		try {
 			conventions = (await this.deps.readConventions?.()) ?? null;
 		} catch {
 			conventions = null;
 		}
+		// The server's window does not hold the instructions and the tool list with room for a
+		// conversation: say so now, before the conversation is touched or anything is sent.
+		/** The system prompt as written for this window, when the check below had to write it: the turn then uses it instead of writing it again. */
+		let written: string | undefined;
+		if (serverLimits(set, reported)) {
+			const fixedAt = (numCtx: number) => this.systemMessage(withContext(cfg, numCtx), tools, conventions).content.length + toolChars;
+			// A conversation under way has its prompt already; measured on that, nothing is written twice.
+			const kept = conversation.frozen?.system.length;
+			const fits = (kept !== undefined && fitsWindow(cfg.numCtx, kept + toolChars, this.charsPerToken)) || fitsWindow(cfg.numCtx, (written = this.systemMessage(cfg, tools, conventions).content).length + toolChars, this.charsPerToken);
+			if (!fits) {
+				this.askAgain = true;
+				const needed = WINDOW_STEPS.find((n) => n > cfg.numCtx && fitsWindow(n, fixedAt(n), this.charsPerToken));
+				throw new ContextTooSmallError(cfg.model, cfg.numCtx, needed ?? HISTORY_CTX_CAP);
+			}
+		}
+		compactHistory(conversation.messages, cfg.numCtx);
+		const turn = conversation.messages.length;
 		let daily: { path: string; exists: boolean } | null = null;
 		try {
 			daily = (await this.deps.dailyNote?.()) ?? null;
 		} catch {
 			daily = null;
 		}
-		const frozen = this.frozenSystem(conversation, cfg, tools, conventions);
+		const frozen = this.frozenSystem(conversation, cfg, tools, conventions, written);
 		conversation.messages.push({ role: "user", content: userText, context: [turnContext(vault, now, daily), frozen.drift].filter(Boolean).join(" ") });
 
 		const askedAQuestion = looksLikeVaultQuestion(userText);
@@ -740,9 +793,8 @@ export class Agent {
 		// from the same cached prefix unless the vault's outline changed in between.
 		const system: ChatMessage = { role: "system", content: frozen.system };
 		const options = { num_ctx: cfg.numCtx, temperature: cfg.temperature, ...(cfg.sampling ?? {}), num_predict: replyCap(cfg.numCtx) };
-		const wireTools = toOllamaTools(tools);
 		/** What every request of this turn carries whatever the conversation holds. */
-		const fixedChars = system.content.length + JSON.stringify(wireTools).length;
+		const fixedChars = system.content.length + toolChars;
 		let transientRetries = 0;
 		/** What search_passages returned, per note, so an answer that quotes a passage cites its note. */
 		const notePassages = (result: string) => {
@@ -1222,9 +1274,48 @@ const REPLY_RESERVE_TOKENS = 2048;
  * start of the prompt in exactly the jobs that fail most.
  */
 export function turnBudget(numCtx: number, fixedChars: number, charsPerToken = DEFAULT_CHARS_PER_TOKEN): number {
+	return Math.max(MIN_CONVERSATION_CHARS, roomForConversation(numCtx, fixedChars, charsPerToken));
+}
+
+/** The least conversation a request is sent with, whatever the window: below it there is no turn to speak of. */
+const MIN_CONVERSATION_CHARS = 6000;
+
+/** Characters left for the conversation once the reply's reserve and the fixed part are taken from the window; negative when they alone overflow it. */
+function roomForConversation(numCtx: number, fixedChars: number, charsPerToken: number): number {
 	const window = Math.min(numCtx, HISTORY_CTX_CAP);
 	const reserve = Math.min(REPLY_RESERVE_TOKENS, Math.floor(window / 6));
-	return Math.max(6000, Math.floor((window - reserve) * charsPerToken * 0.97) - fixedChars);
+	return Math.floor((window - reserve) * charsPerToken * 0.97) - fixedChars;
+}
+
+/**
+ * Whether a window of `numCtx` tokens holds the fixed part of every request (system prompt and
+ * tool list, `fixedChars`) with room for a reply and the least conversation `turnBudget` sends.
+ * When it does not, `turnBudget` is at its floor and the request is longer than the window: the
+ * server then drops the start of the prompt, which is the instructions.
+ */
+export function fitsWindow(numCtx: number, fixedChars: number, charsPerToken = DEFAULT_CHARS_PER_TOKEN): boolean {
+	return roomForConversation(numCtx, fixedChars, charsPerToken) >= MIN_CONVERSATION_CHARS;
+}
+
+/** Window sizes tried, smallest first, to say how much the plugin needs at the least. */
+const WINDOW_STEPS = [6144, 8192, 10240, 12288, 14336, 16384, 20480, 24576, 32768];
+
+/**
+ * The server has the model loaded with a window too small for the plugin's instructions and tool
+ * list. Raised before anything is sent: a request the server would cut at the start gets an
+ * answer from a model that never saw its instructions, with no error anywhere.
+ */
+export class ContextTooSmallError extends OllamaError {
+	constructor(
+		readonly model: string,
+		/** Tokens the server says it has the model loaded with. */
+		readonly serverContext: number,
+		/** The smallest window (of `WINDOW_STEPS`) the fixed part fits with room for a conversation. */
+		readonly needed: number,
+	) {
+		super(t("error.contextTooSmall", { model, have: serverContext, need: needed, suggest: Math.max(16384, needed) }));
+		this.name = "ContextTooSmallError";
+	}
 }
 
 /**

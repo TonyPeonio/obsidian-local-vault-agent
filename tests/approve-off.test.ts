@@ -15,7 +15,8 @@ import { FakeOllama, FakeVault, type Scripted } from "./fakes";
 /** The plugin's agentConfig() over a settings object the test can change, as the "Turn off" button does. */
 function pluginConfig(autoApproveEdits: boolean) {
 	const settings = { ...DEFAULT_SETTINGS, autoApproveEdits };
-	const getConfig = (): AgentConfig => LocalVaultAgentPlugin.prototype.agentConfig.call({ settings } as unknown as LocalVaultAgentPlugin);
+	const client = new FakeOllama([]).asClient();
+	const getConfig = (): AgentConfig => LocalVaultAgentPlugin.prototype.agentConfig.call({ settings, client } as unknown as LocalVaultAgentPlugin);
 	return { settings, getConfig };
 }
 

@@ -38,13 +38,14 @@ describe("the progress line on the real agent loop", () => {
 		];
 		const vault = new FakeVault({ "Ideas/Sensors.md": "Hall sensors are cheap." });
 		const settings = { ...DEFAULT_SETTINGS };
+		const client = new CountingOllama(script).asClient() as OllamaClient;
 		const agent = new Agent({
-			client: new CountingOllama(script).asClient() as OllamaClient,
+			client,
 			vault,
 			tools: ALL_TOOLS,
 			search: (q, l) => keywordSearch(vault, q, l),
 			approve: async () => "approve",
-			getConfig: () => LocalVaultAgentPlugin.prototype.agentConfig.call({ settings } as unknown as LocalVaultAgentPlugin),
+			getConfig: () => LocalVaultAgentPlugin.prototype.agentConfig.call({ settings, client } as unknown as LocalVaultAgentPlugin),
 			now: () => new Date("2026-11-05T12:00:00Z"),
 		});
 

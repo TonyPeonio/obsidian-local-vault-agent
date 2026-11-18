@@ -208,6 +208,22 @@ export class FakeOllama {
 		return this as unknown as OllamaClient;
 	}
 
+	/** The window an OpenAI-compatible server says it has the model loaded with; undefined is Ollama, or a server that does not say. */
+	serverContext: number | undefined = undefined;
+	/** Every time the server was asked for its window: the model, and whether it was asked anew. */
+	contextAsks: { model: string; again: boolean }[] = [];
+	private learned: number | undefined = undefined;
+
+	async loadedContext(model: string, again = false): Promise<number | undefined> {
+		this.contextAsks.push({ model, again });
+		this.learned = this.serverContext;
+		return this.serverContext;
+	}
+
+	knownContext(): number | undefined {
+		return this.learned;
+	}
+
 	async chat(req: ChatRequest): Promise<ChatResponse> {
 		this.requests.push(req);
 		const turn = this.turns.shift();

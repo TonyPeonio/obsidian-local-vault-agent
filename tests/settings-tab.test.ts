@@ -4,6 +4,7 @@ import { t } from "../src/i18n";
 import type LocalVaultAgentPlugin from "../src/main";
 import { DEFAULT_SETTINGS } from "../src/settings";
 import { LocalVaultAgentSettingTab } from "../src/settings-tab";
+import { FakeOllama } from "./fakes";
 
 interface Item {
 	name: string;
@@ -24,14 +25,18 @@ class FakeSetting {
 		this.buttons++;
 		return this;
 	}
+	addText(): this {
+		return this;
+	}
 }
 
-function harness(provider: "ollama" | "openai") {
+function harness(provider: "ollama" | "openai", client?: FakeOllama) {
 	const state: { lc: { ollama: () => { url: string; model: string } } | null } = { lc: null };
 	const plugin = {
 		settings: { ...DEFAULT_SETTINGS, provider },
 		lectureCompanion: () => state.lc,
 		saveSettings: async () => {},
+		client,
 	} as unknown as LocalVaultAgentPlugin;
 	const tab = new LocalVaultAgentSettingTab({} as App, plugin);
 	const find = (name: string): Item => {
@@ -83,5 +88,39 @@ describe("settings tab and Lecture Companion", () => {
 		h.state.lc = { ollama: () => ({ url: "http://localhost:11434", model: "qwen3:14b" }) };
 		expect(h.render(h.find(t("set.lc.name"))).returned).toBeUndefined();
 		expect(h.render(h.find(t("set.lcStatus.name"))).returned).toBeUndefined();
+	});
+});
+
+describe("settings tab and the server's context window", () => {
+	const drawn = async (provider: "ollama" | "openai", serverContext: number | undefined) => {
+		const client = new FakeOllama([]);
+		client.serverContext = serverContext;
+		const h = harness(provider, client);
+		const { st, returned } = h.render(h.find(t("set.ctx.name")));
+		await new Promise((r) => setTimeout(r, 0));
+		return { st, returned, client, model: h.plugin.settings.model, setting: h.plugin.settings.numCtx };
+	};
+
+	it("says under the context setting what an OpenAI-compatible server has the model loaded with", async () => {
+		const small = await drawn("openai", 4096);
+		expect(small.st.desc).toBe(`${t("set.ctx.desc")} ${t("set.ctx.server.smaller", { model: small.model, n: 4096, setting: small.setting })}`);
+		expect(small.st.desc).toContain("loaded with 4096 tokens");
+		// Asked anew each time the row is drawn: the settings are where one looks after loading a model again.
+		expect(small.client.contextAsks).toEqual([{ model: small.model, again: true }]);
+		expect(small.returned).toBeUndefined();
+
+		const large = await drawn("openai", 65536);
+		expect(large.st.desc).toBe(`${t("set.ctx.desc")} ${t("set.ctx.server.enough", { model: large.model, n: 65536, setting: large.setting })}`);
+	});
+
+	it("says so when the server does not report a size", async () => {
+		const unknown = await drawn("openai", undefined);
+		expect(unknown.st.desc).toBe(`${t("set.ctx.desc")} ${t("set.ctx.server.unknown", { model: unknown.model, setting: unknown.setting })}`);
+	});
+
+	it("asks nothing and adds nothing for Ollama", async () => {
+		const ollama = await drawn("ollama", 4096);
+		expect(ollama.st.desc).toBeNull();
+		expect(ollama.client.contextAsks).toEqual([]);
 	});
 });
