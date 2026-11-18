@@ -151,6 +151,8 @@ export interface UsageInfo {
 }
 
 export interface ApprovalRequest {
+	/** Set when the dialog is shown although changes are being approved automatically: why this one is not. */
+	caution?: string;
 	tool: string;
 	path: string;
 	/** Existing content ("" for a new note). */
