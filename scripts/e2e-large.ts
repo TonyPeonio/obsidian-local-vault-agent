@@ -10,8 +10,8 @@ import "../tests/setup";
 import { execSync } from "child_process";
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
-import { deflateSync } from "zlib";
 import { basename, join, relative, resolve } from "path";
+import { whiteboardPng } from "./whiteboard-png";
 import { Agent, buildSystemPrompt, looksLikePermissionQuestion, newConversation, type AgentConfig } from "../src/agent";
 import { DEFAULT_SETTINGS, SAMPLING } from "../src/settings";
 import { GistCache, type GistData } from "../src/gists";
@@ -1077,69 +1077,6 @@ function gitCommit(): string | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-/** Seven-segment-ish 5×7 digits, enough to draw a number a vision model can read. */
-const DIGITS: Record<string, string[]> = {
-	"0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
-	"1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-	"2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
-	"3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
-	"4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-	"5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
-	"6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
-	"7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-	"8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-	"9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"],
-};
-
-/** A white PNG with `text` (digits) drawn in black, large: a stand-in for a whiteboard photo. */
-function whiteboardPng(text: string): ArrayBuffer {
-	const scale = 16;
-	const pad = 32;
-	const w = pad * 2 + text.length * 6 * scale;
-	const h = pad * 2 + 7 * scale;
-	const raw = Buffer.alloc((w * 3 + 1) * h, 255);
-	for (let y = 0; y < h; y++) raw[y * (w * 3 + 1)] = 0;
-	[...text].forEach((ch, i) => {
-		const rows = DIGITS[ch] ?? [];
-		rows.forEach((row, ry) => {
-			[...row].forEach((bit, rx) => {
-				if (bit !== "1") return;
-				for (let dy = 0; dy < scale; dy++)
-					for (let dx = 0; dx < scale; dx++) {
-						const x = pad + (i * 6 + rx) * scale + dx;
-						const y = pad + ry * scale + dy;
-						raw.fill(20, y * (w * 3 + 1) + 1 + x * 3, y * (w * 3 + 1) + 1 + x * 3 + 3);
-					}
-			});
-		});
-	});
-	const crcTable = Array.from({ length: 256 }, (_, n) => {
-		let c = n;
-		for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-		return c >>> 0;
-	});
-	const crc = (b: Buffer) => {
-		let c = 0xffffffff;
-		for (const x of b) c = crcTable[(c ^ x) & 0xff] ^ (c >>> 8);
-		return (c ^ 0xffffffff) >>> 0;
-	};
-	const chunk = (type: string, data: Buffer) => {
-		const len = Buffer.alloc(4);
-		len.writeUInt32BE(data.length);
-		const td = Buffer.concat([Buffer.from(type), data]);
-		const c = Buffer.alloc(4);
-		c.writeUInt32BE(crc(td));
-		return Buffer.concat([len, td, c]);
-	};
-	const ihdr = Buffer.alloc(13);
-	ihdr.writeUInt32BE(w, 0);
-	ihdr.writeUInt32BE(h, 4);
-	ihdr[8] = 8;
-	ihdr[9] = 2;
-	const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
-	return png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
 }
 
 main().catch((err) => {

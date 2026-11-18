@@ -1,0 +1,58 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T18:20:32.800Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "img-1",
+  "only": "read-image",
+  "preSearch": true,
+  "commit": "d84f9af+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 4,
+    "calls": 1,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 2,
+    "modelSeconds": 3,
+    "promptSeconds": 2,
+    "passed": 6,
+    "checks": 6,
+    "failures": 15
+  },
+  "failed": [],
+  "scenarios": [
+    {
+      "id": "read-image",
+      "ms": 3683,
+      "calls": 1,
+      "prompt": 11229,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 2,
+      "promptMs": 2385,
+      "evalMs": 432,
+      "pass": 6,
+      "fail": 0,
+      "seconds": 3.68,
+      "completionTokens": 42,
+      "readChars": 69659,
+      "loadMs": 11,
+      "failed": [],
+      "tools": [
+        "read_image"
+      ],
+      "answer": "The number written on the whiteboard is **47**.\n\nSources: [[Inbox/Whiteboard photo]]"
+    }
+  ]
+}
