@@ -109,7 +109,9 @@ async function main() {
 	// The vectors are kept between runs while the vault, the embedding model and the code that
 	// decides what is embedded are unchanged: a run starts 10-25 s sooner.
 	const ih = createHash("sha1").update(EMBED);
-	for (const f of ["src/chunker.ts", "src/index.ts"]) ih.update(readFileSync(join(process.cwd(), f)));
+	// Keyed by this very script (the bundle holds all the code that decides what is embedded), so
+	// a bundle built earlier and still running cannot fill the cache under a newer code's name.
+	ih.update(readFileSync(__filename));
 	for (const [p, c] of original) ih.update(p).update(c);
 	const indexCache = join(process.cwd(), ".e2e", `e2e-index-${ih.digest("hex").slice(0, 16)}.json`);
 	let savedIndex: IndexData | null = existsSync(indexCache) ? (JSON.parse(readFileSync(indexCache, "utf8")) as IndexData) : null;
@@ -815,7 +817,7 @@ async function main() {
 	console.log(`total ${(total / 1000).toFixed(0)} s, ${rows.reduce((n, r) => n + r.calls, 0)} tool calls, ${passed}/${checks} checks passed`);
 
 	// Persist the run so versions can be compared (bench/<version>.json, newest run wins).
-	const version = (JSON.parse(readFileSync(join(process.cwd(), "manifest.json"), "utf8")) as { version: string }).version;
+	const version = process.env.BENCH_VERSION ?? (JSON.parse(readFileSync(join(process.cwd(), "manifest.json"), "utf8")) as { version: string }).version;
 	const result = {
 		version,
 		date: new Date().toISOString(),
@@ -869,6 +871,8 @@ async function main() {
 }
 
 function gitCommit(): string | undefined {
+	// A bundle built earlier names the commit it was built from.
+	if (process.env.COMMIT) return process.env.COMMIT;
 	try {
 		const head = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
 		const dirty = execSync("git status --porcelain -- src", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim() ? "+dirty" : "";

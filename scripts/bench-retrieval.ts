@@ -221,7 +221,7 @@ async function main() {
 	// decides what is embedded are unchanged, so trying another ranking costs no re-embedding.
 	const h = createHash("sha1");
 	h.update(EMBED);
-	for (const f of ["src/chunker.ts", "src/index.ts"]) h.update(readFileSync(join(process.cwd(), f)));
+	h.update(readFileSync(__filename)); // the bundle: any change to the code builds the index again
 	for (const [p, c] of notes) h.update(p).update(c);
 	const cacheFile = join(process.cwd(), ".e2e", `retrieval-index-${h.digest("hex").slice(0, 16)}.json`);
 	let saved: IndexData | null = existsSync(cacheFile) ? (JSON.parse(readFileSync(cacheFile, "utf8")) as IndexData) : null;
