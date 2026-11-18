@@ -17,6 +17,7 @@ function plugin(run: (signal?: AbortSignal) => Promise<Change[]>) {
 		settings: { jobRuns: {} as Partial<Record<JobId, number>> },
 		jobRetries: {} as Partial<Record<JobId, JobRetry>>,
 		jobRunning: false,
+		unloaded: false,
 		pendingNotified: 0,
 		saves: 0,
 		errors: [] as string[],
@@ -158,6 +159,20 @@ describe("running a scheduled job", () => {
 		stopJob(slow);
 		await running;
 		expect(slow.busy.acquire("chat")).not.toBeNull();
+	});
+
+	it("stays due when it was stopped because the plugin was unloaded", async () => {
+		const p = plugin(untilStopped(() => undefined));
+		p.settings.jobRuns.daily = 1000;
+		const running = runJob(p, "daily", false);
+		// What onunload does.
+		p.unloaded = true;
+		p.busy.stop("job");
+		await running;
+		expect(p.settings.jobRuns.daily).toBe(1000);
+		expect(p.saves).toBe(0);
+		expect(p.pending.size).toBe(0);
+		expect(p.busy.busy).toBe(false);
 	});
 
 	it("leaves the schedule alone when a run started by hand fails", async () => {

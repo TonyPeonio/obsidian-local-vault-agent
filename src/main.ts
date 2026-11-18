@@ -57,6 +57,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	/** Last time the user typed or clicked in Obsidian (ms), to know they are present. */
 	private lastActivity = Date.now();
 	private jobRunning = false;
+	private unloaded = false;
 	/** Scheduled runs that failed and wait to be tried again (in memory: after a restart they are simply due). */
 	private jobRetries: Partial<Record<JobId, JobRetry>> = {};
 	private pendingNotified = 0;
@@ -475,6 +476,10 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		// A scheduled job must not keep the model busy for a plugin that was switched off. It is
+		// stopped without being recorded as run, so it is due again the next time the plugin loads.
+		this.unloaded = true;
+		this.busy.stop("job");
 		this.index.cancel();
 		void this.index.flush();
 		this.gists.cancel();
@@ -1196,6 +1201,8 @@ export default class LocalVaultAgentPlugin extends Plugin {
 	 * (after 5, 15 and 60 minutes) instead of being skipped until the next scheduled time.
 	 */
 	private async settleJob(job: JobId, manual: boolean, outcome: JobOutcome, error: string): Promise<void> {
+		// Stopped because the plugin is being unloaded: nothing to tell, nothing to record.
+		if (this.unloaded) return;
 		const name = JOB_NAMES[job];
 		if (outcome === "stopped") new Notice(t("job.stopped", { job: name }), 8000);
 		if (outcome === "failed") log.error(`${name} failed: ${error}`);

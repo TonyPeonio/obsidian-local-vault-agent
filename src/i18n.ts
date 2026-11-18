@@ -215,8 +215,8 @@ const en = {
 	"job.stop": "Stop",
 	"job.stopped": "{job} was stopped. Nothing was queued; it runs again at its next time, or now from the command palette.",
 	"job.failed": "{job} failed: {error}",
-	"job.failedRetry": "{job} failed: {error} It will be tried again in {minutes} minutes.",
-	"job.failedGaveUp": "{job} failed {n} times in a row: {error} It will run again at its next scheduled time; you can also run it from the command palette.",
+	"job.failedRetry": "{job} failed ({error}). It will be tried again in {minutes} minutes.",
+	"job.failedGaveUp": "{job} failed {n} times in a row ({error}). It will run again at its next scheduled time; you can also run it from the command palette.",
 	"job.statusBar": "Scheduled job running",
 	"job.statusBar.label": "{job} is running: click to stop it",
 

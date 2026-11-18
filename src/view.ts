@@ -587,10 +587,6 @@ export class AgentView extends ItemView {
 			return;
 		}
 		this.lease = lease;
-		this.messagesEl.querySelector(".lva-welcome")?.remove();
-		this.inputEl.value = "";
-		this.autoGrow();
-		this.setSendState(true);
 		/** The changes the agent reports for this message. Not looked up by turn number: the agent
 		 * numbers the turn after compacting the history, so the view cannot know that number. */
 		const made: ChangeRecord[] = [];
@@ -599,9 +595,16 @@ export class AgentView extends ItemView {
 		const started = Date.now();
 		let calls = 0;
 		const progress = () => this.updateStatus(t("view.status.working", { calls, secs: Math.round((Date.now() - started) / 1000) }));
-		const ticker = window.setInterval(progress, 1000);
+		let ticker: number | null = null;
 
+		// From here to the `finally` that gives the gate back, everything is inside the try: a
+		// lease that leaked would leave the chat refusing messages until Obsidian is restarted.
 		try {
+			this.messagesEl.querySelector(".lva-welcome")?.remove();
+			this.inputEl.value = "";
+			this.autoGrow();
+			this.setSendState(true);
+			ticker = window.setInterval(progress, 1000);
 			const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
 			user.createDiv({ cls: "lva-bubble", text });
 			const { message, attached } = attach ? await attachMentions(text, this.plugin.vault, this.plugin.settings.maxToolResultChars * 2) : { message: text, attached: [] as string[] };
@@ -677,15 +680,16 @@ export class AgentView extends ItemView {
 			}
 			this.offerPartialUndo(made);
 		} finally {
-			window.clearInterval(ticker);
+			// First of all: the lease still says whether it was stopped after it is released.
+			lease.release();
+			this.lease = null;
+			if (ticker !== null) window.clearInterval(ticker);
 			if (lease.stopped) {
 				// What was being drawn when Stop was pressed is left as it is, not as if it were still coming.
 				live.turn?.abandon();
 				this.offerPartialUndo(made);
 				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.stopped") });
 			}
-			lease.release();
-			this.lease = null;
 			this.setSendState(false);
 			this.saveChat();
 			void this.plugin.checkPlacementOnce();
@@ -840,13 +844,13 @@ export class AgentView extends ItemView {
 			return;
 		}
 		this.lease = lease;
-		const req = parseQuizRequest(text, new Date()) ?? { topic: text };
-		this.addUser(text);
 		this.quizBusy = true;
-		this.setSendState(true);
-		this.updateStatus("Writing quiz questions…");
 		const started = Date.now();
 		try {
+			const req = parseQuizRequest(text, new Date()) ?? { topic: text };
+			this.addUser(text);
+			this.setSendState(true);
+			this.updateStatus("Writing quiz questions…");
 			const lc = this.plugin.lectureCompanion();
 			let paths = selectQuizNotes(this.plugin.vault.listNotes(), req, lc?.lectures() ?? []);
 			if (paths.length === 0 && req.topic) {
@@ -892,13 +896,13 @@ export class AgentView extends ItemView {
 				this.messagesEl.createDiv({ cls: "lva-msg lva-error" }).createDiv({ cls: "lva-bubble", text: message });
 			}
 		} finally {
+			lease.release();
+			this.lease = null;
+			this.quizBusy = false;
 			if (lease.stopped) {
 				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.stopped") });
 				this.scrollToBottom();
 			}
-			lease.release();
-			this.lease = null;
-			this.quizBusy = false;
 			this.setSendState(false);
 			this.updateStatus();
 		}
@@ -923,9 +927,9 @@ export class AgentView extends ItemView {
 		}
 		this.lease = lease;
 		this.quizBusy = true;
-		this.setSendState(true);
-		this.updateStatus("Grading…");
 		try {
+			this.setSendState(true);
+			this.updateStatus("Grading…");
 			const source = this.quizSources.get(q.source) ?? "";
 			const grade = isNonAnswer(text) ? { verdict: "wrong" as const, feedback: "Skipped." } : await this.plugin.quiz.grade(q, text, source.slice(0, 6000), lease.signal);
 			// Stopped while grading: nothing is recorded, the question stays the current one.
@@ -942,13 +946,13 @@ export class AgentView extends ItemView {
 		} catch (err) {
 			if (!lease.stopped) new Notice(`Grading failed: ${(err as Error).message}`, 8000);
 		} finally {
+			lease.release();
+			this.lease = null;
+			this.quizBusy = false;
 			if (lease.stopped) {
 				this.messagesEl.createDiv({ cls: "lva-msg lva-note", text: t("view.quiz.stoppedGrading") });
 				this.scrollToBottom();
 			}
-			lease.release();
-			this.lease = null;
-			this.quizBusy = false;
 			this.setSendState(false);
 			this.updateStatus();
 		}
