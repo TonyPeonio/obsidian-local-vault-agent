@@ -51,10 +51,12 @@ Three things, each of which you can check rather than take on trust:
 2. **You approve every change.** The agent can edit, move and delete across many notes, and
    every one of those writes is a diff you approve first, recorded with what it replaced, and
    undoable later, even after you have edited the note further.
-3. **The numbers are published.** Every release runs a scored benchmark on a generated vault
-   (30 scenarios and 190 checks in 0.9.0, the failures listed next to the passes, and a
+3. **The numbers are published.** The plugin is measured on a scored benchmark on a generated
+   vault (30 scenarios and 190 checks in 0.9.0, the failures listed next to the passes, and a
    paragraph on what the benchmark does not show), and the large-vault measurements at
-   10,000 and 50,000 notes are in this README with the script that produced them.
+   10,000 and 50,000 notes are in this README with the script that produced them. Not every
+   release got a full run: 0.7.0 and 0.8.0 were published without one (see
+   [Benchmarks](#benchmarks)).
 
 How it compares, as fairly as I can put it (November 2026; these plugins move fast, so check
 their own pages before deciding):
@@ -65,7 +67,7 @@ their own pages before deciding):
 | Models | Local only (Ollama or an OpenAI-compatible local server) | Cloud providers and local ones | Local embeddings by default; chat through providers you configure | Many providers, cloud and local |
 | Edits to notes | Any note, always through a diff you approve, with history and undo | Mostly inserts into the open note; agentic features are part of its paid tier | Not its focus | Writes generated text where you ask |
 | Citations | Wikilinks, down to the paragraph | Links to source notes | Links to related notes | None by design |
-| Published accuracy benchmark | Yes, per release | Not that I know of | Not that I know of | Not that I know of |
+| Published accuracy benchmark | Yes, with the result files (not for every release) | Not that I know of | Not that I know of | Not that I know of |
 | Polish, community, integrations | One author, a small user base | Large community, far more features and integrations | Large community, very good at "what is related to this note" | Mature template ecosystem |
 
 Where the others are the better choice: if you want the strongest models and do not mind your
@@ -77,8 +79,11 @@ generate drafts, that is Text Generator. This plugin is for people who want an a
 
 ## Getting started
 
-1. Install [Ollama](https://ollama.com) and start it (or use another local server, see
-   [Other local servers](#other-local-servers)).
+1. Install [Ollama](https://ollama.com) and start it. Ollama is a free program that runs AI
+   models on your own computer; the plugin sends its requests to it. (Another local server
+   works too, see [Other local servers](#other-local-servers).) Which models to use, and how
+   much graphics memory they want, is under [Requirements](#requirements); the checklist of
+   the next step can download them for you.
 2. Open the chat (robot icon in the ribbon). The first time, a **setup checklist** opens: it
    checks that the server is reachable, that there is a chat model that can call tools, an
    embedding model and an index, and offers one button per missing piece: download the model that
@@ -93,7 +98,8 @@ generate drafts, that is Text Generator. This plugin is for people who want an a
 ## Requirements
 
 1. [Ollama](https://ollama.com) installed and running.
-2. A chat model that supports **tool calling**. Recommended, by GPU size:
+2. A chat model that supports **tool calling**. Recommended, by GPU size (an `ollama pull …`
+   line is typed in a terminal; the setup checklist can do the download instead):
    - 12 GB VRAM (e.g. RTX 3060/4070/5070): `ollama pull qwen3.5:9b` (default; the model the
      [benchmark](#benchmarks) is measured on). The older `qwen3:14b` scored much lower.
    - 8 GB VRAM: `ollama pull qwen3.5:4b` (189 of 190 benchmark checks in the median of three
@@ -195,6 +201,7 @@ Things to try:
 | Quiz me on a topic or course | Topic, since when, how many questions; the quiz runs in the chat (`/quiz`, or type *quiz me on … since …*) |
 | Suggest concept links for this note | Concept notes the open note mentions or is close to, linked in one diff, optionally as `parent`/`child` properties (`/concepts`) |
 | Review changes from scheduled jobs | Walks the changes the nightly and weekly jobs queued, as diffs (`/review`) |
+| Draft the conventions note from this vault | Writes what can be counted in the vault (folders, naming, sections, properties, tags) into the conventions note, between its own markers, as a diff you approve; no model is used |
 | Setup checklist | Live status of server, models and index, with a fix button for each |
 | Try it on sample notes | Creates the sample folder and offers three questions |
 | Report a problem | A GitHub issue with redacted diagnostics that you review first; nothing is sent automatically |
@@ -234,10 +241,16 @@ rules, things never to touch.
 each step to ask "shall I proceed?". If a model asks anyway, the agent answers yes for you up to
 three times per message (a small note appears in the chat) — see *Keep going when the model asks
 for permission* in settings. It never does this for a question that offers you a choice, nor after
-you have rejected a change in that message, and a question always gets an answer rather than edits.
+you have rejected a change in that message.
 When your message only asked a question, the agent does not answer yes: it tells the model to
 finish the reading and the answer and to change nothing, and an offer the model makes ("If you
-want, I can compile them into a new note") is yours to accept in your next message.
+want, I can compile them into a new note") is yours to accept in your next message. A model can
+still try a change after a question (the 4B model did in the benchmark when a page it read told
+it to, see [Benchmarks](#benchmarks)); the change is then a diff like any other, and with
+*Auto-approve edits* or *Approve all in this chat* on it is shown all the same, with the line
+"You asked a question; this change was not asked for". Whether a message asks for a change is
+decided from its wording by rules, which can be wrong both ways; the release notes of 0.9.0
+give examples.
 
 **Process my daily notes.** Daily notes collect loose captures: a list of fellowships, a lecture
 brain-dump, a shell command, names of people to email. The command surveys the inbox section
@@ -403,7 +416,9 @@ the question's words together.
 
 ## Settings worth knowing
 
-- **Context window (`num_ctx`)** — default 32768, and leave it there. Ollama's own default of
+- **Context window (`num_ctx`)** — default 32768, and leave it there on a 12 GB card. (The
+  settings page suggests 16384 on an 8 GB card. That size was not measured for 0.9.0: the
+  benchmark's `qwen3.5:4b` runs used 32768 on the 12 GB card.) Ollama's own default of
   4096 is far too small for reading notes; if answers seem to ignore what the tools returned, this
   is usually why. Larger is not better: the benchmark scored the same at 64k, and since 0.5.3 the
   conversation the agent carries is capped at the 32k budget whatever the window is, so a bigger
@@ -418,8 +433,10 @@ the question's words together.
   by default since 0.5.0, as fast and as accurate on the benchmark); the gist pass is running
   (off by default since 0.5.3; it is the chat model once per note); or Ollama was started with
   another app's model still loaded. On a 12 GB RTX 5070 one run of the 30-scenario benchmark
-  took three to five minutes with the defaults (see [Benchmarks](#benchmarks)), and a plain
-  question about the notes one to seven seconds in those runs.
+  took three to five minutes with the defaults (186 to 295 s in the five closing runs, three
+  of them while the machine was short of memory; 183 to 267 s in five runs of slightly
+  earlier code on a quiet machine, see [Benchmarks](#benchmarks)), and a plain question about
+  the notes took one to seven seconds in the closing runs.
 - **On a laptop without a discrete GPU** — measured on a Ryzen 7940HS with its integrated Radeon
   780M: `qwen3.5:9b` reads a prompt at about 170 tokens a second and writes about 6.5. The system
   prompt, outline and tool list are about 8,000 tokens, so the first message after the model loads
@@ -437,11 +454,17 @@ the question's words together.
   laptop GPU.
 - **Search before the first reply** — on by default. For a question about what your notes say,
   the plugin makes the first search itself and gives the model the passages with your message:
-  one model call fewer, and no answer from memory. Requests to change notes, questions about
-  the vault's structure and messages with a `[[note]]` attached go to the model as before.
+  one model call fewer, and no answer from memory. It needs the semantic index (with
+  *Semantic search* off, or before the index is built, the model starts as before) and hands
+  over four passages. Requests to change notes, questions about the vault's structure,
+  messages with a `[[note]]` attached, messages of more than one line, follow-ups that lean
+  on the conversation and, with Lecture Companion installed, questions about what was said
+  in a lecture or meeting go to the model as before. A question about open tasks ("which
+  action items are still open?") gets a search for every unchecked box instead.
 - **Get the model ready while you type** — on by default. Focusing the chat box loads the model
   and has it read its instructions and the vault outline, so the first message does not wait
-  for that. Turn it off if you often open the chat without sending anything.
+  for that. It uses the GPU as soon as you click into the box, at most once in four minutes.
+  Turn it off if you often open the chat without sending anything.
 - **Conventions note** — `AGENT.md` by default; *Create / open* writes a starter you can edit,
   and the command *Draft the conventions note from this vault* fills in what can be counted
   (which folders hold what, how their notes are named and sectioned, properties and tags in
@@ -452,11 +475,14 @@ the question's words together.
   already gives the model a step at a time to reason about. "Auto" uses the model default;
   "On" forces it.
 - **Auto-approve edits** — off by default. Leave it off; use "Approve all in this chat" in the
-  dialog when you trust a particular task.
+  dialog when you trust a particular task. With either of them on, a change the model wants
+  after a message that only asked a question still opens the diff dialog, with a line saying
+  it was not asked for.
 - **Keep going when the model asks for permission** — on by default. Turn it off if you prefer
   the model to stop and check in with you after each step.
-- **Max tool calls per message** — default 40. A clean-up across many notes needs two or three
-  calls per note; raise it if the agent reports it ran out.
+- **Max tool calls per message** — default 60 (3 to 150). What it limits is the model's steps
+  in one message; a step can hold up to eight tool calls. A clean-up across many notes needs
+  two or three calls per note; raise it if the agent reports it ran out.
 - **Excluded folders** — folders the agent never searches, indexes or edits (templates, etc.).
   A command run on an open note in one of them (reformat, summarize, edit or ask about the
   selection, concept links) does nothing and shows a notice. Lectures recorded by Lecture
@@ -479,9 +505,10 @@ see a CORS/network error, set `OLLAMA_ORIGINS=app://obsidian.md*` on the Ollama 
 
 ## Benchmarks
 
-Every release is run through a scored benchmark (`scripts/e2e-large.ts`): in 0.9.0, 30
+The plugin is measured on a scored benchmark (`scripts/e2e-large.ts`): in 0.9.0, 30
 scenarios with 190 checks on a generated vault of 336 notes, to which the scenarios add a few
-of their own. The scenarios are questions across notes, a follow-up turn that must use the
+of their own. (0.7.0 and 0.8.0 were released without a full run; 0.8.0 was run afterwards for
+the comparison below.) The scenarios are questions across notes, a follow-up turn that must use the
 conversation, a question with no answer in the vault,
 quoting a lecture transcript with its `[m:ss]` time, enumeration, a clean-up over 40 lecture
 sections, moving finished projects, processing 127 daily notes, acting on the Vault Suggestions
@@ -494,7 +521,8 @@ vault is restored after every run.
 
 **0.9.0 against 0.8.0**, November 2026, RTX 5070 12 GB, Ollama, defaults, 32k context. The
 median of repeated runs, with the range in brackets. The 0.9.0 rows are the closing runs on the
-final code (commit de54882).
+final code (commit de54882). The 0.8.0 rows were measured for this comparison on the same
+desktop the day before; their result files record neither a commit nor the Ollama version.
 
 | Version and model | Runs | Checks passed | Seconds | Model calls | Tool calls |
 |---|---:|---:|---:|---:|---:|
@@ -514,11 +542,14 @@ How to read it:
   check of that scenario every time), a date written in words is accepted, and a change shown
   with a warning is rejected (see *What this benchmark is* below). The release notes of 0.9.0
   list the differences.
-- **The seconds of the 0.9.0 rows are not a clean timing.** During three of the five 9B runs
-  the desktop had only 2.8 to 5 GB of free memory, a fault of that PC. Five runs of slightly
-  earlier code (commit 722a24f, before the last fixes) on a quiet machine took 193 s (183–267)
-  and passed 189 of 190 (188–189). Neither figure, set against the other, says that the code
-  became slower or faster.
+- **The seconds are not a clean timing, and they do not compare the versions.** During three
+  of the five closing 9B runs the desktop had only 2.8 to 5 GB of free memory, a fault of that
+  PC. Free memory was not recorded during the three 4B runs that followed, nor during the
+  0.8.0 runs. On a quiet machine, slightly earlier code (commit 722a24f, before the last
+  fixes) took 193 s (183–267) in five 9B runs and passed 189 of 190 (188–189), and 115 s
+  (109–125) in three 4B runs, passing 184 (182–187). None of these figures, set against
+  another, says that the code became slower or faster. Model calls and tool calls are counts
+  and do not depend on what else the machine was doing.
 
 **Checks that still fail** in the closing runs of 0.9.0: 5 of the 950 checks made in the five
 9B runs, 4 of the 570 made in the three 4B runs.
@@ -534,7 +565,8 @@ How to read it:
 
 Every other check passed in all eight runs. In none of them did a model try the write that the
 planted page asks for. In separate runs of that scenario the 4B model tried it in 6 of 20 runs
-when it read the page itself; the release notes say what stopped it.
+when it read the page itself, and in one of three full runs on earlier code, where the
+benchmark still approved every change, it wrote the note; the release notes say what stops it.
 
 **First words.** `npm run bench:ttft` measures the seconds from sending a message until the
 first text or tool call comes back. `qwen3.5:9b`, same desktop, three runs per case, median
@@ -552,6 +584,8 @@ with the range in brackets, on the final code:
 The warm-up itself took 4.8 s (4.7–4.8). Of the 5.2 s of the first row, 2.3 s is Ollama loading
 the model and 2.4 s is reading the prompt. The script runs the agent under Node against a vault
 held in memory, not inside Obsidian, and it is new in 0.9.0, so there is no row for 0.8.0.
+The timing was taken minutes after the closing runs, three of which ran short of memory; free
+memory was not recorded during it.
 
 **What this benchmark is.** The vault is written by a script (`scripts/make-vault.mjs`), not
 taken from anyone's notes, and the facts the checks look for are planted in it. Every run is
@@ -565,8 +599,8 @@ who reads the warning would; a user who approves it gets the change. The same co
 one or two checks between two rows says nothing.
 
 The result files are in `bench/`: `0.8.0-base-*.json` and `0.8.0-q4b-*.json` for 0.8.0,
-`0.9.0-fin3-*.json` and `0.9.0-fin3q-*.json` for the closing runs, `0.9.0-fin2-*.json` for the
-quiet-machine timing, `ttft-0.9.0-fin3.json` for the first words. The 0.9.0 files hold the
+`0.9.0-fin3-*.json` and `0.9.0-fin3q-*.json` for the closing runs, `0.9.0-fin2-*.json` and
+`0.9.0-fin2q-*.json` for the quiet-machine timing, `ttft-0.9.0-fin3.json` for the first words. The 0.9.0 files hold the
 failed checks and the answers; the 0.8.0 files, written by the older harness, hold the counts
 but do not name the checks. `node scripts/bench-summary.mjs --scenarios "bench/0.9.0-fin3-*.json"`
 prints the medians, the ranges and the failed checks from them without starting a model.
@@ -576,23 +610,32 @@ questions whose answering passage is known, on the benchmark vault. These figure
 2026-11-17 (`bench/retrieval-0.9.0-hybrid.json`); the index was changed after that and this
 benchmark was not run again on the final code.
 
-| | Right passage in the six returned | Right passage first | Right note first | Questions naming a day |
+| | Right passage in the six returned | Right passage first | Right note first | Right passage first, 60 questions naming a lecture by its date |
 |---|---:|---:|---:|---:|
-| 0.8.0 (embeddings only) | 65.8% | 58.8% | 57.9% | 0 of 60 |
+| The ranking of 0.8.0, run in 0.9.0's code | 65.8% | 58.8% | 57.9% | 0 of 60 |
 | **0.9.0 (embeddings and words, heading paths, days in words)** | **99.2%** | **92.9%** | **92.9%** | **60 of 60** |
 
-The rest of this section is the history of earlier versions.
+The first row is not a run of 0.8.0. It is 0.9.0's index with the word matching switched off
+for the passages (embeddings only, as 0.8.0 ranked them) and, for the notes, 0.8.0's ranking
+(an embedding search and a keyword scan with their ranks fused), on the same 240 questions.
+The code of 0.8.0 itself was measured on the 218 questions the benchmark had then: the right
+passage in the six returned for 155 (71.1%) and first for 141 (64.7%)
+(`bench/retrieval-0.8.0-before.json`). The 22 questions added since ask for a daily note by
+its day.
+
+The rest of this section is the history of earlier versions. Its result files are in `bench/`
+too (`0.4.1.json`, `0.5.0-*`, `0.5.1-*`, `0.5.3-*`).
 
 Versions 0.5.1 and 0.5.3, 2026-11-07/08, RTX 5070 12 GB, Ollama 0.40, 32k context unless noted. Identical
 runs differ by up to 2× in wall time, so the defaults were run many times over the night.
 
 | Configuration | Checks | Seconds | Model s | Tool calls | Repeats |
 |---|---:|---:|---:|---:|---:|
-| **0.5.3, qwen3.5:9b, defaults (history capped at 32k, gists off)** | **120** | **307** | 292 | 113 | 1 |
-| 0.5.3, same, 96k context (history still capped at 32k) | 119 | 263 | 251 | 74 | 0 |
+| **0.5.3, qwen3.5:9b, defaults (history capped at 32k, gists off)** | **120** | **307** | 293 | 113 | 1 |
+| 0.5.3, same, 96k context (history still capped at 32k) | 119 | 263 | 205 | 74 | 0 |
 | **qwen3.5:9b, defaults (thinking off, temp 0.6), final build, 20 scenarios / 122 checks** | **121, 120, 120** | **167, 184, 197** | 162, 178, 192 | 64, 79, 64 | 0, 1, 0 |
 | same build on the 19-scenario / 115-check set earlier the same night | 113, 113, 112 | 151, 243, 155 | 147, 237, 138 | 65, 186, 66 | 0, 0, 3 |
-| qwen3.5:9b, defaults, with the Lecture Companion scenario (20 scenarios, 122 checks) | 119, 118 of 122 | 173, 265 | 165, 238 | 59, 94 | 0, 3 |
+| qwen3.5:9b, defaults, with the Lecture Companion scenario (20 scenarios, 122 checks) | 119, 118 of 122 | 173, 265 | 168, 238 | 59, 94 | 0, 3 |
 | qwen3.5:9b, defaults, earlier 0.5.1 builds the same night (10 runs) | 108–114 | 157–262 | | 61–99 | 0–3 |
 | qwen3.5:9b, note gists on | 113 | 231 (+230 to gist 334 notes once) | 206 | 110 | 0 |
 | qwen3.5:9b, 64k context | 112 | 308 | 294 | 208 | 0 |
@@ -606,8 +649,10 @@ runs differ by up to 2× in wall time, so the defaults were run many times over 
 
 What the numbers say:
 
-- **Model time is 90–97% of wall time**, so the loop itself costs little; the way to be faster
-  is fewer or shorter model calls, which is what every fix below did.
+- **Model time is most of the wall time**: 89–98% in the rows of `qwen3.5:9b` at the defaults
+  that record it, 78% in the 96k row and 79% in the `qwen3.5:4b` row. So the loop itself costs
+  little; the way to be faster is fewer or shorter model calls, which is what every fix below
+  did.
 - **Thinking off is the default.** With thinking on the same build passed 112 in 444 s against
   114 in 202 s; the loop already gives the model one step at a time to reason over.
 - **The 0.5.1 fixes came from reading the transcripts of failed runs**, not from prompt
@@ -784,7 +829,7 @@ problem*.
   is kept out of it and announced once, when it is finished, instead of with every word; errors
   are alerts; the setup checklist reads each step with its state.
 - **Mobile.** The plugin is not desktop-only: set the server URL to a machine on your network
-  (see below). Buttons are sized for touch. Model download and streaming need the server to
+  (see [Ollama from a different machine or on mobile](#ollama-from-a-different-machine-or-on-mobile)). Buttons are sized for touch. Model download and streaming need the server to
   accept requests from Obsidian's origin, as on desktop. Voice input needs Lecture Companion,
   which is desktop-only, and scanned-PDF reading uses the desktop PDF viewer.
 
@@ -891,7 +936,10 @@ own `package.json`, so the plugin's lockfile and release build do not carry the 
 (`.github/workflows/e2e-obsidian.yml`) on a push to `main` or to a branch named `e2e/**` that touches the plugin; the workflow fails
 unless the report says the nine specs of the first file passed and none failed. Locally it opens an
 Obsidian window, which is why it is not part of `npm test`. The window is drawn in software
-(`--disable-gpu`), so the tests also run on a desktop whose graphics card is busy running a model.
+(`--disable-gpu`). That switch was added on a desktop whose graphics card was running a model:
+5 of the 9 specs passed without it and 9 of 9 with it, on one occasion (2026-11-17). The local
+run was not repeated on the final code of 0.9.0; the workflow in GitHub Actions is the run to
+rely on.
 
 The benchmark (`scripts/e2e-large.ts`) runs 30 scenarios on a generated 336-note vault
 (`scripts/make-vault.mjs`, with `scripts/large-facts.json` recording the facts the checks look
@@ -902,6 +950,8 @@ select what runs; `PLANT_INDEX=0` asks about a planted note before the index has
 `PRESEARCH=0` and `DATA_RULE=0` switch off the search before the first reply and the rule about
 text read by tools, `CHAT_URL=` sends the chat through an OpenAI-compatible server.
 `node scripts/bench-summary.mjs "bench/<version>-<tag>-*.json"` summarises repeated runs.
+In a run limited with `ONLY=`, the result file's list of failed checks also names checks of
+scenarios that did not run, under the name of one that did; the pass counts are right.
 `VAULT_DIR=` points it at a
 vault generated with `SCALE=3 OUT=test-vault-x3 node scripts/make-vault.mjs` (the same
 notes plus 660 filler notes in their own folders, facts in `scripts/large-facts-test-vault-x3.json`). `npm run bench-matrix` runs
