@@ -36,6 +36,27 @@ export function approvalStep(stage: ApprovalStage, action: ApprovalAction, scope
 	return { stage };
 }
 
+/**
+ * How long the dialog's buttons must have been on screen, after they were swapped, before one that
+ * writes counts. Asking about "approve all" (and going back) replaces the buttons under the pointer,
+ * so the second click of a double-click can land on "Yes, approve all" or on "Approve": that is one
+ * stray action, not two, and must not grant anything. As long as the longest double-click.
+ */
+export const SEPARATE_ACTION_MS = 500;
+
+/** The actions that let something be written; the others (reject, ask, back) are always taken. */
+export function writes(action: ApprovalAction): boolean {
+	return action === "approve" || action === "confirm-all";
+}
+
+/**
+ * Whether an action at `now` is a separate one from the click or chord that swapped the buttons at
+ * `swappedAt` (null: not swapped since the dialog opened, where Enter approves at once as always).
+ */
+export function separateAction(swappedAt: number | null, now: number): boolean {
+	return swappedAt === null || now - swappedAt >= SEPARATE_ACTION_MS;
+}
+
 export interface KeyPress {
 	key: string;
 	/** Ctrl on Windows and Linux, Cmd on macOS. */

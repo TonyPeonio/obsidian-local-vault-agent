@@ -1,5 +1,5 @@
 import { App, Modal } from "obsidian";
-import { approvalKey, approvalStep, type ApprovalAction, type ApprovalStage, type ApproveAllScope } from "./approval";
+import { SEPARATE_ACTION_MS, approvalKey, approvalStep, separateAction, writes, type ApprovalAction, type ApprovalStage, type ApproveAllScope } from "./approval";
 import { computeDiff } from "./diff";
 import { t } from "./i18n";
 import type { ApprovalDecision, ApprovalRequest } from "./types";
@@ -18,6 +18,8 @@ export class ApprovalModal extends Modal {
 	private buttonsEl!: HTMLElement;
 	private hintEl!: HTMLElement;
 	private approveBtn: HTMLButtonElement | null = null;
+	/** When the buttons were last swapped for the other stage's (ms), or null while the dialog still shows the ones it opened with. */
+	private swappedAt: number | null = null;
 
 	/**
 	 * @param all What "approve all" covers here: the rest of the chat ("chat"), the rest of a batch
@@ -97,12 +99,17 @@ export class ApprovalModal extends Modal {
 		back.addEventListener("click", () => this.act("back"));
 		const yes = buttons.createEl("button", { text: t("approve.confirm.yes"), cls: "mod-warning lva-approve-all-yes" });
 		yes.addEventListener("click", () => this.act("confirm-all"));
+		// Greyed for the moment in which a click on it would not count anyway (see `separateAction`).
+		yes.disabled = true;
+		window.setTimeout(() => (yes.disabled = false), SEPARATE_ACTION_MS);
 		// Focus on the way back, so a second Enter never grants it.
 		back.focus();
 		this.hintEl.setText("");
 	}
 
 	private act(action: ApprovalAction): void {
+		// The second click of a double-click, landing on a button that has only just appeared there, approves nothing.
+		if (writes(action) && !separateAction(this.swappedAt, Date.now())) return;
 		const next = approvalStep(this.stage, action, this.all);
 		if (next.decision) {
 			this.finish(next.decision);
@@ -110,6 +117,7 @@ export class ApprovalModal extends Modal {
 		}
 		if (next.stage !== this.stage) {
 			this.stage = next.stage;
+			this.swappedAt = Date.now();
 			this.renderStage();
 		}
 	}

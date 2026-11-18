@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approvalKey, approvalStep, unattendedWrites, type ApprovalAction, type ApprovalStage, type ApproveAllScope, type KeyPress } from "../src/approval";
+import { SEPARATE_ACTION_MS, approvalKey, approvalStep, separateAction, unattendedWrites, writes, type ApprovalAction, type ApprovalStage, type ApproveAllScope, type KeyPress } from "../src/approval";
 
 const ACTIONS: ApprovalAction[] = ["approve", "reject", "ask-all", "confirm-all", "back"];
 const SCOPES: ApproveAllScope[] = ["chat", "batch", "none"];
@@ -65,6 +65,27 @@ describe("the diff dialog's decisions", () => {
 		expect(approvalStep("choose", "approve", "chat").decision).toBe("approve");
 		expect(approvalStep("choose", "reject", "chat").decision).toBe("reject");
 		expect(approvalStep("confirm-all", "reject", "chat").decision).toBe("reject");
+	});
+});
+
+describe("a double-click on the dialog", () => {
+	it("does not count its second click as an answer: a button that has only just appeared writes nothing", () => {
+		const asked = 10_000;
+		// The second click of a double-click on "Approve all…" lands on "Yes, approve all" a moment later.
+		expect(separateAction(asked, asked)).toBe(false);
+		expect(separateAction(asked, asked + 150)).toBe(false);
+		expect(separateAction(asked, asked + SEPARATE_ACTION_MS - 1)).toBe(false);
+		// A click after the user has had time to see the question is their answer.
+		expect(separateAction(asked, asked + SEPARATE_ACTION_MS)).toBe(true);
+		expect(separateAction(asked, asked + 5000)).toBe(true);
+		// No shorter than a double-click can be (500 ms is the usual upper limit of one).
+		expect(SEPARATE_ACTION_MS).toBeGreaterThanOrEqual(500);
+	});
+
+	it("holds back only what writes, and nothing when the dialog has just opened", () => {
+		expect(ACTIONS.filter(writes)).toEqual(["approve", "confirm-all"]);
+		// Reject, back and asking are always taken; Enter on a freshly opened dialog approves at once, as before.
+		expect(separateAction(null, 0)).toBe(true);
 	});
 });
 
