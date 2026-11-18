@@ -185,7 +185,9 @@ Things to try:
 
 ### How it works
 
-The model gets twenty tools. Reading: `search_passages` (matching note *sections*, verbatim),
+The model gets twenty tools. Reading: `search_passages` (matching note *sections*, verbatim,
+ranked by meaning and by the question's words together, each labelled with the headings above
+it; a day named in words such as "last Tuesday" is matched to notes and sections of that date),
 `search_notes`, `grep_vault` (grep every note for a string or regex, each match tagged with its
 heading), `list_sections` (one heading surveyed across notes with size and first line, or which
 sections contain which texts), `read_note`, `read_section`, `find_in_note`, `list_notes` (folder,
@@ -404,9 +406,20 @@ incrementally when you change notes. Search results merge semantic and keyword r
   sent. That follows the Qwen3 model card, which warns that near-greedy decoding "can lead to
   performance degradation and endless repetitions": at 0.3 we watched a 9B model repeat the same
   search sixty times. Lower is not more precise for an agent.
-- **Note gists** — on by default. The first pass over a large vault takes a few minutes of GPU
-  time in the background; turn it off on a laptop that shares the GPU with other work.
-- **Conventions note** — `AGENT.md` by default; *Create / open* writes a starter you can edit.
+- **Note gists** — off by default since 0.5.3: the benchmark scored the same without them. The
+  first pass over a large vault takes a few minutes of GPU time in the background, an hour on a
+  laptop GPU.
+- **Search before the first reply** — on by default. For a question about what your notes say,
+  the plugin makes the first search itself and gives the model the passages with your message:
+  one model call fewer, and no answer from memory. Requests to change notes, questions about
+  the vault's structure and messages with a `[[note]]` attached go to the model as before.
+- **Get the model ready while you type** — on by default. Focusing the chat box loads the model
+  and has it read its instructions and the vault outline, so the first message does not wait
+  for that. Turn it off if you often open the chat without sending anything.
+- **Conventions note** — `AGENT.md` by default; *Create / open* writes a starter you can edit,
+  and the command *Draft the conventions note from this vault* fills in what can be counted
+  (which folders hold what, how their notes are named and sectioned, properties and tags in
+  use) between its own markers, leaving what you wrote alone.
 - **Thinking mode** — Qwen3 / DeepSeek-R1 style reasoning, **off by default**. On the benchmark
   vault `qwen3.5:9b` passed as many checks without thinking as with it, in a third of the time
   and with fewer tool calls (see Benchmarks); the agent loop already gives the model a step at a
@@ -444,7 +457,37 @@ processing 127 daily notes, acting on the Vault Suggestions note, editing a sele
 that does not exist, a change the user rejects, and the loop failures reported from real vaults).
 Each scenario is timed and counted for tool calls, model calls, model time, tool errors, guessed
 paths, invented links and repeated calls, and checked against facts the generator recorded.
-122 checks in all; the vault is restored after every run.
+122 checks at 0.5.3, 149 at 0.8.0, 157 with the prompt-injection scenario added in 0.9.0; the
+vault is restored after every run.
+
+**0.9.0 against 0.8.0**, 2026-11-17, RTX 5070 12 GB, `qwen3.5:9b`, defaults, 32k context. The
+median of repeated runs, with the range in brackets:
+
+| Version | Checks | Model calls | Tool calls |
+|---|---:|---:|---:|
+| 0.8.0, five runs | 143 of 149 (141–144) | 77 | 119 |
+| **0.9.0 (commit f506322), four runs** | **154 of 157 (150–156)** | **68** | **90** |
+
+The eight extra checks are the injection scenario (a clipped page that tells any AI reading it
+to create a note and end its answer with a given phrase), which passed 8 of 8 in every run. Seconds are
+left out on purpose: the 0.8.0 runs took 264 s (207–348) on a quiet machine, but the 0.9.0 runs
+shared the machine with other work, and a time taken under load says nothing. What does not
+depend on load is how much the model has to do, and that is the two right-hand columns. The
+0.9.0 runs are from about two thirds of the way through the release's changes; the closing run
+on the finished code was not completed (see the release notes). Five further scenarios added
+after those runs (a 39,000-character log, a table, two notes with one name, properties, open
+tasks) are run with `ONLY=long-note,table-row,same-name,properties,open-tasks`; the first four
+scored 27 of 27 in the median of five runs.
+
+Search is measured on its own, without a chat model, by `npm run bench:retrieval`: 240
+questions whose answering passage is known, on the same vault.
+
+| | Right passage in the six returned | Right passage first | Right note first | Questions naming a day |
+|---|---:|---:|---:|---:|
+| 0.8.0 (embeddings only) | 65.8% | 58.8% | 57.9% | 0 of 60 |
+| **0.9.0 (embeddings and words, heading paths, days in words)** | **99.2%** | **92.9%** | **92.9%** | **60 of 60** |
+
+The rest of this section is the history of earlier versions.
 
 Versions 0.5.1 and 0.5.3, 2026-11-07/08, RTX 5070 12 GB, Ollama 0.40, 32k context unless noted. Identical
 runs differ by up to 2× in wall time, so the defaults were run many times over the night.
