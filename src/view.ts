@@ -76,6 +76,7 @@ export class AgentView extends ItemView {
 	/** Whether new text pulls the list to the bottom: only while the reader is there. */
 	private follow = new ScrollFollow();
 	private jumpBtn!: HTMLButtonElement;
+	private resized: ResizeObserver | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -143,11 +144,11 @@ export class AgentView extends ItemView {
 		);
 		// The list gets shorter when a bar, the queue or a taller message box appears under it: a reader
 		// who was at the end stays at the end.
-		const resized = new ResizeObserver(() => {
+		this.resized?.disconnect();
+		this.resized = new ResizeObserver(() => {
 			if (this.follow.pinned) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
 		});
-		resized.observe(this.messagesEl);
-		this.register(() => resized.disconnect());
+		this.resized.observe(this.messagesEl);
 		// The wheel, a key or a finger says "up" before the list has moved; taken at its word, so that
 		// text arriving in the same instant does not pull the list back down first.
 		const up = () => {
@@ -186,7 +187,7 @@ export class AgentView extends ItemView {
 		approveOff.addEventListener("click", () => this.turnOffApproveAll());
 		this.approveAllEl.hide();
 
-		// A scheduled job has the model: the chat says so (a message would be refused) and can stop it.
+		// A scheduled job has the model: the chat says so (a message sent now waits in the queue) and can stop it.
 		this.jobBarEl = root.createDiv({ cls: "lva-job-bar", attr: { role: "status" } });
 		setIcon(this.jobBarEl.createSpan({ cls: "lva-job-bar-icon" }), "clock");
 		this.jobBarText = this.jobBarEl.createSpan({ cls: "lva-job-bar-text" });
@@ -300,6 +301,8 @@ export class AgentView extends ItemView {
 		this.unsubscribeGists = null;
 		this.unsubscribeBusy?.();
 		this.unsubscribeBusy = null;
+		this.resized?.disconnect();
+		this.resized = null;
 	}
 
 	/** Put text into the composer and focus it (used by commands). */

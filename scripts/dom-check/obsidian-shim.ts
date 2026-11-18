@@ -96,7 +96,6 @@ export class ItemView {
 		this.containerEl = leaf.containerEl;
 		this.contentEl = (this.containerEl as any).createDiv({ cls: "view-content" });
 	}
-	register(_cb: () => void): void {}
 }
 
 export class Notice {
