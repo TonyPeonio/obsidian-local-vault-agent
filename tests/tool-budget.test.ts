@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Agent, newConversation, type AgentConfig } from "../src/agent";
 import { keywordSearch } from "../src/search";
-import { ALL_TOOLS, findInNote, getActiveNote, grepVault, listFiles, listNotes, listSections, searchPassages } from "../src/tools";
+import { ALL_TOOLS, findInNote, getActiveNote, grepVault, listFiles, listNotes, listSections, nearestLines, readSection, searchPassages } from "../src/tools";
 import type { Passage, ToolContext } from "../src/types";
 import { FakeOllama, FakeVault, type Scripted } from "./fakes";
 
@@ -205,6 +205,23 @@ describe("lists within the result budget", () => {
 		const shown = (out.match(/^> +\d+ \| item/gm) ?? []).length;
 		expect(shown).toBeGreaterThan(5);
 		expect(out.endsWith(`\n…and ${200 - shown} more matches.`)).toBe(true);
+	});
+});
+
+describe("hints within the result budget", () => {
+	it("read_section lists the headings that fit when the one asked for is missing", async () => {
+		const vault = new FakeVault({ "Big.md": Array.from({ length: 400 }, (_, i) => `## Heading number ${i}\n\ntext\n`).join("\n") });
+		const out = await readSection.execute({ path: "Big", heading: "Zebra" }, makeCtx(vault, 2000));
+		expect(out.length).toBeLessThanOrEqual(2000);
+		const listed = (out.match(/^## Heading number \d+$/gm) ?? []).length;
+		expect(listed).toBeGreaterThan(20);
+		expect(out.endsWith(`\n…and ${400 - listed} more; find_in_note with the heading's words finds it.`)).toBe(true);
+	});
+	it("a failed edit shows the part of a long paragraph around the word, not the whole paragraph", () => {
+		const para = `${"Filler sentence. ".repeat(200)}The electromagnet is rated for 12 V. ${"More filler. ".repeat(200)}`;
+		const hint = nearestLines(`# T\n\n${para}\n`, "The electromagnet is rated 24 V.");
+		expect(hint).toMatch(/^Lines in the note that contain "electromagnet" .*:\n {3}3 \| ….*The electromagnet is rated for 12 V\. .*…$/);
+		expect(hint.length).toBeLessThan(600);
 	});
 });
 

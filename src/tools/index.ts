@@ -1056,7 +1056,10 @@ export const readSection: ToolDefinition = {
 		const section = extractSection(content, heading);
 		if (!section) {
 			const available = ctx.vault.getMetadata(path).headings;
-			return `No heading matching "${heading}" in ${path}.${available.length ? ` Headings in this note:\n${available.join("\n")}` : " The note has no headings; use read_note."}`;
+			if (!available.length) return `No heading matching "${heading}" in ${path}. The note has no headings; use read_note.`;
+			const head = `No heading matching "${heading}" in ${path}. Headings in this note:\n`;
+			const keep = Math.max(1, fitCount(available, ctx.maxResultChars - head.length - 80));
+			return `${head}${available.slice(0, keep).join("\n")}${available.length > keep ? `\n…and ${available.length - keep} more; find_in_note with the heading's words finds it.` : ""}`;
 		}
 		const head = `# ${path} (lines ${section.startLine}–${section.endLine})\n---\n`;
 		// Where the section starts in the note, so the marker names the read_note offset that continues exactly where this page stops.
@@ -1770,7 +1773,8 @@ export function nearestLines(content: string, oldText: string): string {
 			if (lines[i].toLowerCase().includes(lower)) hits.push(i);
 		}
 		if (hits.length > 0) {
-			const rows = hits.map((i) => `${String(i + 1).padStart(4)} | ${lines[i]}`).join("\n");
+			// A paragraph is one line: the part around the word, as find_in_note shows it (an error message is never shortened by the agent).
+			const rows = hits.map((i) => `${String(i + 1).padStart(4)} | ${clipLine(lines[i], FIND_LINE_CHARS, lines[i].toLowerCase().indexOf(lower))}`).join("\n");
 			return `Lines in the note that contain "${token}" (copy old_text exactly from the note, or call find_in_note for more context):\n${rows}`;
 		}
 	}
