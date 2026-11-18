@@ -38,6 +38,8 @@ export class ApprovalModal extends Modal {
 		const { contentEl, titleEl, modalEl } = this;
 		modalEl.addClass("lva-approval-modal");
 		titleEl.setText(this.req.summary);
+		// Why this dialog is here although nothing asked for a change (see UNASKED_WRITE_CAUTION).
+		if (this.req.caution) contentEl.createDiv({ cls: "lva-approval-caution", text: this.req.caution, attr: { role: "alert" } });
 
 		const diff = computeDiff(this.req.before, this.req.after);
 		const meta = contentEl.createDiv({ cls: "lva-approval-meta" });

@@ -254,6 +254,14 @@
 	width: min(900px, 95vw);
 }
 
+.lva-approval-caution {
+	padding: 8px 10px;
+	margin-bottom: 8px;
+	border-left: 3px solid var(--text-warning);
+	background: var(--background-modifier-hover);
+	border-radius: 4px;
+}
+
 .lva-approval-meta {
 	display: flex;
 	justify-content: space-between;
