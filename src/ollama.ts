@@ -321,6 +321,9 @@ export class OllamaClient {
 		}
 	}
 
+	/** Set once a server has refused `chat_template_kwargs`: it is then left out for the rest of the session. */
+	private noThinkSwitch = false;
+
 	/** Chat through `/v1/chat/completions`, streamed (server-sent events), with tool calls. */
 	private async chatOpenAI(req: ChatRequest): Promise<ChatResponse> {
 		const body: Record<string, unknown> = {
@@ -330,6 +333,12 @@ export class OllamaClient {
 			stream_options: { include_usage: true },
 			...openAIOptions(req.options),
 		};
+		// Thinking on or off, the way llama.cpp's server and vLLM take it per request (the chat
+		// template's own switch). Without it a Qwen3-style model on these servers always thinks,
+		// whatever the plugin's setting says: twice the time per step and no more accurate on the
+		// benchmark. A server that rejects the field gets the request again without it.
+		const thinkSwitch = req.think !== undefined && !this.noThinkSwitch;
+		if (thinkSwitch) body.chat_template_kwargs = { enable_thinking: req.think };
 		if (req.tools?.length) body.tools = req.tools;
 		if (req.format === "json") body.response_format = { type: "json_object" };
 		const url = `${this.baseUrl}/chat/completions`;
@@ -355,7 +364,14 @@ export class OllamaClient {
 			}
 			throw new OllamaError(`Cannot reach the server at ${this.baseUrl}. Is it running? (${(err as Error).message})`);
 		}
-		if (!response.ok) throw new OllamaError(extractError(await response.text(), response.status), response.status);
+		if (!response.ok) {
+			const text = await response.text();
+			if (thinkSwitch && response.status >= 400 && response.status < 500 && /chat_template_kwargs|unrecognized|unknown (field|parameter|argument)|extra (fields|inputs)|not permitted/i.test(text)) {
+				this.noThinkSwitch = true;
+				return this.chatOpenAI(req);
+			}
+			throw new OllamaError(extractError(text, response.status), response.status);
+		}
 		if (!response.body) throw new OllamaError("The server returned an empty response body");
 		// A plain JSON answer to a streamed request: an error sent with status 200 (LM Studio does this for an
 		// unknown route, e.g. a URL without /v1) or a server that ignores `stream`. Read as events it would
@@ -367,6 +383,7 @@ export class OllamaClient {
 		let doneReason: string | undefined;
 		let promptTokens: number | undefined;
 		let completionTokens: number | undefined;
+		let timing: { promptEvalDuration?: number; evalDuration?: number } = {};
 		for await (const chunk of sse(response.body, req.signal)) {
 			if (chunk.error) throw new OllamaError(typeof chunk.error === "string" ? chunk.error : JSON.stringify(chunk.error));
 			const choice = (Array.isArray(chunk.choices) ? chunk.choices[0] : undefined) as { delta?: { content?: unknown; reasoning_content?: unknown; tool_calls?: unknown }; finish_reason?: unknown } | undefined;
@@ -386,11 +403,17 @@ export class OllamaClient {
 				promptTokens = usage.prompt_tokens;
 				completionTokens = usage.completion_tokens;
 			}
+			// llama.cpp's server reports how long it read and wrote (milliseconds); Ollama's fields are nanoseconds.
+			const t = chunk.timings as { prompt_ms?: number; predicted_ms?: number; prompt_n?: number; predicted_n?: number } | undefined;
+			if (t && typeof t.predicted_ms === "number") {
+				timing = { promptEvalDuration: Math.round((t.prompt_ms ?? 0) * 1e6), evalDuration: Math.round(t.predicted_ms * 1e6) };
+				completionTokens ??= t.predicted_n;
+			}
 		}
 		if (thinking) message.thinking = thinking;
 		const toolCalls = calls.calls();
 		if (toolCalls.length) message.tool_calls = toolCalls;
-		return { message, doneReason, promptTokens, completionTokens };
+		return { message, doneReason, promptTokens, completionTokens, ...timing };
 	}
 
 	private async get(path: string): Promise<Record<string, unknown>> {

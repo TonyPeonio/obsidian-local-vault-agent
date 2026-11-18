@@ -93,6 +93,38 @@ describe("OllamaClient with an OpenAI-compatible server", () => {
 		expect(res).toMatchObject({ doneReason: "tool_calls", promptTokens: 50, completionTokens: 7 });
 	});
 
+	const SAID_HI = ['data: {"choices":[{"delta":{"content":"hi"}}]}\n', "data: [DONE]\n"];
+
+	it("passes the thinking setting on as the chat template's own switch, and says nothing when it is left to the model", async () => {
+		const { c, calls } = client(() => new Response(stream(SAID_HI)));
+		await c.chat({ model: "qwen", messages: [{ role: "user", content: "x" }], think: false });
+		await c.chat({ model: "qwen", messages: [{ role: "user", content: "x" }], think: true });
+		await c.chat({ model: "qwen", messages: [{ role: "user", content: "x" }] });
+		const sent = calls.map((x) => (JSON.parse(String(x.init?.body)) as Record<string, unknown>).chat_template_kwargs);
+		expect(sent).toEqual([{ enable_thinking: false }, { enable_thinking: true }, undefined]);
+	});
+
+	it("asks again without the switch when a server refuses it, and does not send it to that server again", async () => {
+		let n = 0;
+		const { c, calls } = client(() => (++n === 1 ? new Response(JSON.stringify({ error: { message: "Unrecognized request argument supplied: chat_template_kwargs" } }), { status: 400 }) : new Response(stream(SAID_HI))));
+		const res = await c.chat({ model: "gpt", messages: [{ role: "user", content: "x" }], think: false });
+		expect(res.message.content).toBe("hi");
+		await c.chat({ model: "gpt", messages: [{ role: "user", content: "x" }], think: false });
+		const sent = calls.map((x) => "chat_template_kwargs" in (JSON.parse(String(x.init?.body)) as Record<string, unknown>));
+		expect(sent).toEqual([true, false, false]);
+		// Any other refusal is the caller's to see.
+		const other = client(() => new Response(JSON.stringify({ error: { message: "model not loaded" } }), { status: 400 }));
+		await expect(other.c.chat({ model: "gpt", messages: [{ role: "user", content: "x" }], think: false })).rejects.toThrow("model not loaded");
+		expect(other.calls).toHaveLength(1);
+	});
+
+	it("reads llama.cpp's reading and writing times, in Ollama's units", async () => {
+		const body = ['data: {"choices":[{"delta":{"content":"hi"}}]}\n', 'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"prompt_n":1200,"prompt_ms":400.5,"predicted_n":40,"predicted_ms":800}}\n', "data: [DONE]\n"];
+		const { c } = client(() => new Response(stream(body)));
+		const res = await c.chat({ model: "qwen", messages: [{ role: "user", content: "x" }] });
+		expect(res).toMatchObject({ promptEvalDuration: 400_500_000, evalDuration: 800_000_000, completionTokens: 40, doneReason: "stop" });
+	});
+
 	it("lists models and embeds through /v1", async () => {
 		const { c, calls } = client((url) =>
 			url.endsWith("/models")
