@@ -261,7 +261,10 @@ async function main() {
 		// The semantic half of search_notes.
 		"notes-semantic": { passages: false, run: async (q, k) => index.search(q, k) },
 		"notes-keyword": { passages: false, run: async (q, k) => keywordSearch(vault, q, k) },
-		// What search_notes gives the model today (main.ts hybridSearch).
+		// Notes ranked by their best passage, as search_passages ranks passages.
+		"notes-blend": { passages: false, run: async (q, k) => index.searchNotes(q, k) },
+		"notes-blend+keyword": { passages: false, run: async (q, k) => fuseRankings([await index.searchNotes(q, k * 2), await keywordSearch(vault, q, k * 2)], k) },
+		// What search_notes gave the model before 0.9.0 (embeddings and a keyword scan, ranks fused).
 		"notes-hybrid": {
 			passages: false,
 			run: async (q, k) => fuseRankings([await index.search(q, k * 2), await keywordSearch(vault, q, k * 2)], k),

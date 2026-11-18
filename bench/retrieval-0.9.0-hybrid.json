@@ -102,7 +102,7 @@
         "mrr": 146.51666666666668,
         "noteHitK": 165
       },
-      "msPerQuery": 27.3,
+      "msPerQuery": 57.3,
       "separation": {
         "auc": 0.973,
         "answerableMedian": 0.724,
@@ -205,10 +205,113 @@
         "mrr": 228.83333333333334,
         "noteHitK": 238
       },
-      "msPerQuery": 43.6,
+      "msPerQuery": 59.3,
       "separation": {
         "auc": 0.973,
         "answerableMedian": 0.724,
+        "unanswerableMedian": 0.598,
+        "cut": 0.677,
+        "answerableAboveCut": 84.6,
+        "unanswerableBelowCut": 100,
+        "unanswerableMax": 0.675,
+        "answerableMin": 0.561
+      }
+    },
+    "notes-blend": {
+      "sets": {
+        "lecture-term": {
+          "n": 60,
+          "hit1": 52,
+          "hit3": 60,
+          "hitK": 60,
+          "mrr": 55.666666666666664,
+          "noteHitK": 60
+        },
+        "lecture-topic": {
+          "n": 60,
+          "hit1": 60,
+          "hit3": 60,
+          "hitK": 60,
+          "mrr": 60,
+          "noteHitK": 60
+        },
+        "lecture-date": {
+          "n": 60,
+          "hit1": 60,
+          "hit3": 60,
+          "hitK": 60,
+          "mrr": 60,
+          "noteHitK": 60
+        },
+        "transcript": {
+          "n": 2,
+          "hit1": 2,
+          "hit3": 2,
+          "hitK": 2,
+          "mrr": 2,
+          "noteHitK": 2
+        },
+        "daily-date": {
+          "n": 22,
+          "hit1": 22,
+          "hit3": 22,
+          "hitK": 22,
+          "mrr": 22,
+          "noteHitK": 22
+        },
+        "daily-topic": {
+          "n": 6,
+          "hit1": 3,
+          "hit3": 4,
+          "hitK": 5,
+          "mrr": 3.7,
+          "noteHitK": 5
+        },
+        "exact-phrase": {
+          "n": 6,
+          "hit1": 6,
+          "hit3": 6,
+          "hitK": 6,
+          "mrr": 6,
+          "noteHitK": 6
+        },
+        "exact-code": {
+          "n": 2,
+          "hit1": 2,
+          "hit3": 2,
+          "hitK": 2,
+          "mrr": 2,
+          "noteHitK": 2
+        },
+        "person": {
+          "n": 10,
+          "hit1": 8,
+          "hit3": 9,
+          "hitK": 10,
+          "mrr": 8.75,
+          "noteHitK": 10
+        },
+        "concept": {
+          "n": 12,
+          "hit1": 8,
+          "hit3": 12,
+          "hitK": 12,
+          "mrr": 9.666666666666668,
+          "noteHitK": 12
+        }
+      },
+      "all": {
+        "n": 240,
+        "hit1": 223,
+        "hit3": 237,
+        "hitK": 239,
+        "mrr": 229.78333333333333,
+        "noteHitK": 239
+      },
+      "msPerQuery": 49.3,
+      "separation": {
+        "auc": 0.973,
+        "answerableMedian": 0.723,
         "unanswerableMedian": 0.598,
         "cut": 0.677,
         "answerableAboveCut": 84.6,
@@ -308,7 +411,7 @@
         "mrr": 171.26666666666662,
         "noteHitK": 228
       },
-      "msPerQuery": 38.5,
+      "msPerQuery": 63.5,
       "separation": {
         "auc": 0.694,
         "answerableMedian": 0.033,
@@ -1072,6 +1175,17 @@
           "Meetings/2026-09-13 Marcus Vale - hackathon planning.md"
         ]
       },
+      {
+        "set": "daily-topic",
+        "q": "my notes about immunology lecture",
+        "got": [
+          "School/CSCI 478 - Bioinformatics/Lectures - CSCI 478.md",
+          "School/PHGN 200 - Physics II/Lectures - PHGN 200.md",
+          "School/CSCI 470 - Machine Learning/Lectures - CSCI 470.md"
+        ]
+      }
+    ],
+    "notes-blend": [
       {
         "set": "daily-topic",
         "q": "my notes about immunology lecture",

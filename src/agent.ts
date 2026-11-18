@@ -803,11 +803,18 @@ export class Agent {
 				// A batch of forty read_note calls would overflow the window on its own; keep the
 				// batch within budget and tell the model to work in smaller steps.
 				batchChars += result.length;
+				let cutByBatch = false;
 				if (batchChars > cap && result.length > 400) {
+					// What is cut here was never delivered: the same call must run again when asked for,
+					// not be refused as a repeat of a result "already above".
+					cutByBatch = true;
+					callCache.delete(key);
+					const header = /^# (.+)$/m.exec(result);
+					if (call.function.name === "read_note" && header) ctx.readLog?.delete(header[1].trim());
 					result = result.slice(0, 400) + `\n[truncated: this batch of ${calls.length} tool calls returned too much at once. Call fewer tools per step (at most ~6) and use grep_vault, search_passages or read_section instead of reading whole notes.]`;
 				}
 				callbacks.onToolDone?.(call, result, ok);
-				const cached = tool && ok && !tool.mutates;
+				const cached = tool && ok && !tool.mutates && !cutByBatch;
 				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name, tool_call_id: call.id, ...(cached ? { cacheKey: key } : {}) });
 				if (ok) {
 					if (tool?.mutates) writes++;
@@ -942,9 +949,13 @@ export class Agent {
 		}
 		try {
 			const raw = await tool.execute(call.function.arguments ?? {}, ctx);
+			// Tools keep their own results within the limit; this is the net under those that do not
+			// (a vision model's text, a tool added later). The end is kept as well as the start: that
+			// is where a tool says how much more there is and what to do about it.
+			const tail = Math.min(600, Math.floor(maxChars / 5));
 			const result =
 				raw.length > maxChars + 500
-					? raw.slice(0, maxChars) + `\n\n[Result truncated at ${maxChars} characters.]`
+					? `${raw.slice(0, maxChars - tail)}\n\n[… ${raw.length - maxChars} characters left out here to fit; the result continues with its last lines …]\n\n${raw.slice(-tail)}`
 					: raw;
 			return { result, ok: true };
 		} catch (err) {

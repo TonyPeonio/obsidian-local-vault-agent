@@ -164,6 +164,17 @@ describe("passage search by meaning and by words", () => {
 		expect(hits[0]).toMatchObject({ path: "Daily/2026-10-21.md", heading: "Done" });
 	});
 
+	it("ranks notes by their best passage, with its heading path and the words nearest the question", async () => {
+		const { index } = setup(notes);
+		await index.syncAll();
+		const hits = await index.searchNotes("seven multiplications", 3);
+		expect(hits[0]).toMatchObject({ path: "School/Lectures - CSCI 406.md", heading: "2026-09-10 › Summary" });
+		expect(hits[0].snippet).toContain("Seven multiplications instead of eight");
+		// One entry per note.
+		expect(new Set(hits.map((h) => h.path)).size).toBe(hits.length);
+		expect((await index.searchNotes("A3144", 1))[0].path).toBe("Projects/Hall Sensors.md");
+	});
+
 	it("still answers with embeddings only when asked to, and honours the per-note limit in both modes", async () => {
 		const { index } = setup(notes);
 		await index.syncAll();

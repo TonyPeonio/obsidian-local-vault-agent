@@ -34,7 +34,7 @@ import {
 import { OllamaError } from "../src/ollama";
 import { keywordSearch } from "../src/search";
 import { ALL_TOOLS } from "../src/tools";
-import type { ApprovalDecision, ChatMessage, Passage } from "../src/types";
+import type { ApprovalDecision, ChatMessage, Passage, ToolDefinition } from "../src/types";
 import { FakeOllama, FakeVault, type Scripted } from "./fakes";
 
 const config: AgentConfig = {
@@ -1140,6 +1140,42 @@ describe("repeated-call guard", () => {
 		expect(ollama.requests[3].messages.some((m) => /shortened to save context/.test(m.content))).toBe(true);
 		expect(results[3]).not.toMatch(/already called/);
 		expect(results[3]).toContain(big);
+	});
+
+	it("runs a call again when its result was cut by the batch budget and so never delivered", async () => {
+		// Six 3,000-character notes in one step: the batch budget (25% of a 16k window, about 13,000
+		// characters) cuts the later results to a stub. Asking for one of those again is not a repeat.
+		const vault = new FakeVault({});
+		for (let i = 0; i < 6; i++) vault.seed(`N${i}.md`, `note ${i} ` + "y".repeat(3000));
+		const ollama = new FakeOllama([
+			{ tools: Array.from({ length: 6 }, (_, i) => ({ tool: "read_note", args: { path: `N${i}.md` } })) },
+			{ tool: "read_note", args: { path: "N5.md" } },
+			{ content: "done" },
+		]);
+		const agent = new Agent({ client: ollama.asClient(), vault, tools: ALL_TOOLS, search: async () => [], approve: async () => "approve", getConfig: () => ({ ...config, numCtx: 16384, maxToolResultChars: 4000 }) });
+		const results: string[] = [];
+		await agent.run(newConversation(), "read them", { onToolDone: (_c, r) => results.push(r) });
+		expect(results[5]).toMatch(/truncated: this batch/);
+		expect(results[6]).not.toMatch(/already (called|above|read)/i);
+		expect(results[6]).toContain("y".repeat(2000));
+	});
+
+	it("keeps the end of a result that a tool let grow past the limit", async () => {
+		const long: ToolDefinition = {
+			name: "long_tool",
+			description: "returns a lot",
+			parameters: { type: "object", properties: {} },
+			mutates: false,
+			execute: async () => "START " + "x".repeat(9000) + " …41 more lines not shown; narrow with folder.",
+		};
+		const ollama = new FakeOllama([{ tool: "long_tool", args: {} }, { content: "ok" }]);
+		const agent = new Agent({ client: ollama.asClient(), vault: new FakeVault({}), tools: [long], search: async () => [], approve: async () => "approve", getConfig: () => ({ ...config, maxToolResultChars: 4000 }) });
+		const results: string[] = [];
+		await agent.run(newConversation(), "go", { onToolDone: (_c, r) => results.push(r) });
+		expect(results[0].startsWith("START ")).toBe(true);
+		expect(results[0]).toMatch(/\[… \d+ characters left out here to fit; the result continues with its last lines …\]/);
+		expect(results[0].endsWith("…41 more lines not shown; narrow with folder.")).toBe(true);
+		expect(results[0].length).toBeLessThan(4200);
 	});
 
 	it("canonicalises keys", () => {

@@ -1855,7 +1855,7 @@ export function localDate(when: number | Date): string {
 // line is not inside its own section, so the literal reading finds the parents of those sections
 // or nothing, and the model then reads all 127 notes one by one (131 tool calls in one benchmark
 // run). When the one text given is a heading in the notes asked about, survey that heading.
-const surveySections = listSections.execute;
+const surveySections = listSections.execute.bind(listSections);
 listSections.execute = async (args, ctx) => {
 	const raw = args.containing;
 	const texts = (Array.isArray(raw) ? raw : typeof raw === "string" && !/^\s*\[/.test(raw) ? [raw] : []).map((x) => String(x).trim()).filter(Boolean);

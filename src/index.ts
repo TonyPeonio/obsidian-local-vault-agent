@@ -559,6 +559,16 @@ export class SemanticIndex {
 		});
 	}
 
+	/**
+	 * Note-level search: the notes whose best passage answers best, ranked exactly as
+	 * `searchPassages` ranks passages (meaning and words together, days named in words), each with
+	 * the heading path of that passage and the part of it nearest the question's words.
+	 */
+	async searchNotes(query: string, limit: number, signal?: AbortSignal): Promise<SearchHit[]> {
+		const terms = queryTerms(query);
+		return (await this.searchPassages(query, limit, 1, signal)).map((p) => ({ path: p.path, score: p.score, heading: (p.crumb ?? p.heading) || undefined, snippet: snippetNear(p.text, terms) }));
+	}
+
 	/** The question's words that appear in no indexed note (see `LexicalIndex.absentWords`). */
 	absentWords(query: string): string[] {
 		// Only once the word index exists (a passage search builds it): an unbuilt index would call every word absent.

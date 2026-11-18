@@ -18,7 +18,6 @@ import { GistCache, type GistData } from "../src/gists";
 import { SemanticIndex, weakMatchThreshold, type IndexData } from "../src/index";
 import { attachMentions } from "../src/mentions";
 import { OllamaClient } from "../src/ollama";
-import { fuseRankings, keywordSearch } from "../src/search";
 import { LEGACY_SUGGESTIONS_NOTE as SUGGESTIONS_NOTE, gardenVault, renderGardenChat } from "../src/gardener";
 import { editSelectionPrompt, processDailyNotesPrompt } from "../src/prompts";
 import { ALL_TOOLS, extractSection } from "../src/tools";
@@ -188,7 +187,7 @@ async function main() {
 		client,
 		vault,
 		tools: ALL_TOOLS,
-		search: async (q, limit) => fuseRankings([await index.search(q, limit * 2), await keywordSearch(vault, q, limit * 2)], limit),
+		search: (q, limit) => index.searchNotes(q, limit),
 		searchPassages: (q, limit) => index.searchPassages(q, limit),
 		weakMatchBelow: () => weakMatchThreshold(EMBED),
 		absentWords: (q) => index.absentWords(q),
@@ -721,7 +720,7 @@ async function main() {
 			client,
 			vault: overlay,
 			tools: ALL_TOOLS.filter((t) => t.name !== "move_note" && t.name !== "delete_file"),
-			search: async (q, limit) => fuseRankings([await index.search(q, limit * 2), await keywordSearch(pristine, q, limit * 2)], limit),
+			search: (q, limit) => index.searchNotes(q, limit),
 			searchPassages: (q, limit) => index.searchPassages(q, limit),
 			approve: async () => "approve",
 			getConfig: () => ({ ...cfg, autoApprove: true, citations: "off" }),
