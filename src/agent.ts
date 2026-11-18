@@ -120,12 +120,73 @@ const POINTS_BACK = /\b(that|this|those|these|it|its|them|they|he|she|there|then
  * the model cannot answer "from memory" before it has seen a single note.
  */
 export function looksLikeVaultQuestion(text: string, firstTurn = true): boolean {
+	return standaloneQuestion(text, firstTurn) && !STRUCTURAL.test(text);
+}
+
+/** A one-line question that asks for no change and (after the first turn) does not lean on the conversation. */
+function standaloneQuestion(text: string, firstTurn: boolean): boolean {
 	const t = text.trim();
 	if (t.length < 8 || t.length > 400 || t.includes("\n") || t.startsWith("/")) return false;
 	if (/\[\[[^\]]+\]\]|!\[/.test(t)) return false;
-	if (EDIT_REQUEST.test(t) || STRUCTURAL.test(t)) return false;
+	if (EDIT_REQUEST.test(t)) return false;
 	if (!firstTurn && POINTS_BACK.test(t)) return false;
 	return /\?\s*$/.test(t) || QUESTION_WORD.test(t);
+}
+
+const TASK_WORDS = "(?:tasks?|to-?dos?|action items?|checkboxes)";
+const OPEN_WORDS = "(?:open|unchecked|unticked|unfinished|outstanding|pending|undone|incomplete|not (?:yet )?(?:done|finished|completed?|checked|ticked)|left to do|still to do)";
+const OPEN_TASKS = new RegExp(`\\b${OPEN_WORDS}\\b[^.?!]{0,80}\\b${TASK_WORDS}\\b|\\b${TASK_WORDS}\\b[^.?!]{0,80}\\b${OPEN_WORDS}\\b`, "i");
+
+/** Every unchecked task line: "- [ ]", "* [ ]", "1. [ ]", indented or not. */
+export const OPEN_TASK_PATTERN = "^\\s*([-*+]|\\d+\\.) \\[ \\]";
+
+/**
+ * A question about the tasks that are still open ("which action items from my meetings with Ana
+ * are still open?", "what is left on my to-do list?"). Its answer is every unchecked box, and the
+ * best four passages of a search are four notes' worth of them: in the benchmark the model listed
+ * the open items of 4 of 8 meetings and called that the answer, every run. So the agent makes
+ * the exhaustive search (grep_vault for unchecked boxes) instead of the ranked one.
+ */
+export function asksForOpenTasks(text: string, firstTurn = true): boolean {
+	return standaloneQuestion(text, firstTurn) && OPEN_TASKS.test(text);
+}
+
+/**
+ * The name the question gives that is also in the path of a note: "Ana Rocha" in "my meetings
+ * with Ana Rocha" when notes are called "2026-06-01 Ana Rocha - …", "Chess Robot" for a folder
+ * of that name. A name is a run of capitalised words or a quoted phrase; the longest one that
+ * some path contains as whole words wins. The word that opens a sentence is capitalised whatever
+ * it is, so it only counts as part of a longer name. Null when the question names nothing the
+ * vault has.
+ */
+export function nameInPaths(question: string, paths: string[]): string | null {
+	const lower = paths.map((p) => p.toLowerCase());
+	const inSomePath = (name: string): boolean => {
+		if (name.length < 3) return false;
+		const re = new RegExp(`(^|[^\\p{L}\\p{N}])${name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "u");
+		return lower.some((p) => re.test(p));
+	};
+	let best: string | null = null;
+	const offer = (name: string) => {
+		if (inSomePath(name) && (best === null || name.length > best.length)) best = name;
+	};
+	for (const m of question.matchAll(/["“]([^"“”\n]{3,60})["”]/g)) offer(m[1].trim());
+	for (const m of question.matchAll(/\p{Lu}[\p{L}\p{N}-]*(?:\s+[\p{Lu}\p{N}][\p{L}\p{N}-]*)*/gu)) {
+		const words = m[0].split(/\s+/);
+		const opensSentence = m.index === 0 || /[.?!:]\s*$/.test(question.slice(0, m.index));
+		// Longest stretch of the run first.
+		search: for (let n = words.length; n >= 1; n--) {
+			for (let from = 0; from + n <= words.length; from++) {
+				if (n === 1 && from === 0 && opensSentence) continue;
+				const name = words.slice(from, from + n).join(" ");
+				if (inSomePath(name)) {
+					offer(name);
+					break search;
+				}
+			}
+		}
+	}
+	return best;
 }
 
 /** Appended to a reply that was stopped because it had started repeating itself. */
@@ -692,22 +753,44 @@ export class Agent {
 				hitTexts.set(m[1], `${hitTexts.get(m[1]) ?? ""}\n${m[2]}`);
 			}
 		};
+		/** Grep lines ("path:12: text") or, with notes_only, a count per note ("path: 3"). */
+		const noteGrepHits = (result: string) => {
+			for (const m of result.matchAll(/^(.+?\.md):(?:\d+[ :-]| \d+$)/gm)) if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
+		};
+		/** Puts a call the agent made itself into the conversation as if the model had asked for it. */
+		const handOver = (call: ToolCall, result: string) => {
+			const asked: ChatMessage = { role: "assistant", content: "", tool_calls: [call] };
+			callbacks.onAssistantStart?.();
+			conversation.messages.push(asked);
+			callbacks.onAssistantDone?.(asked);
+			callbacks.onToolStart?.(call);
+			callbacks.onToolDone?.(call, result, true);
+			conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name, tool_call_id: call.id, cacheKey: callKey(call) });
+			callCache.set(callKey(call), result);
+			toolsUsed++;
+		};
+		let handed = false;
+		// A question about the tasks still open is answered by every unchecked box, not by the best
+		// few passages: make the exhaustive search, in the notes the question names when it names any.
+		if ((cfg.preSearch ?? true) && toolByName.has("grep_vault") && asksForOpenTasks(userText, turn === 0)) {
+			const name = nameInPaths(userText, this.deps.vault.listNotes().map((n) => n.path));
+			const call: ToolCall = { function: { name: "grep_vault", arguments: { pattern: OPEN_TASK_PATTERN, regex: true, ...(name ? { path_contains: name } : {}), limit: 200 } } };
+			const { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
+			if (signal?.aborted) return;
+			if (ok && /^\d+ matching lines? in \d+ notes?/.test(result)) {
+				handOver(call, result);
+				noteGrepHits(result);
+				handed = true;
+			}
+		}
 		// A question about the notes: make the search the model would make, and hand it the result
 		// as if it had asked. Only when it found passages; otherwise the model starts as usual.
-		if ((cfg.preSearch ?? true) && this.deps.searchPassages && toolByName.has("search_passages") && looksLikeVaultQuestion(userText, turn === 0) && !(toolByName.has("lecture_transcript") && LECTURE_QUESTION.test(userText))) {
+		if (!handed && (cfg.preSearch ?? true) && this.deps.searchPassages && toolByName.has("search_passages") && looksLikeVaultQuestion(userText, turn === 0) && !(toolByName.has("lecture_transcript") && LECTURE_QUESTION.test(userText))) {
 			const call: ToolCall = { function: { name: "search_passages", arguments: { query: userText.trim(), limit: PRE_SEARCH_LIMIT } } };
 			const { result, ok } = await this.executeTool(call, toolByName, ctx, cfg.maxToolResultChars);
 			if (signal?.aborted) return;
 			if (ok && /^\d+ passages?, best first/.test(result)) {
-				const asked: ChatMessage = { role: "assistant", content: "", tool_calls: [call] };
-				callbacks.onAssistantStart?.();
-				conversation.messages.push(asked);
-				callbacks.onAssistantDone?.(asked);
-				callbacks.onToolStart?.(call);
-				callbacks.onToolDone?.(call, result, true);
-				conversation.messages.push({ role: "tool", content: result, tool_name: call.function.name, tool_call_id: call.id, cacheKey: callKey(call) });
-				callCache.set(callKey(call), result);
-				toolsUsed++;
+				handOver(call, result);
 				notePassages(result);
 			}
 		}
@@ -949,10 +1032,8 @@ export class Agent {
 					} else if (READ_TOOLS.has(call.function.name)) {
 						const header = /^# (.+?)(?: \(lines [^)]*\))?$/m.exec(result);
 						if (header && !readPaths.includes(header[1].trim())) readPaths.push(header[1].trim());
-					} else if (call.function.name === "grep_vault") {
-						// Lines ("path:12: text") or, with notes_only, a count per note ("path: 3").
-						for (const m of result.matchAll(/^(.+?\.md):(?:\d+[ :-]| \d+$)/gm)) if (!hitPaths.includes(m[1])) hitPaths.push(m[1]);
-					} else if (call.function.name === "search_passages") notePassages(result);
+					} else if (call.function.name === "grep_vault") noteGrepHits(result);
+					else if (call.function.name === "search_passages") notePassages(result);
 				}
 			}
 		}

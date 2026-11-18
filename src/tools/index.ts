@@ -528,13 +528,14 @@ export function ambiguousHeading(heading: string, matches: SectionMatch[], path?
 export const grepVault: ToolDefinition = {
 	name: "grep_vault",
 	description:
-		"Search every note's text for a literal string (case-insensitive) or a regular expression (set regex: true for ^, \\s, [A-Z], a|b). Returns matching lines as `path:line [enclosing heading]: text` grouped by note, a long line cut around the match. The right tool for 'every note that contains X', embeds, tags, headings or exact phrases; much cheaper than reading notes. With a heading as the pattern and context: 8 it shows the start of that section in every note at once.",
+		"Search every note's text for a literal string (case-insensitive) or a regular expression (set regex: true for ^, \\s, [A-Z], a|b). Returns matching lines as `path:line [heading]: text` grouped by note. The tool for 'every note that contains X', embeds, tags, headings, open tasks ('- [ ]') or exact phrases; cheaper than reading notes. With a heading as the pattern and context: 8 it shows the start of that section in every note.",
 	parameters: {
 		type: "object",
 		properties: {
 			pattern: { type: "string", description: "Literal text, or a regular expression when regex is true." },
-			regex: { type: "boolean", description: "Pattern is a JavaScript regular expression." },
+			regex: { type: "boolean", description: "Pattern is a regular expression." },
 			folder: { type: "string", description: "Only notes inside this folder (recursive)." },
+			path_contains: { type: "string", description: "Only notes whose path contains this, e.g. a person's name." },
 			context: { type: "integer", description: "Lines to show after each match (default 0, max 8)." },
 			limit: { type: "integer", description: "Maximum matching lines (default 60, max 200)." },
 			notes_only: { type: "boolean", description: "Only list the notes that match, with a count each: for 'which notes contain X'." },
@@ -564,6 +565,14 @@ export const grepVault: ToolDefinition = {
 				notes = single ? notes.filter((n) => n.path === single) : [];
 			}
 		}
+		// "The open tasks of my meetings with Ana Rocha": the notes are told apart by a name in their
+		// path, which neither a folder nor the pattern can say.
+		const inPath = str(args, "path_contains", false).trim();
+		if (inPath) {
+			notes = notes.filter((n) => n.path.toLowerCase().includes(inPath.toLowerCase()));
+			if (notes.length === 0) throw new ToolError(`No note's path contains "${inPath}"${folder ? ` under ${folder}/` : ""}. Nothing was searched; list_notes shows the names there are.`);
+		}
+		const among = inPath ? ` among the ${notes.length} note${notes.length === 1 ? "" : "s"} whose path contains "${inPath}"` : "";
 		notes.sort((a, b) => a.path.localeCompare(b.path));
 
 		/**
@@ -657,7 +666,7 @@ export const grepVault: ToolDefinition = {
 				: "";
 		note = partial + note;
 		if (result.capped) note += `(${result.capped} line${result.capped === 1 ? "" : "s"} longer than ${MAX_REGEX_LINE} characters ${result.capped === 1 ? "was" : "were"} only searched up to there.)\n`;
-		if (result.total === 0) return partial ? `${note}No match in the notes searched so far.` : `${note}No note contains "${rawPattern}"${folder ? ` under ${folder}/` : ""}.`;
+		if (result.total === 0) return partial ? `${note}No match in the notes searched so far.` : `${note}No note contains "${rawPattern}"${folder ? ` under ${folder}/` : ""}${among}.`;
 		const { hits, total, perNote } = result;
 		const counts = `${note}${total} matching line${total === 1 ? "" : "s"} in ${perNote.length} note${perNote.length === 1 ? "" : "s"}`;
 		if (notesOnly) {

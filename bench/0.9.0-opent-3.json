@@ -1,0 +1,58 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T18:00:39.364Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "opent-3",
+  "only": "open-tasks",
+  "preSearch": true,
+  "commit": "d84f9af+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 4,
+    "calls": 1,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 1,
+    "modelSeconds": 4,
+    "promptSeconds": 0,
+    "passed": 6,
+    "checks": 6,
+    "failures": 15
+  },
+  "failed": [],
+  "scenarios": [
+    {
+      "id": "open-tasks",
+      "ms": 3664,
+      "calls": 1,
+      "prompt": 11585,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 33,
+      "evalMs": 3578,
+      "pass": 6,
+      "fail": 0,
+      "seconds": 3.66,
+      "completionTokens": 336,
+      "readChars": 35332,
+      "loadMs": 6,
+      "failed": [],
+      "tools": [
+        "grep_vault"
+      ],
+      "answer": "Based on the search results, here are the open action items from your meetings with Ana Rocha:\n\n**From \"Meetings/2026-06-01 Ana Rocha - potluck logistics.md\":**\n- Review the PR — Ana Rocha\n\n**From \"Meetings/2026-06-16 Ana Rocha - robot progress.md\":**\n- Book the room — me\n- Share the slides — Ana Rocha\n\n**From \"Meetings/2026-06-25 Ana Rocha - demo rehearsal.md\":**\n- Send the summary — me\n- Review the PR — Ana Rocha\n\n**From \"Meetings/2026-07-15 Ana Rocha - potluck logistics.md\":**\n- Update the plan — me\n- Confirm the date — Ana Rocha\n\n**From \"Meetings/2026-08-20 Ana Rocha - internship prep.md\":**\n- Send the summary — me\n- Share the slides — Ana Rocha\n\n**From \"Meetings/2026-09-16 Ana Rocha - demo rehearsal.md\":**\n- Write the ADR — me\n- Confirm the date — Ana Rocha\n\n**From \"Meetings/2026-09-25 Ana Rocha - potluck logistics.md\":**\n- Order parts — me\n- Share the slides — Ana Rocha\n\n**From \"Meetings/2026-10-05 Ana Rocha - wiring review.md\":**\n- Book the room — me\n- Confirm the date — Ana Rocha\n\nSources: [[Meetings/2026-06-01 Ana Rocha - potluck logistics]], [[Meetings/2026-06-16 Ana Rocha - robot progress]], [[Meetings/2026-06-25 Ana Rocha - demo rehearsal]], [[Meetings/2026-07-15 Ana Rocha - potluck logistics]], [[Meetings/2026-08-20 Ana Rocha - internship prep]], [[Meetings/2026-09-16 Ana Rocha - demo rehearsal]]"
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T18:00:35.398Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "opent-2",
+  "only": "open-tasks",
+  "preSearch": true,
+  "commit": "d84f9af+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 3,
+    "calls": 1,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 1,
+    "modelSeconds": 3,
+    "promptSeconds": 0,
+    "passed": 5,
+    "checks": 6,
+    "failures": 16
+  },
+  "failed": [
+    "open-tasks: names ≥ 80% of the 8 distinct open items (3)"
+  ],
+  "scenarios": [
+    {
+      "id": "open-tasks",
+      "ms": 3089,
+      "calls": 1,
+      "prompt": 11585,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 31,
+      "evalMs": 3004,
+      "pass": 5,
+      "fail": 1,
+      "seconds": 3.09,
+      "completionTokens": 283,
+      "readChars": 35332,
+      "loadMs": 6,
+      "failed": [
+        "names ≥ 80% of the 8 distinct open items (3)"
+      ],
+      "tools": [
+        "grep_vault"
+      ],
+      "answer": "Here are the open action items from your meetings with [[Ana Rocha]]:\n\n**From \"2026-06-01 Ana Rocha - potluck logistics\":**\n- [ ] review the PR — [[Ana Rocha]]\n\n**From \"2026-06-16 Ana Rocha - robot progress\":**\n- [ ] share the slides — [[Ana Rocha]]\n\n**From \"2026-06-25 Ana Rocha - demo rehearsal\":**\n- [ ] review the PR — [[Ana Rocha]]\n\n**From \"2026-07-15 Ana Rocha - potluck logistics\":**\n- [ ] confirm the date — [[Ana Rocha]]\n\n**From \"2026-08-20 Ana Rocha - internship prep\":**\n- [ ] share the slides — [[Ana Rocha]]\n\n**From \"2026-09-16 Ana Rocha - demo rehearsal\":**\n- [ ] confirm the date — [[Ana Rocha]]\n\n**From \"2026-09-25 Ana Rocha - potluck logistics\":**\n- [ ] share the slides — [[Ana Rocha]]\n\n**From \"2026-10-05 Ana Rocha - wiring review\":**\n- [ ] confirm the date — [[Ana Rocha]]"
+    }
+  ]
+}

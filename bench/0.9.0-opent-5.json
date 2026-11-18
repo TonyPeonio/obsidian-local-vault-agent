@@ -1,0 +1,58 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T18:00:47.425Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "opent-5",
+  "only": "open-tasks",
+  "preSearch": true,
+  "commit": "d84f9af+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 4,
+    "calls": 1,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 1,
+    "modelSeconds": 4,
+    "promptSeconds": 0,
+    "passed": 6,
+    "checks": 6,
+    "failures": 15
+  },
+  "failed": [],
+  "scenarios": [
+    {
+      "id": "open-tasks",
+      "ms": 3754,
+      "calls": 1,
+      "prompt": 11585,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 38,
+      "evalMs": 3667,
+      "pass": 6,
+      "fail": 0,
+      "seconds": 3.75,
+      "completionTokens": 346,
+      "readChars": 35332,
+      "loadMs": 5,
+      "failed": [],
+      "tools": [
+        "grep_vault"
+      ],
+      "answer": "Here are the open action items from your meetings with [[Ana Rocha]], organized by meeting:\n\n**2026-06-01: Ana Rocha - potluck logistics**\n- - [ ] review the PR — Ana Rocha\n\n**2026-06-16: Ana Rocha - robot progress**\n- - [ ] book the room — me\n- - [ ] share the slides — Ana Rocha\n\n**2026-06-25: Ana Rocha - demo rehearsal**\n- - [ ] send the summary — me\n- - [ ] review the PR — Ana Rocha\n\n**2026-07-15: Ana Rocha - potluck logistics**\n- - [ ] update the plan — me\n- - [ ] confirm the date — Ana Rocha\n\n**2026-08-20: Ana Rocha - internship prep**\n- - [ ] send the summary — me\n- - [ ] share the slides — Ana Rocha\n\n**2026-09-16: Ana Rocha - demo rehearsal**\n- - [ ] write the ADR — me\n- - [ ] confirm the date — Ana Rocha\n\n**2026-09-25: Ana Rocha - potluck logistics**\n- - [ ] order parts — me\n- - [ ] share the slides — Ana Rocha\n\n**2026-10-05: Ana Rocha - wiring review**\n- - [ ] book the room — me\n- - [ ] confirm the date — Ana Rocha\n\nTotal: 14 open action items across 8 meetings."
+    }
+  ]
+}

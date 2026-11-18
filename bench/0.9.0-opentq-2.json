@@ -1,0 +1,58 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T18:01:02.181Z",
+  "model": "qwen3.5:4b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "opentq-2",
+  "only": "open-tasks",
+  "preSearch": true,
+  "commit": "d84f9af+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 2,
+    "calls": 1,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 1,
+    "modelSeconds": 2,
+    "promptSeconds": 0,
+    "passed": 6,
+    "checks": 6,
+    "failures": 15
+  },
+  "failed": [],
+  "scenarios": [
+    {
+      "id": "open-tasks",
+      "ms": 1977,
+      "calls": 1,
+      "prompt": 11585,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 27,
+      "evalMs": 1895,
+      "pass": 6,
+      "fail": 0,
+      "seconds": 1.98,
+      "completionTokens": 265,
+      "readChars": 35332,
+      "loadMs": 6,
+      "failed": [],
+      "tools": [
+        "grep_vault"
+      ],
+      "answer": "Here are the open action items from meetings with Ana Rocha:\n\n**2026-06-01 - Potluck logistics**\n- update the plan — me\n- review the PR — Ana Rocha\n\n**2026-06-16 - Robot progress**\n- book the room — me\n- share the slides — Ana Rocha\n\n**2026-06-25 - Demo rehearsal**\n- send the summary — me\n- review the PR — Ana Rocha\n\n**2026-07-15 - Potluck logistics**\n- update the plan — me\n- confirm the date — Ana Rocha\n\n**2026-08-20 - Internship prep**\n- send the summary — me\n- share the slides — Ana Rocha\n\n**2026-09-16 - Demo rehearsal**\n- write the ADR — me\n- confirm the date — Ana Rocha\n\n**2026-09-25 - Potluck logistics**\n- order parts — me\n- share the slides — Ana Rocha\n\n**2026-10-05 - Wiring review**\n- book the room — me\n- confirm the date — Ana Rocha\n\nSources: [[Meetings/2026-06-01 Ana Rocha - potluck logistics]], [[Meetings/2026-06-16 Ana Rocha - robot progress]], [[Meetings/2026-06-25 Ana Rocha - demo rehearsal]], [[Meetings/2026-07-15 Ana Rocha - potluck logistics]], [[Meetings/2026-08-20 Ana Rocha - internship prep]], [[Meetings/2026-09-16 Ana Rocha - demo rehearsal]]"
+    }
+  ]
+}

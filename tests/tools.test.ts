@@ -1164,6 +1164,18 @@ describe("grep_vault with a note path as folder", () => {
 		expect(out).toContain("Daily/2026-11-01.md:3");
 	});
 
+	it("path_contains keeps to the notes with that text in their path", async () => {
+		const vault = freshVault();
+		vault.seed("Meetings/2026-06-01 Ana Rocha - potluck.md", "## Actions\n\n- [ ] update the plan\n");
+		vault.seed("Meetings/2026-06-02 Sam Lee - wiring.md", "## Actions\n\n- [ ] order parts\n");
+		vault.seed("Meetings/2026-06-03 Ana Rocha - demo.md", "## Actions\n\n- [x] book the room\n");
+		const { ctx } = makeCtx(vault);
+		const out = await grepVault.execute({ pattern: "- [ ]", path_contains: "ana rocha" }, ctx);
+		expect(out).toBe("1 matching line in 1 note:\nMeetings/2026-06-01 Ana Rocha - potluck.md:3 [## Actions]: - [ ] update the plan");
+		expect(await grepVault.execute({ pattern: "order parts", path_contains: "Ana Rocha" }, ctx)).toBe('No note contains "order parts" among the 2 notes whose path contains "Ana Rocha".');
+		await expect(grepVault.execute({ pattern: "- [ ]", path_contains: "Nobody" }, ctx)).rejects.toThrow('No note\'s path contains "Nobody". Nothing was searched');
+	});
+
 	it("searches just that note", async () => {
 		const { ctx } = makeCtx(freshVault());
 		const out = await grepVault.execute({ pattern: "sensors", folder: "Ideas/Sensors.md" }, ctx);

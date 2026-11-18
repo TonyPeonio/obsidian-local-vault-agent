@@ -26,6 +26,9 @@ import {
 	repeatingTail,
 	replyCap,
 	looksLikeVaultQuestion,
+	asksForOpenTasks,
+	nameInPaths,
+	OPEN_TASK_PATTERN,
 	UNASKED_WRITE_CAUTION,
 	outlineDrift,
 	OUTLINE_DRIFT_LIMIT,
@@ -862,6 +865,83 @@ describe("search before the first reply", () => {
 		await none.agent.run(conv, "What did I decide about the power supply?", {});
 		expect(none.ollama.requests[0].messages.map((m) => m.role)).toEqual(["system", "user"]);
 		expect(conv.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+	});
+
+	it("recognises a question about the tasks still open", () => {
+		for (const q of [
+			"Which action items from my meetings with Ana Rocha are still open? List them with the meeting each is from.",
+			"What open tasks do I have in the Chess Robot project?",
+			"which to-dos are not done yet?",
+			"How many unchecked tasks are there?",
+		]) {
+			expect(asksForOpenTasks(q), q).toBe(true);
+		}
+		for (const q of ["What did we decide about the open day?", "Which tasks did Ana take on?", "Check off the open tasks in Projects/Chess Robot", "Add an open task to the plan", "When does the lab open?"]) {
+			expect(asksForOpenTasks(q), q).toBe(false);
+		}
+		// A follow-up that leans on the conversation is the model's to answer.
+		expect(asksForOpenTasks("Which of those tasks are still open?", false)).toBe(false);
+	});
+
+	it("finds the name a question gives in the paths of the notes", () => {
+		const paths = ["Meetings/2026-06-01 Ana Rocha - potluck.md", "Meetings/2026-06-02 Sam Lee - wiring.md", "Projects/Chess Robot/Plan.md", "Recipes/Banana bread.md", "Reading/Weather.md"];
+		expect(nameInPaths("Which action items from my meetings with Ana Rocha are still open? List them with the meeting each is from.", paths)).toBe("Ana Rocha");
+		expect(nameInPaths("What open tasks do I have in the Chess Robot project?", paths)).toBe("Chess Robot");
+		expect(nameInPaths('Which tasks in "potluck" notes are open?', paths)).toBe("potluck");
+		// Part of a word is not the name, and neither is the capital that opens a sentence.
+		expect(nameInPaths("Which open tasks does Ana have?", paths)).toBe("Ana");
+		expect(nameInPaths("Which open tasks does Ban have?", paths)).toBeNull();
+		expect(nameInPaths("The open tasks, what are they?", paths)).toBeNull();
+		expect(nameInPaths("Which tasks are still open?", paths)).toBeNull();
+		// A name that opens the sentence still counts as a whole.
+		expect(nameInPaths("Sam Lee's action items: which are open?", paths)).toBe("Sam Lee");
+	});
+
+	it("answers a question about open tasks with every unchecked box in the notes it names, not the best few passages", async () => {
+		const vault = new FakeVault({
+			"Meetings/2026-06-01 Ana Rocha - potluck.md": "# Potluck\n\n## Actions\n\n- [ ] update the plan — me\n- [x] book the room — me\n",
+			"Meetings/2026-07-15 Ana Rocha - wiring.md": "# Wiring\n\n## Actions\n\n* [ ] confirm the date — Ana Rocha\n1. [ ] order parts — me\n",
+			"Meetings/2026-07-16 Sam Lee - wiring.md": "# Wiring\n\n## Actions\n\n- [ ] share the slides — Sam Lee\n",
+			"Meetings/2026-08-01 Ana Rocha - demo.md": "# Demo\n\n## Actions\n\n- [x] review the PR — me\n",
+		});
+		const ollama = new FakeOllama([{ content: "Three are open." }, { content: "One." }, { content: "None." }]);
+		const queries: string[] = [];
+		const agent = new Agent({
+			client: ollama.asClient(),
+			vault,
+			tools: ALL_TOOLS,
+			search: async () => [],
+			searchPassages: async (q) => {
+				queries.push(q);
+				return [{ path: "Meetings/2026-08-01 Ana Rocha - demo.md", heading: "Actions", crumb: "Actions", text: "- [x] review the PR — me", score: 0.8 }];
+			},
+			approve: async () => "approve",
+			getConfig: () => config,
+		});
+		const conv = newConversation();
+		await agent.run(conv, "Which action items from my meetings with Ana Rocha are still open? List them with the meeting each is from.", {});
+		expect(queries).toEqual([]);
+		expect(ollama.requests).toHaveLength(1);
+		expect(ollama.requests[0].messages[2].tool_calls?.[0].function).toEqual({ name: "grep_vault", arguments: { pattern: OPEN_TASK_PATTERN, regex: true, path_contains: "Ana Rocha", limit: 200 } });
+		const result = ollama.requests[0].messages[3].content;
+		expect(result).toMatch(/^3 matching lines in 2 notes:/);
+		expect(result).toContain("Meetings/2026-06-01 Ana Rocha - potluck.md:5 [## Actions]: - [ ] update the plan — me");
+		expect(result).toContain("Meetings/2026-07-15 Ana Rocha - wiring.md:5 [## Actions]: * [ ] confirm the date — Ana Rocha");
+		expect(result).toContain("Meetings/2026-07-15 Ana Rocha - wiring.md:6 [## Actions]: 1. [ ] order parts — me");
+		expect(result).not.toMatch(/Sam Lee|book the room|review the PR/);
+		// The answer is sourced from the notes the boxes are in.
+		expect(conv.messages.at(-1)?.content).toContain("[[Meetings/2026-06-01 Ana Rocha - potluck]]");
+
+		// With no name in the question it is every open box in the vault.
+		await agent.run(newConversation(), "Which tasks are still open?", {});
+		expect(ollama.requests[1].messages[2].tool_calls?.[0].function.arguments).toEqual({ pattern: OPEN_TASK_PATTERN, regex: true, limit: 200 });
+		expect(ollama.requests[1].messages[3].content).toMatch(/^4 matching lines in 3 notes:/);
+
+		// No open box where the question points: the ordinary search is made instead.
+		vault.seed("Meetings/2026-09-01 Lena Park - demo.md", "# Demo\n\n- [x] done\n");
+		await agent.run(newConversation(), "Which action items from my meeting with Lena Park are still open?", {});
+		expect(queries).toHaveLength(1);
+		expect(ollama.requests[2].messages[2].tool_calls?.[0].function.name).toBe("search_passages");
 	});
 
 	it("does not repeat the search when the model asks for the same one", async () => {

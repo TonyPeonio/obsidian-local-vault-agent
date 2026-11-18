@@ -1,0 +1,58 @@
+{
+  "version": "0.9.0",
+  "date": "2026-11-18T18:00:31.999Z",
+  "model": "qwen3.5:9b",
+  "numCtx": 32768,
+  "gists": false,
+  "think": "off",
+  "temperature": 0.6,
+  "presencePenalty": 0.5,
+  "tag": "opent-1",
+  "only": "open-tasks",
+  "preSearch": true,
+  "commit": "d84f9af+dirty",
+  "ollama": "0.40.15",
+  "conventions": "file",
+  "embed": "nomic-embed-text",
+  "notes": 337,
+  "systemPromptChars": 17705,
+  "totals": {
+    "seconds": 7,
+    "calls": 1,
+    "errors": 0,
+    "misses": 0,
+    "repeats": 0,
+    "steps": 1,
+    "modelSeconds": 6,
+    "promptSeconds": 2,
+    "passed": 6,
+    "checks": 6,
+    "failures": 15
+  },
+  "failed": [],
+  "scenarios": [
+    {
+      "id": "open-tasks",
+      "ms": 6528,
+      "calls": 1,
+      "prompt": 11585,
+      "errors": 0,
+      "misses": 0,
+      "repeats": 0,
+      "steps": 1,
+      "promptMs": 2416,
+      "evalMs": 3883,
+      "pass": 6,
+      "fail": 0,
+      "seconds": 6.53,
+      "completionTokens": 365,
+      "readChars": 35332,
+      "loadMs": 7,
+      "failed": [],
+      "tools": [
+        "grep_vault"
+      ],
+      "answer": "Based on my search of all meeting notes with Ana Rocha, here are the open action items from each meeting:\n\n**2026-06-01 Ana Rocha - potluck logistics:**\n- `[ ] review the PR — Ana Rocha`\n\n**2026-06-16 Ana Rocha - robot progress:**\n- `[ ] book the room — me`\n- `[ ] share the slides — Ana Rocha`\n\n**2026-06-25 Ana Rocha - demo rehearsal:**\n- `[ ] send the summary — me`\n- `[ ] review the PR — Ana Rocha`\n\n**2026-07-15 Ana Rocha - potluck logistics:**\n- `[ ] update the plan — me`\n- `[ ] confirm the date — Ana Rocha`\n\n**2026-08-20 Ana Rocha - internship prep:**\n- `[ ] send the summary — me`\n- `[ ] share the slides — Ana Rocha`\n\n**2026-09-16 Ana Rocha - demo rehearsal:**\n- `[ ] write the ADR — me`\n- `[ ] confirm the date — Ana Rocha`\n\n**2026-09-25 Ana Rocha - potluck logistics:**\n- `[ ] order parts — me`\n- `[ ] share the slides — Ana Rocha`\n\n**2026-10-05 Ana Rocha - wiring review:**\n- `[ ] book the room — me`\n- `[ ] confirm the date — Ana Rocha`\n\nAll of these action items are still open (unchecked). Each meeting note has action items listed under a `## Actions` section, and none of them have been marked as complete.\n\nSources: [[Meetings/2026-06-01 Ana Rocha - potluck logistics]], [[Meetings/2026-06-16 Ana Rocha - robot progress]], [[Meetings/2026-06-25 Ana Rocha - demo rehearsal]], [[Meetings/2026-07-15 Ana Rocha - potluck logistics]], [[Meetings/2026-08-20 Ana Rocha - internship prep]], [[Meetings/2026-09-16 Ana Rocha - demo rehearsal]]\n\nPassages: [[Meetings/2026-06-16 Ana Rocha - robot progress#^c1spdzv|2026-06-16 Ana Rocha - robot progress › Actions]], [[Meetings/2026-07-15 Ana Rocha - potluck logistics#^c1lkhhv|2026-07-15 Ana Rocha - potluck logistics › Actions]]"
+    }
+  ]
+}
