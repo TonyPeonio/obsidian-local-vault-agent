@@ -359,6 +359,30 @@ describe("search_passages", () => {
 		expect(out).toContain("--- [1] Projects/Chess Robot.md › Status (score 0.81)\nWorking. (gantry status, 2)");
 		expect(out).toContain("--- [2] Ideas/Sensors.md (score 0.50)\nHall sensors are cheap.");
 	});
+	it("labels a passage with its heading path", async () => {
+		const { ctx } = makeCtx(freshVault());
+		ctx.searchPassages = async () => [{ path: "School/Lectures.md", heading: "Summary", crumb: "2026-09-10 › Summary", text: "Seven multiplications.", score: 0.8 }];
+		expect(await searchPassages.execute({ query: "strassen" }, ctx)).toContain("--- [1] School/Lectures.md › 2026-09-10 › Summary (score 0.80)");
+	});
+	it("says so when nothing is close and no passage has the question's words", async () => {
+		const { ctx } = makeCtx(freshVault());
+		ctx.weakMatchBelow = 0.64;
+		ctx.searchPassages = async () => [
+			{ path: "a.md", heading: "", text: "unrelated", score: 0.58, words: { matched: 1, terms: 3 } },
+			{ path: "b.md", heading: "", text: "also unrelated", score: 0.55 },
+		];
+		const weak = await searchPassages.execute({ query: "how do I renew my passport" }, ctx);
+		expect(weak).toMatch(/None of these is a close match \(best score 0\.58\)/);
+		expect(weak).toMatch(/say the notes do not cover it/);
+		// A close match, a passage with every word, or an embedding model with no measured threshold: no remark.
+		ctx.searchPassages = async () => [{ path: "a.md", heading: "", text: "x", score: 0.7 }];
+		expect(await searchPassages.execute({ query: "q" }, ctx)).not.toMatch(/close match/);
+		ctx.searchPassages = async () => [{ path: "a.md", heading: "", text: "x", score: 0.5, words: { matched: 2, terms: 2 } }];
+		expect(await searchPassages.execute({ query: "q" }, ctx)).not.toMatch(/close match/);
+		ctx.weakMatchBelow = undefined;
+		ctx.searchPassages = async () => [{ path: "a.md", heading: "", text: "x", score: 0.2 }];
+		expect(await searchPassages.execute({ query: "q" }, ctx)).not.toMatch(/close match/);
+	});
 	it("falls back to keyword snippets without an index", async () => {
 		const { ctx } = makeCtx(freshVault());
 		const out = await searchPassages.execute({ query: "hall sensors" }, ctx);
@@ -376,6 +400,24 @@ describe("read_section / extractSection", () => {
 		expect(s).toMatchObject({ startLine: 5, endLine: 14 });
 		expect(extractSection(note, "Open")?.text).toBe("## Open problems\n\n- one");
 		expect(extractSection(note, "nope")).toBeNull();
+	});
+	it("addresses a repeated heading by the path of headings above it", () => {
+		const lectures = "# Lectures\n\n## 2026-09-03\n\n### Summary\n\nfirst\n\n### Transcript\n\nt1\n\n## 2026-09-10\n\n### Summary\n\nsecond\n\n## Summary of the term\n\nall";
+		expect(extractSection(lectures, "Summary")?.text).toBe("### Summary\n\nfirst");
+		expect(extractSection(lectures, "2026-09-10 › Summary")?.text).toBe("### Summary\n\nsecond");
+		expect(extractSection(lectures, "2026-09-10 > summary")?.text).toBe("### Summary\n\nsecond");
+		expect(extractSection(lectures, "2026-09-10#Summary")?.text).toBe("### Summary\n\nsecond");
+		expect(extractSection(lectures, "Lectures › 2026-09-10 › Summary")?.text).toBe("### Summary\n\nsecond");
+		expect(extractSection(lectures, "2026-09 › Transcript")?.text).toBe("### Transcript\n\nt1");
+		// No such section under that date: not the same heading from another date.
+		expect(extractSection(lectures, "2026-09-10 › Transcript")).toBeNull();
+		expect(extractSection(lectures, "2026-12-01 › Summary")).toBeNull();
+	});
+	it("prefers an exact heading to an earlier one that only starts with the text", () => {
+		const n = "## Summary of week\n\na\n\n## Summary\n\nb\n\n## C# notes\n\nc";
+		expect(extractSection(n, "Summary")?.text).toBe("## Summary\n\nb");
+		expect(extractSection(n, "Summary of")?.text).toBe("## Summary of week\n\na");
+		expect(extractSection(n, "C# notes")?.text).toBe("## C# notes\n\nc");
 	});
 	it("reads a section by prefix and lists headings when missing", async () => {
 		const vault = freshVault();

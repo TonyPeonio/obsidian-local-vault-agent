@@ -13,7 +13,7 @@ import { basename, join, relative, resolve } from "path";
 import { Agent, buildSystemPrompt, looksLikePermissionQuestion, newConversation, type AgentConfig } from "../src/agent";
 import { DEFAULT_SETTINGS, SAMPLING } from "../src/settings";
 import { GistCache, type GistData } from "../src/gists";
-import { SemanticIndex, type IndexData } from "../src/index";
+import { SemanticIndex, weakMatchThreshold, type IndexData } from "../src/index";
 import { attachMentions } from "../src/mentions";
 import { OllamaClient } from "../src/ollama";
 import { fuseRankings, keywordSearch } from "../src/search";
@@ -144,6 +144,7 @@ async function main() {
 		tools: ALL_TOOLS,
 		search: async (q, limit) => fuseRankings([await index.search(q, limit * 2), await keywordSearch(vault, q, limit * 2)], limit),
 		searchPassages: (q, limit) => index.searchPassages(q, limit),
+		weakMatchBelow: () => weakMatchThreshold(EMBED),
 		approve: async () => approveMode,
 		getConfig: () => cfg,
 		undo,

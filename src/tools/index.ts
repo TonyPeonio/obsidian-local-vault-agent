@@ -208,7 +208,7 @@ export const searchNotes: ToolDefinition = {
 export const searchPassages: ToolDefinition = {
 	name: "search_passages",
 	description:
-		"Semantic search that returns the best-matching sections of notes verbatim (a heading's paragraphs, not a whole note). Usually enough to answer a question directly; cite the note path. Use search_notes instead when you only need to know which notes exist on a topic.",
+		"Search by meaning and by exact words (names, numbers, identifiers, a day such as 'September 10' or 'yesterday') that returns the best-matching sections of notes verbatim (a heading's paragraphs, not a whole note). Each is labelled 'note › heading path'. Usually enough to answer a question directly; cite the note path. Use search_notes instead when you only need to know which notes exist on a topic.",
 	parameters: {
 		type: "object",
 		properties: {
@@ -232,37 +232,67 @@ export const searchPassages: ToolDefinition = {
 		const maxEach = Math.max(600, Math.floor(ctx.maxResultChars / passages.length));
 		const rows = passages.map((p, i) => {
 			const text = p.text.length > maxEach ? p.text.slice(0, maxEach) + "\n[… section truncated; read_section for the rest]" : p.text;
-			return `--- [${i + 1}] ${p.path}${p.heading ? ` › ${p.heading}` : ""} (score ${p.score.toFixed(2)})\n${text}`;
+			const where = p.crumb ?? p.heading;
+			return `--- [${i + 1}] ${p.path}${where ? ` › ${where}` : ""} (score ${p.score.toFixed(2)})\n${text}`;
 		});
-		return `${passages.length} passage${passages.length === 1 ? "" : "s"}, best first. Each is one section of a note; cite the note path as a wikilink.\n${rows.join("\n")}`;
+		// When nothing is close in meaning and no passage has the question's words, say so: six
+		// plausible-looking passages otherwise read as "the answer is in here somewhere".
+		const best = Math.max(...passages.map((p) => p.score));
+		const weak = ctx.weakMatchBelow !== undefined && best < ctx.weakMatchBelow && !passages.some((p) => p.words && p.words.matched === p.words.terms);
+		const note = weak
+			? `\nNone of these is a close match (best score ${best.toFixed(2)}): the vault may have nothing on this. If no passage answers the question, say the notes do not cover it rather than guessing; try grep_vault with an exact word if there is one.`
+			: "";
+		return `${passages.length} passage${passages.length === 1 ? "" : "s"}, best first. Each is one section of a note; cite the note path as a wikilink.${note}\n${rows.join("\n")}`;
 	},
 };
 
-/** The body of one heading in `content`: from the heading line to the next heading of the same or a higher level. */
+/**
+ * The body of one heading in `content`: from the heading line to the next heading of the same or
+ * a higher level. `heading` is the heading's text, or a path of headings ("2026-09-10 › Summary",
+ * also written with ">" or "#") for a note that repeats a heading under each date or topic. A
+ * heading that matches exactly wins over one that only starts with the text, wherever it is.
+ */
 export function extractSection(content: string, heading: string): { text: string; startLine: number; endLine: number } | null {
 	const lines = content.split("\n");
-	const want = heading.replace(/^#+\s*/, "").trim().toLowerCase();
-	if (!want) return null;
+	const parts = heading
+		.replace(/^#+\s*/, "")
+		.split(/\s+[›>]\s+|\s*#\s*/)
+		.map((p) => p.trim().toLowerCase())
+		.filter(Boolean);
+	if (parts.length === 0) return null;
+	const whole = heading.replace(/^#+\s*/, "").trim().toLowerCase();
+	const heads: { line: number; level: number; text: string; above: string[] }[] = [];
+	const stack: { level: number; text: string }[] = [];
 	let inFence = false;
-	let start = -1;
-	let level = 0;
 	for (let i = 0; i < lines.length; i++) {
 		if (/^\s*(```|~~~)/.test(lines[i])) inFence = !inFence;
 		if (inFence) continue;
 		const m = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
 		if (!m) continue;
+		const level = m[1].length;
+		while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
 		const text = m[2].trim().toLowerCase();
-		if (start < 0) {
-			if (text === want || text.startsWith(want)) {
-				start = i;
-				level = m[1].length;
-			}
-		} else if (m[1].length <= level) {
-			return { text: lines.slice(start, i).join("\n").trimEnd(), startLine: start + 1, endLine: i };
-		}
+		heads.push({ line: i, level, text, above: stack.map((s) => s.text) });
+		stack.push({ level, text });
 	}
-	if (start < 0) return null;
-	return { text: lines.slice(start).join("\n").trimEnd(), startLine: start + 1, endLine: lines.length };
+	/** The headings above `h` contain `path` in order (levels in between may be skipped). */
+	const under = (h: { above: string[] }, path: string[]): boolean => {
+		let at = 0;
+		for (const a of h.above) if (at < path.length && (a === path[at] || a.startsWith(path[at]))) at++;
+		return at === path.length;
+	};
+	const last = parts[parts.length - 1];
+	const parents = parts.slice(0, -1);
+	const found =
+		// A heading whose own text is the whole argument (it may itself contain ">" or "#").
+		heads.find((h) => h.text === whole) ??
+		(parents.length ? (heads.find((h) => h.text === last && under(h, parents)) ?? heads.find((h) => h.text.startsWith(last) && under(h, parents))) : undefined) ??
+		heads.find((h) => h.text === last && parents.length === 0) ??
+		heads.find((h) => h.text.startsWith(whole));
+	if (!found) return null;
+	const next = heads.find((h) => h.line > found.line && h.level <= found.level);
+	const end = next ? next.line : lines.length;
+	return { text: lines.slice(found.line, end).join("\n").trimEnd(), startLine: found.line + 1, endLine: end };
 }
 
 export const grepVault: ToolDefinition = {
@@ -575,12 +605,12 @@ export const listSections: ToolDefinition = {
 export const readSection: ToolDefinition = {
 	name: "read_section",
 	description:
-		"Read one section of a note: the heading and everything under it up to the next heading of the same or a higher level. Cheaper than read_note for long notes. Heading text is matched case-insensitively; a prefix is enough.",
+		"Read one section of a note: the heading and everything under it up to the next heading of the same or a higher level. Cheaper than read_note for long notes. Heading text is matched case-insensitively; a prefix is enough. When a note repeats a heading (a 'Summary' under every date), give the path as search_passages shows it: '2026-11-05 › Summary'.",
 	parameters: {
 		type: "object",
 		properties: {
 			path: { type: "string", description: "Path of the note." },
-			heading: { type: "string", description: "The heading text, e.g. 'Open problems' or '2026-11-05'." },
+			heading: { type: "string", description: "The heading text, e.g. 'Open problems' or '2026-11-05', or a path of headings: '2026-11-05 › Summary'." },
 		},
 		required: ["path", "heading"],
 	},

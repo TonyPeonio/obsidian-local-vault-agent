@@ -1,5 +1,6 @@
 import { chunkMarkdown } from "./chunker";
 import type { OllamaClient } from "./ollama";
+import { LexicalIndex, dateTerms, fuseKeyed } from "./retrieval";
 import type { Passage, SearchHit, VaultAccess } from "./types";
 
 /**
@@ -10,14 +11,25 @@ import type { Passage, SearchHit, VaultAccess } from "./types";
 
 export interface StoredChunk {
 	heading: string;
+	/** The heading with its parent headings (see `Chunk.crumb`); absent in indexes saved before 0.9.0. */
+	crumb?: string;
 	text: string;
 	/** Base64-encoded Float32Array. */
 	vec: string;
 }
 
+/**
+ * What a chunk's vector was computed from. 2 (0.9.0): the note title and the heading PATH, where
+ * 1 used the title and the nearest heading only. A stored note with another value is chunked
+ * again on the next sync; chunks whose embedded text did not change keep their vectors.
+ */
+export const EMBED_FORMAT = 2;
+
 export interface StoredFile {
 	mtime: number;
 	chunks: StoredChunk[];
+	/** `EMBED_FORMAT` the chunks were embedded with; absent means 1. */
+	fmt?: number;
 }
 
 export interface IndexData {
@@ -69,6 +81,8 @@ export interface IndexOptions {
 	onStatus?: (status: IndexStatus) => void;
 	/** Max chunks per embedding request. */
 	batchSize?: number;
+	/** The current time, for questions that name a day ("yesterday", "September 10"); the clock by default. */
+	now?: () => Date;
 }
 
 function encodeVec(f: Float32Array): string {
@@ -116,8 +130,25 @@ export function shardOf(path: string, shards = SHARDS): number {
 /** A chunk in memory: its vector as numbers (unit length), not base64. */
 interface MemChunk {
 	heading: string;
+	crumb: string;
 	text: string;
 	vec: Float32Array;
+}
+
+/** A stored note from an older embed format is given this mtime, which no real note has, so the next sync chunks it again. */
+const STALE_MTIME = -1;
+
+export interface PassageSearchOptions {
+	/** false: embeddings only, as before 0.9.0. Default: embeddings and word matching together. */
+	lexical?: boolean;
+	/** How the two scores are combined: "blend" (default) mixes the normalised scores, "rrf" fuses the ranks. */
+	fusion?: "blend" | "rrf";
+	/** The say of word matching: its share of the mix for "blend" (default 0.3), its weight for "rrf" (default 1). */
+	lexWeight?: number;
+	/** Added to a passage that contains every word of the question ("blend" only; default 0.3). */
+	coverBonus?: number;
+	/** false: do not look for days the question names. */
+	dates?: boolean;
 }
 
 interface MemFile {
@@ -137,6 +168,17 @@ export function cosine(a: Float32Array, b: Float32Array): number {
 	}
 	if (na === 0 || nb === 0) return 0;
 	return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/**
+ * The cosine score under which the best passage is "not a close match", for embedding models it
+ * has been measured on (`npm run bench:retrieval`: with nomic-embed-text every question the
+ * benchmark vault cannot answer scored under 0.68 and 93% of the answerable ones over it; 0.64
+ * leaves a margin, so a real match is not called weak). Undefined for other models: their scores
+ * are on another scale.
+ */
+export function weakMatchThreshold(model: string): number | undefined {
+	return /nomic-embed-text/i.test(model) ? 0.64 : undefined;
 }
 
 /** nomic-embed models want task prefixes; other models are passed through unchanged. */
@@ -166,6 +208,8 @@ export class SemanticIndex {
 	private manifestKey = "";
 	/** The flush in progress: flushes run one after another, never side by side. */
 	private flushing: Promise<void> = Promise.resolve();
+	/** Word index over the same chunks, kept in step with `files`; needs no model. */
+	private lex = new LexicalIndex();
 
 	constructor(
 		private client: OllamaClient,
@@ -186,13 +230,18 @@ export class SemanticIndex {
 		if (file) {
 			this.files.set(path, file);
 			this.totalChunks += file.chunks.length;
-		} else this.files.delete(path);
+			this.lex.setFile(path, file.chunks.map((c) => ({ heading: c.crumb, text: c.text })), noteTitle(path));
+		} else {
+			this.files.delete(path);
+			this.lex.remove(path);
+		}
 		this.dirty = true;
 		this.dirtyShards.add(shardOf(path));
 	}
 
 	private clear(): void {
 		this.files.clear();
+		this.lex.clear();
 		this.totalChunks = 0;
 		this.dims = 0;
 		this.model = this.opts.getModel();
@@ -202,9 +251,11 @@ export class SemanticIndex {
 
 	private adopt(files: Record<string, StoredFile>): void {
 		for (const [path, f] of Object.entries(files)) {
-			const chunks = f.chunks.map((c) => ({ heading: c.heading, text: c.text, vec: normalize(decodeVec(c.vec)) }));
-			this.files.set(path, { mtime: f.mtime, chunks });
+			const chunks = f.chunks.map((c) => ({ heading: c.heading, crumb: c.crumb ?? c.heading, text: c.text, vec: normalize(decodeVec(c.vec)) }));
+			// An older embed format stays searchable as it is, and is chunked again on the next sync.
+			this.files.set(path, { mtime: (f.fmt ?? 1) === EMBED_FORMAT ? f.mtime : STALE_MTIME, chunks });
 			this.totalChunks += chunks.length;
+			this.lex.setFile(path, chunks.map((c) => ({ heading: c.crumb, text: c.text })), noteTitle(path));
 		}
 	}
 
@@ -354,28 +405,112 @@ export class SemanticIndex {
 		best.sort((a, b) => b.score - a.score);
 		return best.slice(0, limit).map((b) => {
 			const chunk = this.files.get(b.path)!.chunks[b.idx];
-			return { path: b.path, score: b.score, heading: chunk.heading || undefined, snippet: chunk.text.replace(/\s+/g, " ").slice(0, 280) };
+			return { path: b.path, score: b.score, heading: chunk.crumb || undefined, snippet: chunk.text.replace(/\s+/g, " ").slice(0, 280) };
 		});
 	}
 
 	/**
 	 * Chunk-level search: the best-matching sections across the vault, verbatim, at most
-	 * `perNote` from any one note so a single long note cannot crowd out the others.
+	 * `perNote` from any one note so a single long note cannot crowd out the others. Two scores
+	 * are combined: by meaning (embeddings) and by words (BM25 over the same chunks), because an
+	 * embedding blurs exactly what notes are full of: names, identifiers, numbers, a rare term.
+	 * A question that names a day ("September 10", "yesterday") also keeps places for the
+	 * sections and notes dated that day, which neither score finds from the words alone.
 	 */
-	async searchPassages(query: string, limit: number, perNote = 3, signal?: AbortSignal): Promise<Passage[]> {
+	async searchPassages(query: string, limit: number, perNote = 3, signal?: AbortSignal, opts: PassageSearchOptions = {}): Promise<Passage[]> {
 		if (!this.ready) return [];
 		const q = await this.queryVector(query, signal);
-		const scored: { path: string; score: number; idx: number }[] = [];
+		const pool = Math.max(limit * 4, 24);
+		type Cand = { path: string; idx: number; dense: number; lex: number; words?: { matched: number; terms: number }; dated: boolean; score: number };
+		const key = (h: { path: string; idx: number }) => `${h.path}\n${h.idx}`;
+		const dense: Cand[] = [];
 		for (const [path, file] of this.files) {
-			const mine: { path: string; score: number; idx: number }[] = [];
-			for (let i = 0; i < file.chunks.length; i++) mine.push({ path, score: dot(q, file.chunks[i].vec), idx: i });
-			if (mine.length > perNote) mine.sort((a, b) => b.score - a.score);
-			for (let i = 0; i < Math.min(perNote, mine.length); i++) scored.push(mine[i]);
+			const mine: Cand[] = [];
+			for (let i = 0; i < file.chunks.length; i++) mine.push({ path, idx: i, dense: dot(q, file.chunks[i].vec), lex: 0, dated: false, score: 0 });
+			if (mine.length > perNote) mine.sort((x, y) => y.dense - x.dense);
+			for (let i = 0; i < Math.min(perNote, mine.length); i++) dense.push(mine[i]);
 		}
-		scored.sort((a, b) => b.score - a.score);
-		return scored.slice(0, limit).map((s) => {
-			const chunk = this.files.get(s.path)!.chunks[s.idx];
-			return { path: s.path, heading: chunk.heading, text: chunk.text, score: s.score };
+		dense.sort((x, y) => y.dense - x.dense);
+		let ranked: Cand[];
+		if (opts.lexical === false) ranked = dense.slice(0, limit);
+		else {
+			// "September 10" is `2026-09-10` in a file name or a heading: search the day as notes write it.
+			const dates = opts.dates === false ? [] : dateTerms(query, this.opts.now?.() ?? new Date());
+			const lexical = this.lex.search(query, pool, (path, idx) => this.files.get(path)?.chunks[idx]?.text, dates);
+			const cands = new Map<string, Cand>();
+			for (const d of dense.slice(0, pool)) cands.set(key(d), d);
+			for (const h of lexical) {
+				let c = cands.get(key(h));
+				if (!c) {
+					const vec = this.files.get(h.path)?.chunks[h.idx]?.vec;
+					if (!vec) continue;
+					cands.set(key(h), (c = { path: h.path, idx: h.idx, dense: dot(q, vec), lex: 0, dated: false, score: 0 }));
+				}
+				c.lex = h.score;
+				c.words = { matched: h.matched, terms: h.terms };
+			}
+			const all = Array.from(cands.values());
+			if ((opts.fusion ?? "blend") === "rrf") {
+				const fused = fuseKeyed(
+					[dense.slice(0, pool).map((h) => ({ key: key(h), item: h })), lexical.map((h) => ({ key: key(h), item: cands.get(key(h)) as Cand })).filter((e) => e.item)],
+					all.length,
+					60,
+					[1, opts.lexWeight ?? 1],
+				);
+				for (const f of fused) f.item.score = f.fused;
+			} else {
+				// Both scores brought to 0..1 over the candidates, then mixed: unlike rank fusion this keeps
+				// "far ahead of the rest", so one passage with the exact rare term is not outvoted by
+				// passages that are merely middling on both.
+				let dMin = Infinity;
+				let dMax = -Infinity;
+				let lMax = 0;
+				for (const c of all) {
+					dMin = Math.min(dMin, c.dense);
+					dMax = Math.max(dMax, c.dense);
+					lMax = Math.max(lMax, c.lex);
+				}
+				const w = opts.lexWeight ?? 0.3;
+				// A passage with every word of the question is rare for a sentence and decisive for a name or an identifier.
+				const cover = opts.coverBonus ?? 0.3;
+				for (const c of all) {
+					c.score = (1 - w) * (dMax > dMin ? (c.dense - dMin) / (dMax - dMin) : 1) + w * (lMax > 0 ? c.lex / lMax : 0);
+					if (c.words && c.words.matched === c.words.terms) c.score += cover;
+				}
+			}
+			all.sort((x, y) => y.score - x.score);
+			if (dates.length) {
+				for (const c of all) {
+					const where = `${c.path}\n${this.files.get(c.path)?.chunks[c.idx]?.crumb ?? ""}`;
+					c.dated = dates.some((d) => where.includes(d));
+				}
+			}
+			// Up to half the places go to passages dated the day the question names, best first; the
+			// rest are the best of everything, with the per-note limit over both.
+			const taken = new Map<string, number>();
+			const picked = new Set<Cand>();
+			const take = (c: Cand): boolean => {
+				const n = taken.get(c.path) ?? 0;
+				if (picked.has(c) || n >= perNote) return false;
+				taken.set(c.path, n + 1);
+				picked.add(c);
+				return true;
+			};
+			let reserved = dates.length ? Math.ceil(limit / 2) : 0;
+			for (const c of all) {
+				if (reserved <= 0) break;
+				if (c.dated && take(c)) reserved--;
+			}
+			for (const c of all) {
+				if (picked.size >= limit) break;
+				take(c);
+			}
+			ranked = all.filter((c) => picked.has(c)).sort((x, y) => Number(y.dated) - Number(x.dated) || y.score - x.score);
+		}
+		return ranked.flatMap((r) => {
+			const chunk = this.files.get(r.path)?.chunks[r.idx];
+			if (!chunk) return [];
+			return [{ path: r.path, heading: chunk.heading, crumb: chunk.crumb, text: chunk.text, score: r.dense, words: r.words }];
 		});
 	}
 
@@ -422,20 +557,20 @@ export class SemanticIndex {
 				// chunks go to the embedding model. A note that grows a paragraph at a time (a lecture
 				// being transcribed, a daily note being typed) otherwise had every chunk embedded again
 				// on each save, which on a laptop is a GPU burst every few seconds for nothing.
-				const chunkKey = (c: { heading: string; text: string }) => `${c.heading}\n${c.text}`;
+				const chunkKey = (c: { crumb: string; text: string }) => `${c.crumb}\n${c.text}`;
 				const known = new Map<string, Float32Array>();
 				for (const c of this.files.get(path)?.chunks ?? []) known.set(chunkKey(c), c.vec);
 				const vecs: (Float32Array | undefined)[] = chunks.map((c) => known.get(chunkKey(c)));
 				const missing = chunks.map((_, i) => i).filter((i) => vecs[i] === undefined);
 				const inputs = missing.map((i) =>
-					embedInput(model, `${noteTitle(path)}${chunks[i].heading ? ` > ${chunks[i].heading}` : ""}\n${chunks[i].text}`, "document"),
+					embedInput(model, `${noteTitle(path)}${chunks[i].crumb ? ` > ${chunks[i].crumb}` : ""}\n${chunks[i].text}`, "document"),
 				);
 				for (let i = 0; i < inputs.length; i += batchSize) {
 					const vectors = await this.client.embed(model, inputs.slice(i, i + batchSize), signal);
 					if (vectors.length && this.dims === 0) this.dims = vectors[0].length;
 					vectors.forEach((v, k) => (vecs[missing[i + k]] = normalize(new Float32Array(v))));
 				}
-				this.setFile(path, { mtime: mtime ?? Date.now(), chunks: chunks.map((c, i) => ({ heading: c.heading, text: c.text, vec: vecs[i] as Float32Array })) });
+				this.setFile(path, { mtime: mtime ?? Date.now(), chunks: chunks.map((c, i) => ({ heading: c.heading, crumb: c.crumb, text: c.text, vec: vecs[i] as Float32Array })) });
 				this.lastError = undefined;
 				this.scheduleSave();
 				// During a long build: tell listeners a few times a second, not once per note, and put
@@ -464,7 +599,7 @@ export class SemanticIndex {
 	}
 
 	private stored(file: MemFile): StoredFile {
-		return { mtime: file.mtime, chunks: file.chunks.map((c) => ({ heading: c.heading, text: c.text, vec: encodeVec(c.vec) })) };
+		return { mtime: file.mtime, fmt: EMBED_FORMAT, chunks: file.chunks.map((c) => ({ heading: c.heading, ...(c.crumb !== c.heading ? { crumb: c.crumb } : {}), text: c.text, vec: encodeVec(c.vec) })) };
 	}
 
 	/** Saves what changed. Calls queue up: a second flush starting while one is still writing could have its newer shard overwritten by the first one's older copy. */

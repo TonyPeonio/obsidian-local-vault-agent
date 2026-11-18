@@ -4,9 +4,20 @@
  */
 
 export interface Chunk {
+	/** The heading the text sits directly under ("" before the first heading). */
 	heading: string;
+	/**
+	 * The heading with the headings above it, joined by " › " ("2026-09-10 › Summary"). A note
+	 * that repeats a heading under each date or topic has many sections called "Summary"; the
+	 * path is what tells them apart. The note's single top-level title is left out: it says what
+	 * the note's name already says.
+	 */
+	crumb: string;
 	text: string;
 }
+
+/** Joins the headings above a section into the path shown to the model and embedded with the text. */
+export const CRUMB_SEPARATOR = " › ";
 
 export interface ChunkOptions {
 	/** Target chunk size in characters (≈ 4 chars per token). */
@@ -29,16 +40,29 @@ export function chunkMarkdown(content: string, opts: ChunkOptions = {}): Chunk[]
 	const lines = body.split(/\r?\n/);
 
 	// 1. Split into sections by heading.
-	const sections: { heading: string; lines: string[] }[] = [{ heading: "", lines: [] }];
+	const sections: { heading: string; crumb: string; lines: string[] }[] = [{ heading: "", crumb: "", lines: [] }];
 	let inFence = false;
+	/** The headings the current line is nested under, outermost first. */
+	const stack: { level: number; text: string }[] = [];
+	let h1Count = 0;
+	let firstH1 = "";
 	for (const line of lines) {
 		if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
 		const h = !inFence && line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
 		if (h) {
-			sections.push({ heading: h[2].trim(), lines: [] });
+			const level = h[1].length;
+			if (level === 1 && h1Count++ === 0) firstH1 = h[2].trim();
+			while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
+			stack.push({ level, text: h[2].trim() });
+			sections.push({ heading: h[2].trim(), crumb: stack.map((s) => s.text).join(CRUMB_SEPARATOR), lines: [] });
 		} else {
 			sections[sections.length - 1].lines.push(line);
 		}
+	}
+	// A single `# Title` at the top is the note's name again: drop it from the paths below it.
+	if (h1Count === 1) {
+		const prefix = firstH1 + CRUMB_SEPARATOR;
+		for (const s of sections) if (s.crumb.startsWith(prefix)) s.crumb = s.crumb.slice(prefix.length);
 	}
 
 	// 2. Within a section, pack paragraphs up to `target`, splitting long ones at `max`.
@@ -49,7 +73,7 @@ export function chunkMarkdown(content: string, opts: ChunkOptions = {}): Chunk[]
 		const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
 		let current = "";
 		const flush = () => {
-			if (current.trim()) chunks.push({ heading: section.heading, text: current.trim() });
+			if (current.trim()) chunks.push({ heading: section.heading, crumb: section.crumb, text: current.trim() });
 			current = "";
 		};
 		for (const para of paragraphs) {

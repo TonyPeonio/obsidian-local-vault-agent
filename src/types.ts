@@ -118,9 +118,15 @@ export interface SearchHit {
 /** One indexed section of a note, returned verbatim by passage search. */
 export interface Passage {
 	path: string;
+	/** The heading the passage sits directly under. */
 	heading: string;
+	/** The heading with the headings above it ("2026-09-10 › Summary"); what is shown to the model. */
+	crumb?: string;
 	text: string;
+	/** Cosine similarity between the question and the passage. */
 	score: number;
+	/** How many of the question's words the passage contains, when word matching ran and found it. */
+	words?: { matched: number; terms: number };
 }
 
 export interface UsageInfo {
@@ -172,6 +178,8 @@ export interface ToolContext {
 	search: (query: string, limit: number) => Promise<SearchHit[]>;
 	/** Chunk-level semantic search; undefined when no embedding index is available. */
 	searchPassages?: (query: string, limit: number) => Promise<Passage[]>;
+	/** A best passage score under this means "nothing close": search_passages then says so (depends on the embedding model; undefined = never). */
+	weakMatchBelow?: number;
 	/** Ask the user to approve a mutation. Resolves to the decision. */
 	approve: (req: ApprovalRequest) => Promise<ApprovalDecision>;
 	maxResultChars: number;

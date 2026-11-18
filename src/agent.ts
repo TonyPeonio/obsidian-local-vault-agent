@@ -265,6 +265,8 @@ export interface AgentDeps {
 	search: ToolContext["search"];
 	/** Chunk-level semantic search; absent when there is no embedding index. */
 	searchPassages?: ToolContext["searchPassages"];
+	/** See `ToolContext.weakMatchBelow`. */
+	weakMatchBelow?: () => number | undefined;
 	approve: (req: ApprovalRequest) => Promise<ApprovalDecision>;
 	getConfig: () => AgentConfig;
 	configDir?: string;
@@ -407,6 +409,7 @@ export class Agent {
 			vault,
 			search: this.deps.search,
 			searchPassages: this.deps.searchPassages,
+			weakMatchBelow: this.deps.weakMatchBelow?.(),
 			maxResultChars: cfg.maxToolResultChars,
 			configDir: this.deps.configDir,
 			signal,

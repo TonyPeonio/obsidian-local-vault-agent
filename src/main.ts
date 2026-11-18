@@ -3,7 +3,7 @@ import { Agent, type AgentConfig } from "./agent";
 import { ApprovalModal } from "./approval-modal";
 import { LEGACY_SUGGESTIONS_NOTE, gardenFixes, gardenVault, planGardenAction, renderGardenChat, renderPlanResult, type GardenAction, type GardenReport, type PlannedChange } from "./gardener";
 import { GistCache, type GistData, type GistStatus } from "./gists";
-import { SemanticIndex, type IndexData, type IndexManifest, type IndexStatus, type StoredFile } from "./index";
+import { SemanticIndex, weakMatchThreshold, type IndexData, type IndexManifest, type IndexStatus, type StoredFile } from "./index";
 import { ObsidianVault } from "./obsidian-vault";
 import { OllamaClient, placementWarning, sameModel } from "./ollama";
 import { InstructionModal, ProcessDailyModal } from "./prompt-modals";
@@ -207,6 +207,7 @@ export default class LocalVaultAgentPlugin extends Plugin {
 					return [];
 				}
 			},
+			weakMatchBelow: () => weakMatchThreshold(this.settings.embeddingModel),
 			approve: (req) => {
 				const modal = new ApprovalModal(this.app, req);
 				modal.open();
