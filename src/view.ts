@@ -9,6 +9,7 @@ import type { Lease } from "./busy";
 import { ComposerSuggest } from "./composer-suggest";
 import type { GardenFix, GardenReport } from "./gardener";
 import { HELP_TEXT, attachMentions, matchCommands, matchNotes, parseSlash } from "./mentions";
+import { MessageQueue, queuePreview, restoredDraft, type QueuedMessage } from "./message-queue";
 import { conversationToMarkdown } from "./transcript";
 import { QuizSession, isNonAnswer, parseQuizRequest, questionMarkdown, renderReview, resultMarkdown, reviewNotePath, selectQuizNotes } from "./quiz";
 import { VoiceRecorder } from "./voice";
@@ -49,8 +50,9 @@ export class AgentView extends ItemView {
 	private running = false;
 	/** True while a mechanical /garden fix is being applied (its diffs are open). */
 	private gardening = false;
-	/** Whether the next message gets the notes it links to attached; off for prompts that only list notes. */
-	private attachNext = true;
+	/** Messages sent while the model was busy; they go out, in order, when it is free. */
+	private queue = new MessageQueue();
+	private queueEl!: HTMLElement;
 	private unsubscribeStatus: (() => void) | null = null;
 	private unsubscribeGists: (() => void) | null = null;
 	private usage: UsageInfo | null = null;
@@ -160,7 +162,14 @@ export class AgentView extends ItemView {
 		this.jobBarText = this.jobBarEl.createSpan({ cls: "lva-job-bar-text" });
 		this.jobStopBtn = this.jobBarEl.createEl("button", { cls: "lva-chip", text: t("job.stop") });
 		this.jobStopBtn.addEventListener("click", () => this.plugin.stopJob());
-		this.unsubscribeBusy = this.plugin.busy.onChange(() => this.syncJobBar());
+		// Messages sent while the model is busy wait here, visibly, until it is free.
+		this.queueEl = root.createDiv({ cls: "lva-queue", attr: { role: "status" } });
+		this.queueEl.hide();
+		this.unsubscribeBusy = this.plugin.busy.onChange(() => {
+			this.syncJobBar();
+			this.renderQueue();
+			this.scheduleDrain();
+		});
 		this.syncJobBar();
 
 		// Composer
@@ -243,11 +252,12 @@ export class AgentView extends ItemView {
 		this.inputEl.focus();
 	}
 
-	/** Send a message programmatically (used by commands). */
+	/**
+	 * Send a message programmatically (used by commands). `attachMentioned` is off for prompts that
+	 * only list notes. What the user is typing in the message box is left alone.
+	 */
 	async send(text: string, attachMentioned = true): Promise<void> {
-		this.inputEl.value = text;
-		this.attachNext = attachMentioned;
-		await this.submit();
+		await this.accept(text.trim(), attachMentioned);
 	}
 
 	private modelListRequest = 0;
@@ -387,12 +397,99 @@ export class AgentView extends ItemView {
 		this.sendBtn.toggleClass("lva-stop", running);
 	}
 
-	/** Stops this view's running turn or quiz step. The lease is kept until that code has unwound, so it can tell it was stopped. */
+	/**
+	 * Stops this view's running turn or quiz step. The lease is kept until that code has unwound, so
+	 * it can tell it was stopped. Messages waiting in the queue are not sent either: they go back
+	 * into the message box.
+	 */
 	private stop(): void {
+		this.returnQueue();
 		this.lease?.stop();
 	}
 
-	/** Says why a message cannot be sent right now (the text stays in the message box). */
+	/** Whether a message has to wait: this chat is busy, or (for anything that needs the model) something else has it. */
+	private mustWait(text: string): boolean {
+		if (this.running || this.gardening || this.quizBusy) return true;
+		if (!this.plugin.busy.busy) return false;
+		// Commands and ending a quiz need no model: they run while a scheduled job has it.
+		return !parseSlash(text) && !(this.quiz !== null && QUIZ_END.test(text));
+	}
+
+	/** Takes a message: sends it now, or queues it (visibly) while the model is busy. */
+	private async accept(text: string, attach: boolean): Promise<void> {
+		if (!text) return;
+		if (this.mustWait(text)) {
+			this.queue.add(text, attach);
+			this.renderQueue();
+			return;
+		}
+		await this.deliver({ text, attach });
+	}
+
+	/** Draws the waiting messages above the message box, each with a button that takes it back. */
+	private renderQueue(): void {
+		this.queueEl.empty();
+		this.queueEl.toggle(this.queue.size > 0);
+		if (this.queue.size === 0) return;
+		const holder = this.plugin.busy.holder;
+		this.queueEl.createDiv({ cls: "lva-queue-hint", text: holder?.owner === "job" ? t("view.queue.hint.job", { job: holder.label }) : t("view.queue.hint") });
+		for (const item of this.queue.list) {
+			const row = this.queueEl.createDiv({ cls: "lva-queued" });
+			setIcon(row.createSpan({ cls: "lva-queued-icon" }), "clock");
+			row.createSpan({ cls: "lva-queued-text", text: queuePreview(item.text) });
+			const back = row.createEl("button", { cls: "clickable-icon lva-icon-btn", attr: { "aria-label": t("view.queue.takeBack") } });
+			setIcon(back, "undo-2");
+			back.addEventListener("click", () => {
+				const taken = this.queue.remove(item.id);
+				if (taken) this.backToBox([taken]);
+				this.renderQueue();
+			});
+		}
+	}
+
+	/** Puts messages that will not be sent back into the message box, before what is being typed there. */
+	private backToBox(messages: QueuedMessage[]): void {
+		if (messages.length === 0) return;
+		this.inputEl.value = restoredDraft(messages, this.inputEl.value);
+		this.autoGrow();
+	}
+
+	/** Empties the queue into the message box (Stop, or a turn that failed): nothing waiting is sent, nothing typed is lost. */
+	private returnQueue(): boolean {
+		const waiting = this.queue.clear();
+		if (waiting.length === 0) return false;
+		this.backToBox(waiting);
+		this.renderQueue();
+		return true;
+	}
+
+	/** Sends the next waiting message once the code that just finished has unwound. */
+	private scheduleDrain(): void {
+		if (this.queue.size === 0) return;
+		window.setTimeout(() => this.drain(), 0);
+	}
+
+	private drain(): void {
+		if (this.queue.size === 0 || this.mustWait(this.queue.list[0].text)) return;
+		const item = this.queue.next();
+		this.renderQueue();
+		// A command ends without a turn ending, so the one after it is looked at from here.
+		if (item) void this.deliver(item).finally(() => this.scheduleDrain());
+	}
+
+	/**
+	 * A turn or quiz step of this chat has ended. After a stop or a failure the waiting messages are
+	 * handed back (the next one would likely fail the same way, or is no longer wanted); otherwise
+	 * the next one is sent.
+	 */
+	private turnEnded(stopped: boolean, failed: boolean): void {
+		if (stopped) this.returnQueue();
+		else if (failed) {
+			if (this.returnQueue()) new Notice(t("notice.queue.returned"), 8000);
+		} else this.scheduleDrain();
+	}
+
+	/** Says why a message cannot be sent right now. */
 	private noticeBusy(): void {
 		const holder = this.plugin.busy.holder;
 		new Notice(holder?.owner === "job" ? t("notice.jobRunning", { job: holder.label }) : t("notice.wait"));
@@ -594,41 +691,51 @@ export class AgentView extends ItemView {
 			new Notice((err as Error).message ?? String(err), 8000);
 		} finally {
 			this.gardening = false;
+			this.scheduleDrain();
 		}
 	}
 
+	/** The message box was submitted: the message is sent, or queued while the model is busy. Either way the box is free for the next one. */
 	private async submit(): Promise<void> {
 		const text = this.inputEl.value.trim();
-		const attach = this.attachNext;
-		this.attachNext = true;
-		if (!text || this.running || this.gardening || this.quizBusy) return;
+		if (!text) return;
+		this.inputEl.value = "";
+		this.autoGrow();
+		await this.accept(text, true);
+	}
+
+	/** Sends one message now: a command, a quiz answer, a quiz request, or a turn of the agent. */
+	private async deliver(item: Pick<QueuedMessage, "text" | "attach">): Promise<void> {
+		const { text, attach } = item;
+		/** Back to the front of the queue: something took the model between the check and now. */
+		const requeue = () => {
+			this.queue.putBack({ id: 0, images: [], ...item });
+			this.renderQueue();
+		};
 		const slash = parseSlash(text);
 		if (slash) {
-			this.inputEl.value = "";
 			await this.runSlash(slash.id);
 			return;
 		}
 		// A panel restored with the workspace was never "opened": the first message is when a missing server is reported.
 		void this.plugin.checkOllamaOnce();
 		// Everything below calls the model, one job at a time: a scheduled job may be running.
-		// (Ending a quiz needs no model.) The text stays in the box when it cannot be sent.
+		// (Ending a quiz needs no model.)
 		if (this.plugin.busy.busy && !(this.quiz && QUIZ_END.test(text))) {
-			this.noticeBusy();
+			requeue();
 			return;
 		}
 		if (this.quiz) {
-			this.inputEl.value = "";
 			await this.answerQuiz(text);
 			return;
 		}
 		if (parseQuizRequest(text, new Date())) {
-			this.inputEl.value = "";
 			await this.startQuiz(text, this.plugin.settings.quizQuestions);
 			return;
 		}
 		const lease = this.plugin.busy.acquire("chat");
 		if (!lease) {
-			this.noticeBusy();
+			requeue();
 			return;
 		}
 		this.lease = lease;
@@ -683,8 +790,6 @@ export class AgentView extends ItemView {
 		// lease that leaked would leave the chat refusing messages until Obsidian is restarted.
 		try {
 			this.messagesEl.querySelector(".lva-welcome")?.remove();
-			this.inputEl.value = "";
-			this.autoGrow();
 			this.setSendState(true);
 			ticker = window.setInterval(progress, 1000);
 			const user = this.messagesEl.createDiv({ cls: "lva-msg lva-user" });
@@ -799,6 +904,7 @@ export class AgentView extends ItemView {
 			void this.populateModels();
 			this.updateStatus();
 			this.scrollToBottom();
+			this.turnEnded(lease.stopped, failed);
 		}
 	}
 
@@ -1024,6 +1130,7 @@ export class AgentView extends ItemView {
 			} else this.notifyIfAway(Date.now() - started, failed);
 			this.setSendState(false);
 			this.updateStatus();
+			this.turnEnded(lease.stopped, failed);
 		}
 	}
 
@@ -1047,6 +1154,7 @@ export class AgentView extends ItemView {
 		this.lease = lease;
 		this.quizBusy = true;
 		let graded = false;
+		let failed = false;
 		try {
 			this.addUser(text);
 			this.setSendState(true);
@@ -1066,7 +1174,10 @@ export class AgentView extends ItemView {
 			await this.addAssistant(next);
 			this.remember(text, next);
 		} catch (err) {
-			if (!lease.stopped) new Notice(`Grading failed: ${(err as Error).message}`, 8000);
+			if (!lease.stopped) {
+				failed = true;
+				new Notice(`Grading failed: ${(err as Error).message}`, 8000);
+			}
 		} finally {
 			lease.release();
 			this.lease = null;
@@ -1077,6 +1188,7 @@ export class AgentView extends ItemView {
 			}
 			this.setSendState(false);
 			this.updateStatus();
+			this.turnEnded(lease.stopped, failed);
 		}
 	}
 

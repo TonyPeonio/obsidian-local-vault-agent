@@ -607,6 +607,37 @@
 	margin-top: var(--size-4-1);
 }
 
+/* Messages sent while the model was busy, waiting above the message box */
+.lva-queue {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 4px 8px;
+	font-size: var(--font-ui-smaller);
+	border-top: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+}
+.lva-queue-hint {
+	color: var(--text-muted);
+}
+.lva-queued {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.lva-queued-icon {
+	flex: none;
+	display: inline-flex;
+	color: var(--text-muted);
+}
+.lva-queued-text {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* Under a finished reply: how long it took and how fast the model was */
 .lva-stats {
 	margin-top: -6px;
