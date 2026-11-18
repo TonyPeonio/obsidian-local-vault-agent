@@ -177,6 +177,42 @@ function splitTable(para: string, max: number): string[] | null {
 	return out.flatMap((piece) => (piece.length > max ? splitLong(piece, max) : [piece]));
 }
 
+/**
+ * Cuts a text that has no sentence end and is longer than a chunk (a long list without full stops,
+ * a long line of code, a list of links) into pieces of at most `max` characters, between words:
+ * after the last line that ends in the second half of the piece when there is one, otherwise at
+ * the last whitespace. It used to be cut every `max` characters, through the middle of a word, and
+ * a word cut inside its first four letters that stood nowhere else was then "in no note" for the
+ * word index. Only a stretch with no whitespace at all (one endless token, a script written
+ * without spaces) is still cut every `max` characters, and then never between the two halves of
+ * one character.
+ */
+function cutLong(text: string, max: number): string[] {
+	const out: string[] = [];
+	let start = 0;
+	while (text.length - start > max) {
+		// One character more than a piece holds: whitespace right after a full piece is a place to cut too.
+		const reach = text.slice(start, start + max + 1);
+		let cut = reach.lastIndexOf("\n");
+		if (cut < max / 2) {
+			cut = max;
+			while (cut > 0 && !/\s/.test(reach[cut])) cut--;
+		}
+		if (cut > 0) {
+			out.push(reach.slice(0, cut).trimEnd());
+			start += cut + 1;
+			while (start < text.length && /\s/.test(text[start])) start++;
+			continue;
+		}
+		const code = reach.charCodeAt(max - 1);
+		cut = code >= 0xd800 && code <= 0xdbff ? max - 1 : max;
+		out.push(reach.slice(0, cut));
+		start += cut;
+	}
+	if (start < text.length) out.push(text.slice(start));
+	return out.filter((piece) => piece.length > 0);
+}
+
 function splitLong(text: string, max: number): string[] {
 	const out: string[] = [];
 	const sentences = splitSentences(text);
@@ -185,7 +221,7 @@ function splitLong(text: string, max: number): string[] {
 		if (s.length > max) {
 			if (current) out.push(current);
 			current = "";
-			for (let i = 0; i < s.length; i += max) out.push(s.slice(i, i + max));
+			out.push(...cutLong(s, max));
 			continue;
 		}
 		if (current && current.length + s.length + 1 > max) {
